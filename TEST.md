@@ -156,6 +156,18 @@ An expired reservation whose durable controller record proves apply was never in
 
 Cleanup accepts repaired credential references while preserving the original source/pins, accounts/projects/regions/zones, tailnet and limits. Hetzner still needs separate verified account/project-token mapping; its apply and cleanup paths refuse declared-only identity. Orphan deletion outside Terraform state is not implemented. Tests exercise the entrypoint and plan/apply/destroy/receipt flow with fake commands/provider responses only; no real launch or deletion has been verified.
 
+## Remote Acceptance Component
+
+`scripts/showcase_remote.py` implements controller checks for an active, applied, exact-source attempt in the original spending ledger. It reuses the private key/known-hosts file and repo SSH wrapper, matches owned state to recorded inventory, then re-queries the selected VM's public address through the cloud API before SSH. A changed address, foreign state, incomplete apply, expired work deadline or unverified identity refuses remote work. SSH children receive no cloud credentials.
+
+Bootstrap checks require completed cloud-init, the selected-provider loader marker, active service, the installed artifact checksum from Terraform state, the expected mounted data disk and observed tailnet DNS. AWS matches the NVMe serial to the owned volume ID; the other clouds use their stable device paths. The strict doctor runs from the checked source through stdin and requires every applicable service/native doctor/config/CLI/route check to pass. Rechecks replace stale green evidence on failure; loading the source creates no unrecorded Python cache in the private checkout.
+
+Each coding task runs as UID 1000 with explicit workspace HOME/PATH and its API key only on stdin. The controller saves a durable invocation marker before secret retrieval and refuses a repeated paid task, including after an uncertain result. It requires successful model usage and the fresh helper result, then independently inspects regular UID-1000 files for the unchanged input hash, correct sum/nonce and result hash. Reports contain only selected status/hash/token/duration fields; raw CLI output and keys are never saved.
+
+Reboot requires both verified coding fixtures and a bootstrap baseline. Acceptance needs a new boot ID, the same disk/volume/checksum/DNS, fresh passing doctors and unchanged verified workspace files. An interrupted reboot can resume verification without issuing another reboot or coding task; missing proof remains uncertain. These methods remain library components, not a public launch command or a complete matrix verdict. Runtime agent turns, container integration, second-peer authenticated browser access and full controller/gate integration remain pending.
+
+Local tests run the actual independent file verifier as UID 1000 against temporary files and replace all cloud/SSH/model operations with fixtures. They cover address drift, changed source/foreign state, failed/repeated checks, invalid usage/CLI/path/hash/UID, new-boot enforcement, changed disks and interrupted reboot recovery. The actual Terraform builtin provider also confirmed the wrapped runtime checksum state shape using only a disposable local fixture. None of this establishes real SSH, model execution, reboot, browser access or cloud support.
+
 ## Read-only Cloud Preflight
 
 Install `scripts/requirements-live.txt` in a task-owned Python virtual environment, then use that environment's Python:

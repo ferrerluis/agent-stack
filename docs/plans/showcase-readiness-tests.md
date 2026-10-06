@@ -65,6 +65,8 @@ The report always keeps `launch_ready: false` and lists unresolved checks; regis
 
 The available live command supports `--phase plan` and `--phase cleanup` with `--config`, `--provider`, `--run-id` and `--batch`; planning also accepts an exact `--revision`. See [saved plans and recovery](../../TEST.md#saved-plans-and-guarded-recovery). Planning creates no VM or reservation; the public CLI has no launch phase/readiness override. Local tests exercise saved-plan drift, one apply invocation, concurrent attempt locks, foreign state/attachments, changed destroy plans, interrupted creation, expired recovery, missing state, leftover resources/node-deletion failures and the actual entrypoint with fixtures. No real creation or deletion is established by these tests.
 
+The [remote acceptance component](../../TEST.md#remote-acceptance-component) now implements owned-address SSH binding, bootstrap/checksum/mounted-disk proof, strict doctors, single-invocation UID-1000 coding tasks with independent file checks and reboot/persistence verification. It consumes only an active applied attempt in the original ledger; changed source/state/address, expired deadlines or failed checks cannot pass. Interrupted reboot verification resumes without another reboot or coding task. Tests use cloud/SSH/model fixtures, plus the actual file verifier on temporary UID-1000 files and a disposable builtin-only Terraform state-shape check. Runtime agent turns, second-peer browsers, container integration and complete paid orchestration remain pending; every real matrix cell remains unverified.
+
 ## Proposed live-run interface and resource ownership
 
 ```bash
