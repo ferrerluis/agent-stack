@@ -11,6 +11,7 @@ from functools import wraps
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import stat
@@ -332,6 +333,22 @@ class TerraformAttempt:
         module.__file__ = str(path)
         exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
         return module
+
+    @exclusive
+    def resource_unit_prices(self, public=None):
+        from showcase_prices import digitalocean_rates
+        verify_prepared(self.run, self.config, self.provider)
+        record = self.record()
+        require(self.provider == "digitalocean" and record.get("stage") == "planned", "planned_digitalocean_attempt_required")
+        root = Path(__file__).resolve().parents[1]
+        for name in ("showcase_prices", "showcase_terraform", "showcase_policy"):
+            relative = "scripts/" + name + ".py"
+            require((self.checkout / relative).is_file() and (self.checkout / relative).read_bytes() == (root / relative).read_bytes(),
+                    "price_controller_source_changed")
+        result = digitalocean_rates(private_read(self.run / "deployment-plan.json"), self.config["providers"][self.provider],
+            self.prefix, self.checkout, self.session.adapter, self.prepared["source_revision"], record["plan_sha256"], public=public, now=self.now)
+        private_write(self.run / "resource-prices.json", result)
+        return result
 
     def launch_gates(self, readiness):
         require(isinstance(readiness, dict) and readiness.get("source_revision") == self.prepared["source_revision"]

@@ -100,6 +100,8 @@ def main():
         attempt = TerraformAttempt(run, original, args.provider, session, terraform=args.terraform)
         if args.phase == "plan":
             report = {**attempt.plan(), "status": "planned", "spend_reserved": False}
+            if args.provider == "digitalocean":
+                report["resource_unit_prices"] = attempt.resource_unit_prices()
         else:
             ledger = Reservations(batch, original)
             if flow is None:
