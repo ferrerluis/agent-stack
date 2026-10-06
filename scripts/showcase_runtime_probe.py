@@ -118,11 +118,11 @@ def native_proof_valid(route, report):
 def hermes_probe(packet, resolver=None):
     need(isinstance(packet, dict) and set(packet) == {"action", "route", "config_sha256", "environment_sha256", "source_revision", "nonce"})
     port = route_valid(packet["route"]); route = packet["route"]
-    need(route["role"] == "hermes" and os.geteuid() == 10000 and packet["action"] in ("native", "transport")
+    need(route["role"] == "hermes" and os.geteuid() == 10000 and packet["action"] in ("native", "transport", "readiness")
          and isinstance(packet["config_sha256"], str) and re.fullmatch(r"[a-f0-9]{64}", packet["config_sha256"])
          and isinstance(packet["source_revision"], str) and re.fullmatch(r"[a-f0-9]{40}", packet["source_revision"])
          and isinstance(packet["environment_sha256"], str) and re.fullmatch(r"[a-f0-9]{64}", packet["environment_sha256"])
-         and isinstance(packet["nonce"], str) and (packet["nonce"] == "" if packet["action"] == "native" else re.fullmatch(r"[a-f0-9]{64}", packet["nonce"])))
+         and isinstance(packet["nonce"], str) and (packet["nonce"] == "" if packet["action"] in ("native", "readiness") else re.fullmatch(r"[a-f0-9]{64}", packet["nonce"])))
     path = Path("/opt/data/config.yaml")
     need(not any(parent.is_symlink() for parent in (path, *path.parents)))
     info = path.stat(); need(path.is_file() and info.st_uid == 10000 and info.st_gid == 10000 and info.st_nlink == 1
@@ -140,6 +140,23 @@ def hermes_probe(packet, resolver=None):
         from hermes_cli.runtime_provider import resolve_runtime_provider
         resolver = resolve_runtime_provider
     native = native_hermes(config, route, resolver)
+    readiness_sha256 = None
+    if packet["action"] == "readiness":
+        from showcase_runtime_environment import assignments
+        values, _ = assignments(env_raw)
+        key = values.get("API_SERVER_KEY")
+        need(isinstance(key, str) and 0 < len(key) <= 4096 and not any(c.isspace() for c in key) and HEALTH_MODULE is not None)
+        # Fixed numeric origin/path, no inherited proxy, redirects or retry.
+        # The retained application key never leaves this short-lived process.
+        connection = HTTPConnection("127.0.0.1", 8642, timeout=5)
+        try:
+            connection.request("GET", "/health/detailed", headers={"Authorization": "Bearer " + key})
+            response = connection.getresponse()
+            need(response.status == 200 and response.getheader("Content-Type").split(";", 1)[0].strip() == "application/json")
+            raw = response.read(65537); need(0 < len(raw) <= 65536)
+            need(HEALTH_MODULE.healthy(decoded(raw, 65536)))
+            readiness_sha256 = hashlib.sha256(raw).hexdigest()
+        finally: connection.close()
     if packet["action"] == "transport":
         connection = HTTPConnection(route["bridge_ipv4"], port, timeout=3)
         try:
@@ -153,10 +170,15 @@ def hermes_probe(packet, resolver=None):
         finally: connection.close()
     need(hashlib.sha256(path.read_bytes()).hexdigest() == packet["config_sha256"])
     need(hashlib.sha256(env_path.read_bytes()).hexdigest() == packet["environment_sha256"])
-    return {"schema": 1, "status": "runtime_native_route_verified" if packet["action"] == "native" else "runtime_container_route_verified",
+    result = {"schema": 1, "status": {"native": "runtime_native_route_verified", "transport": "runtime_container_route_verified", "readiness": "runtime_readiness_verified"}[packet["action"]],
             "role": "hermes", "provider": route["provider"], "uid": 10000, "config_sha256": packet["config_sha256"],
             "environment_sha256": packet["environment_sha256"],
             "source_revision": packet["source_revision"], "nonce": packet["nonce"], "native_route": native}
+    if readiness_sha256 is not None: result["readiness_sha256"] = readiness_sha256
+    return result
+
+
+HEALTH_MODULE = None  # The checked source loader supplies the repo's parser.
 
 
 NODE_SOURCE = r'''const fs=require('node:fs'),crypto=require('node:crypto'),http=require('node:http');

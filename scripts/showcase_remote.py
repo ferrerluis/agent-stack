@@ -272,10 +272,31 @@ class RemoteChecks:
     def check_doctors(self, target):
         doctor = self.doctor_module()
         source = self.attempt.checkout / DOCTOR_PATH
-        report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", "--strict", "--remote", "--json",
-            "--services", "openclaw,hermes,workspace", "--require-claude", "--check-tailscale", "--tailscale-mode", "host"],
-            input=source.read_bytes(), timeout=300))
         required = doctor.required_checks(["openclaw", "hermes", "workspace"], True, True)
+        if self.models is None:
+            report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", "--strict", "--remote", "--json",
+                "--services", "openclaw,hermes,workspace", "--require-claude", "--check-tailscale", "--tailscale-mode", "host"],
+                input=source.read_bytes(), timeout=300))
+        else:
+            # Never rerun native doctors with the original container's model
+            # environment. Captured, isolated diagnostics supply each runtime
+            # check; the unchanged strict collector supplies workspace/routes.
+            evidence = self.models.active()
+            baseline = evidence["baseline"] if self.models.stage == "before_reboot" else evidence["after_reboot"]
+            require(self.probe(target) == baseline, "model_session_boot_changed")
+            reports = [self.models.runtime_doctor(role) for role in ("openclaw", "hermes")]
+            before = self.ledger.operate(lambda state: task_evidence.hashed(self.models.spend.account(state)["model_requests"]))
+            with self.models.gateway.diagnostic_window("openclaw"), self.models.gateway.diagnostic_window("hermes"):
+                report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", "--strict", "--remote", "--json",
+                    "--services", "workspace", "--require-claude", "--check-tailscale", "--tailscale-mode", "host",
+                    "--route-services", "openclaw,hermes"], input=source.read_bytes(), timeout=180))
+                subset = doctor.required_checks(["workspace"], True, True)
+                require(report.get("status") == "pass" and doctor.accepted(report, subset), "runtime_doctor_failed")
+                require(self.ledger.operate(lambda state: task_evidence.hashed(self.models.spend.account(state)["model_requests"])) == before,
+                        "runtime_doctor_failed")
+                require(self.probe(target) == baseline, "model_session_boot_changed")
+                self.models.active()
+            report["checks"] += [{"name": key, "status": value} for proof in reports for key, value in proof["checks"].items()]
         require(report.get("status") == "pass" and doctor.accepted(report, required), "runtime_doctor_failed")
         return {row["name"]: "pass" for row in report["checks"] if row["name"] in required}
 
@@ -284,17 +305,54 @@ class RemoteChecks:
         evidence = self.evidence()
         self.require_container_gate(evidence)
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
+        if self.models is not None:
+            self.models.active()
+            require(self.models.stage not in evidence.get("doctor_stages", {}), "runtime_doctor_already_invoked")
+            evidence.setdefault("doctor_stages", {})[self.models.stage] = {"status": "started"}
         evidence["checks"].update({key: "started" for key in required})
         private_write(self.path, evidence)
         try:
             checks = self.check_doctors(self.bind())
         except BaseException:
+            if self.models is not None:
+                try: self.models.close()
+                except BaseException: pass
+                evidence = private_read(self.path)
+                evidence.setdefault("doctor_stages", {})[self.models.stage] = {"status": "uncertain"}
             evidence["checks"].update({key: "uncertain" for key in required})
             private_write(self.path, evidence)
             raise
+        evidence = self.evidence()
         evidence["checks"].update(checks)
+        if self.models is not None:
+            stage = self.models.stage
+            baseline = evidence["baseline"] if stage == "before_reboot" else evidence["after_reboot"]
+            channel = evidence["model_channels"][stage]
+            evidence["doctor_stages"][stage] = {"schema": 1, "status": "verified", "run_id": self.run.name,
+                "source_revision": evidence["source_revision"], "boot_id": baseline["boot_id"], "checksum": baseline["checksum"],
+                "checks": checks, "runtime_reports_sha256": {role: task_evidence.hashed(channel["runtime_doctors"][role]) for role in ("openclaw", "hermes")},
+                "runtime_routes_sha256": {role: task_evidence.hashed(channel["runtime_routes"][role]) for role in ("openclaw", "hermes")}}
         private_write(self.path, evidence)
         return checks
+
+    def doctor_receipt(self):
+        require(self.models is not None, "model_session_required")
+        evidence = self.models.active()
+        proof = evidence.get("doctor_stages", {}).get(self.models.stage)
+        required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
+        baseline = evidence["baseline"] if self.models.stage == "before_reboot" else evidence["after_reboot"]
+        channel = evidence["model_channels"][self.models.stage]
+        require(isinstance(proof, dict) and set(proof) == {"schema", "status", "run_id", "source_revision", "boot_id", "checksum",
+                "checks", "runtime_reports_sha256", "runtime_routes_sha256"}
+                and type(proof.get("schema")) is int and proof["schema"] == 1 and proof.get("status") == "verified"
+                and proof.get("run_id") == self.run.name and proof.get("source_revision") == evidence["source_revision"]
+                and proof.get("boot_id") == baseline["boot_id"] and proof.get("checksum") == baseline["checksum"]
+                and proof.get("checks") == {name: "pass" for name in required}
+                and all(evidence["checks"].get(name) == "pass" for name in required)
+                and all(proof.get(key) == {role: task_evidence.hashed(channel.get(source, {}).get(role)) for role in ("openclaw", "hermes")}
+                        for key, source in (("runtime_reports_sha256", "runtime_doctors"), ("runtime_routes_sha256", "runtime_routes"))),
+                "runtime_doctor_proof_required")
+        return json.loads(json.dumps(proof))
 
     @exclusive
     def container_tests(self):
@@ -544,7 +602,7 @@ class RemoteChecks:
         return task
 
     @exclusive
-    def reboot(self, resume=False):
+    def reboot(self, resume=False, defer_doctors=False):
         evidence = self.evidence()
         self.require_container_gate(evidence)
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
@@ -556,6 +614,7 @@ class RemoteChecks:
         require(type(resume) is bool and ((resume and evidence["checks"].get("reboot") in ("started", "uncertain"))
                 or (not resume and "reboot" not in evidence["checks"])), "reboot_already_invoked")
         require(self.models is None or self.models.state == "closed", "model_session_must_close_before_reboot")
+        require(type(defer_doctors) is bool and (not defer_doctors or self.models is not None), "model_session_required")
         target = self.bind()
         if not resume:
             before = self.probe(target)
@@ -588,16 +647,46 @@ class RemoteChecks:
                     break
             require(isinstance(after, dict) and after["boot_id"] != baseline["boot_id"], "new_boot_not_verified")
             require(all(after[key] == baseline[key] for key in ("disk_uuid", "data_volume_id", "checksum", "dns")), "persistent_disk_or_runtime_changed")
-            checks = self.check_doctors(target)
+            checks = {} if defer_doctors else self.check_doctors(target)
             for task in evidence["tasks"].values():
                 require(self.verify_files(target, task) == task["result_sha256"], "persisted_workspace_result_changed")
             evidence["after_reboot"] = after
             evidence["checks"].update(checks)
-            evidence["checks"]["reboot"] = "pass"
+            evidence["checks"]["reboot"] = "pending_doctors" if defer_doctors else "pass"
+            if defer_doctors:
+                evidence["checks"]["reboot_boot"] = "pass"
+                evidence["checks"].update({key: "uncertain" for key in required})
         except BaseException:
             evidence["checks"].update({key: "uncertain" for key in required})
             evidence["checks"]["reboot"] = "uncertain"
             private_write(self.path, evidence)
             raise
         private_write(self.path, evidence)
+        return {"reboot": "pass", "workspace_files": "preserved", "doctors": "pending" if defer_doctors else "pass"}
+
+    @exclusive
+    def complete_reboot(self):
+        """Complete persistence only after fresh activation and all diagnostics."""
+        evidence = self.evidence()
+        require(evidence["checks"].get("reboot") == "pending_doctors" and evidence["checks"].get("reboot_boot") == "pass"
+                and self.models is not None and self.models.stage == "after_reboot", "post_reboot_doctors_required")
+        self.models.active(); self.require_container_gate(evidence)
+        required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
+        proof, after = self.doctor_receipt(), evidence["after_reboot"]
+        require(proof.get("status") == "verified" and proof.get("boot_id") == after["boot_id"]
+                and proof.get("checks") == {name: "pass" for name in required}
+                and all(evidence["checks"].get(name) == "pass" for name in required), "post_reboot_doctors_required")
+        try:
+            target = self.bind()
+            require(self.probe(target) == after, "persistence_baseline_changed")
+            for task in evidence["tasks"].values():
+                require(self.verify_files(target, task) == task["result_sha256"], "persisted_workspace_result_changed")
+            self.models.active()
+        except BaseException:
+            evidence["checks"].update({name: "uncertain" for name in required})
+            evidence["checks"]["reboot"] = "uncertain"; private_write(self.path, evidence)
+            try: self.models.close()
+            except BaseException: pass
+            raise
+        evidence["checks"]["reboot"] = "pass"; private_write(self.path, evidence)
         return {"reboot": "pass", "workspace_files": "preserved", "doctors": "pass"}

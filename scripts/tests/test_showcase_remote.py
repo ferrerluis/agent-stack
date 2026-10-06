@@ -33,7 +33,7 @@ class RemoteChecksTest(unittest.TestCase):
     def test_stale_provider_answers_fail_all_roles_and_cannot_replay_paid_work(self):
         for role in ("openclaw", "hermes", "codex", "claude"):
             fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups)
-            fresh.checks.bootstrap(); fresh.checks.doctors()
+            fresh.ready()
             original = fresh.models.fake_response
             def stale(role, body, answer=None, usage=None):
                 original(role, body, {**answer, "nonce": "b2" * 16}, usage)
@@ -52,7 +52,7 @@ class RemoteChecksTest(unittest.TestCase):
     def test_native_token_mismatch_seals_runtime_and_coding_tasks(self):
         for role in ("openclaw", "hermes", "codex", "claude"):
             fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups)
-            fresh.checks.bootstrap(); fresh.checks.doctors()
+            fresh.ready()
             def changed(report): report["model_usage"]["cache_read_tokens"] += 1
             if role in ("openclaw", "hermes"): fresh.agent_mutation = changed
             else: fresh.task_mutation = changed
@@ -154,7 +154,11 @@ class RemoteChecksTest(unittest.TestCase):
             return json.dumps(report).encode()
         if "--remote" in words:
             module = self.doctor()
-            names = module.required_checks(["openclaw", "hermes", "workspace"], True, True)
+            services = words[words.index("--services") + 1].split(",")
+            names = module.required_checks(services, True, True)
+            if services == ["workspace"]:
+                self.assertEqual(words[words.index("--route-services") + 1], "openclaw,hermes")
+                self.assertEqual(self.models.gateway.diagnostic_roles, {"openclaw", "hermes"})
             report = {"schema": 1, "status": "pass", "checks": [{"name": name, "status": "pass"} for name in sorted(names)]}
             if self.fail_doctor:
                 report["checks"][0]["status"] = "fail"
@@ -217,15 +221,32 @@ class RemoteChecksTest(unittest.TestCase):
         module.required_checks, module.accepted = namespace["required_checks"], namespace["accepted"]
         return module
 
-    def baseline(self):
+    def baseline(self, close=True):
         self.checks.bootstrap()
+        self.stage_runtimes()
         self.checks.doctors()
         for runtime in ("openclaw", "hermes"):
             self.checks.runtime_task(runtime)
         for cli in ("codex", "claude"):
             self.checks.workspace_task(cli)
         self.checks.network_checks("before_reboot", self.peer_execute)
-        self.models.close()
+        if close: self.models.close()
+
+    def stage_runtimes(self):
+        self.models.fixture_start()
+        for role in ("openclaw", "hermes"): self.models.activate_runtime(role)
+
+    def ready(self):
+        self.checks.bootstrap()
+        self.stage_runtimes()
+        self.checks.doctors()
+
+    def reboot_verified(self, resume=False):
+        self.checks.reboot(resume=resume, defer_doctors=True)
+        self.models.start("after_reboot")
+        for role in ("openclaw", "hermes"): self.models.activate_runtime(role)
+        self.checks.doctors()
+        return self.checks.complete_reboot()
 
     def peer_execute(self, access, command, payload):
         self.peer_calls.append((access, command, payload))
@@ -242,8 +263,7 @@ class RemoteChecksTest(unittest.TestCase):
         return json.dumps(report).encode()
 
     def test_both_runtime_challenges_are_fresh_single_invocation_and_private(self):
-        self.checks.bootstrap()
-        self.checks.doctors()
+        self.ready()
         proofs = [self.checks.runtime_task(runtime) for runtime in ("openclaw", "hermes")]
         self.assertTrue(all(proof["status"] == "pass" for proof in proofs))
         self.assertNotEqual(proofs[0]["request_id"], proofs[1]["request_id"])
@@ -259,8 +279,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertTrue(all(call["timeout"] == 300 for call in agent_calls))
 
     def test_bad_runtime_answer_invalidates_health_evidence_and_blocks_repeat(self):
-        self.checks.bootstrap()
-        self.checks.doctors()
+        self.ready()
         self.agent_mutation = lambda report: report["answer"].update(sum=0)
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_failed"):
             self.checks.runtime_task("hermes")
@@ -277,14 +296,16 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertFalse(self.rebooted)
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
             self.checks.runtime_task("hermes")
-        self.checks.doctors()
-        with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_already_invoked"):
+        with self.assertRaisesRegex(terraform.PolicyError, "model_session_required"):
+            self.checks.doctors()
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
             self.checks.runtime_task("hermes")
 
     def test_runtime_task_needs_doctors_and_full_containment_time_before_dispatch(self):
         self.checks.bootstrap()
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
             self.checks.runtime_task("openclaw")
+        self.stage_runtimes()
         self.checks.doctors()
         self.clock = self.attempt.active(self.ledger)["work_deadline"] - 299
         before = len(self.calls)
@@ -295,7 +316,7 @@ class RemoteChecksTest(unittest.TestCase):
 
     def test_measured_bootstrap_both_doctors_tasks_and_reboot_keep_disk_and_files(self):
         self.baseline()
-        self.assertEqual(self.checks.reboot(), {"reboot": "pass", "workspace_files": "preserved", "doctors": "pass"})
+        self.assertEqual(self.reboot_verified(), {"reboot": "pass", "workspace_files": "preserved", "doctors": "pass"})
         self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["tailscale.acceptance"], "uncertain")
         self.checks.network_checks("after_reboot", self.peer_execute)
         evidence = cleanup.private_read(self.checks.path)
@@ -319,8 +340,40 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertTrue(all(call["timeout"] == 195 and json.loads(call["input"])["role"] in ("codex", "claude") for call in model_calls))
         self.assertTrue(all(terraform_fixtures.SECRET.encode() not in call["input"] for call in model_calls))
 
+    def test_reboot_cannot_finish_or_accept_peer_before_fresh_full_diagnostics(self):
+        self.baseline()
+        before = self.ledger.operate(lambda state: state["attempts"][0]["model_requests"])
+        self.assertEqual(self.checks.reboot(defer_doctors=True)["doctors"], "pending")
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
+            self.checks.network_checks("after_reboot", self.peer_execute)
+        self.models.start("after_reboot")
+        with self.assertRaises(terraform.PolicyError): self.checks.complete_reboot()
+        for role in ("openclaw", "hermes"): self.models.activate_runtime(role)
+        self.checks.doctors()
+        original = cleanup.private_read(self.checks.path)
+        for change in ({"checksum": "0" * 64}, {"source_revision": "0" * 40}, {"runtime_reports_sha256": {}}, {"checks": {}}):
+            evidence = json.loads(json.dumps(original)); evidence["doctor_stages"]["after_reboot"].update(change)
+            cleanup.private_write(self.checks.path, evidence)
+            with self.assertRaises(terraform.PolicyError): self.checks.complete_reboot()
+            self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["reboot"], "pending_doctors")
+        cleanup.private_write(self.checks.path, original)
+        self.checks.complete_reboot()
+        self.assertEqual(self.ledger.operate(lambda state: state["attempts"][0]["model_requests"]), before)
+
+    def test_failed_post_reboot_file_check_revokes_routes_and_rejects_persistence(self):
+        self.baseline()
+        self.checks.reboot(defer_doctors=True)
+        self.models.start("after_reboot")
+        for role in ("openclaw", "hermes"): self.models.activate_runtime(role)
+        self.checks.doctors(); self.fail_verifier = True
+        with self.assertRaisesRegex(terraform.PolicyError, "command_failed"): self.checks.complete_reboot()
+        evidence = cleanup.private_read(self.checks.path)
+        self.assertEqual(evidence["checks"]["reboot"], "uncertain")
+        self.assertEqual(self.models.state, "closed")
+        self.assertEqual(set(evidence["model_channels"]["after_reboot"]["runtime_config_restores"]), {"openclaw", "hermes"})
+
     def test_network_private_inputs_source_nonce_and_evidence_are_scoped(self):
-        self.checks.bootstrap(); self.checks.doctors()
+        self.ready()
         proof = self.checks.network_checks("before_reboot", self.peer_execute)
         self.assertEqual(proof["status"], "pass")
         _, command, payload = self.peer_calls[0]
@@ -336,7 +389,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.session.http.request.assert_called_once()
 
     def test_missing_peer_transport_refuses_before_secret_collection(self):
-        self.checks.bootstrap(); self.checks.doctors()
+        self.ready()
         self.config["runner"].pop("peer_ssh")
         cleanup.private_write(self.run / "inputs.json", self.config)
         before = len(self.calls)
@@ -350,6 +403,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.checks.bootstrap()
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
             self.checks.network_checks("before_reboot", self.peer_execute)
+        self.stage_runtimes()
         self.checks.doctors()
         with self.assertRaisesRegex(terraform.PolicyError, "network_boot_stage_invalid"):
             self.checks.network_checks("after_reboot", self.peer_execute)
@@ -361,7 +415,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertEqual(self.peer_calls, [])
 
     def test_revoked_runner_refuses_private_gateway_collection(self):
-        self.checks.bootstrap(); self.checks.doctors()
+        self.ready()
         self.session.http.request.return_value["devices"][0]["authorized"] = False
         with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
             self.checks.network_checks("before_reboot", self.peer_execute)
@@ -369,7 +423,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertEqual(self.peer_calls, [])
 
     def test_bad_private_handoff_key_or_changed_boot_never_dispatched(self):
-        self.checks.bootstrap(); self.checks.doctors()
+        self.ready()
         for changes in ({"browser_url": "https://external.test/#bootstrapToken=secret"}, {"host_public_key": "ssh-ed25519 bad"},
             {"hermes_password": 0}, {"boot_id": NEW_BOOT}, {"extra": terraform_fixtures.SECRET}):
             self.private_mutation = lambda raw, changes=changes: raw.update(changes)
@@ -379,7 +433,7 @@ class RemoteChecksTest(unittest.TestCase):
             self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["tailscale.acceptance"], "uncertain")
 
     def test_stale_network_proof_replaces_prior_green_and_blocks_reboot(self):
-        self.baseline()
+        self.baseline(close=False)
         before = cleanup.private_read(self.checks.path)["network"]["before_reboot"]["request_id"]
         self.peer_mutation = lambda raw: raw.update(request_id=before)
         with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
@@ -391,7 +445,7 @@ class RemoteChecksTest(unittest.TestCase):
             self.checks.reboot()
 
     def test_changed_initial_boot_invalidates_prior_network_proof_before_peer_dispatch(self):
-        self.baseline()
+        self.baseline(close=False)
         self.boot = NEW_BOOT
         before = len(self.peer_calls)
         with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
@@ -404,7 +458,7 @@ class RemoteChecksTest(unittest.TestCase):
             self.checks.reboot()
 
     def test_peer_budget_and_boot_are_rechecked_after_collection_and_dispatch(self):
-        self.checks.bootstrap(); self.checks.doctors()
+        self.ready()
         work_deadline = self.attempt.active(self.ledger)["work_deadline"]
         self.private_mutation = lambda raw: setattr(self, 'clock', work_deadline - 249)
         with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
@@ -417,7 +471,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertEqual(cleanup.private_read(self.checks.path)["network"]["before_reboot"]["status"], "uncertain")
 
     def test_secret_reader_failure_stops_and_raw_errors_are_redacted(self):
-        self.checks.bootstrap(); self.checks.doctors()
+        self.ready()
         def locked(*args):
             raise remote.PreflightError('onepassword_unavailable_or_locked')
         with self.assertRaisesRegex(terraform.PolicyError, '^onepassword_unavailable_or_locked$'):
@@ -446,10 +500,12 @@ class RemoteChecksTest(unittest.TestCase):
 
     def test_failed_doctor_and_missing_file_verification_never_mark_checks_passed(self):
         self.checks.bootstrap()
+        self.checks.models = None  # Exercise the retained standalone strict collector.
         self.fail_doctor = True
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_failed"):
             self.checks.doctors()
         self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["openclaw.doctor"], "uncertain")
+        self.checks.models = self.models
         self.fail_verifier = True
         with self.assertRaises(terraform.PolicyError):
             self.checks.workspace_task("codex")
@@ -502,6 +558,7 @@ class RemoteChecksTest(unittest.TestCase):
 
     def test_failed_rechecks_replace_previous_green_evidence(self):
         self.checks.bootstrap()
+        self.checks.models = None  # Standalone diagnostics retain their existing retry behavior.
         self.checks.doctors()
         self.fail_doctor = True
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_failed"):
@@ -514,13 +571,13 @@ class RemoteChecksTest(unittest.TestCase):
 
     def test_interrupted_reboot_can_resume_verification_without_rebooting_again(self):
         self.baseline()
-        self.fail_doctor = True
-        with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_failed"):
-            self.checks.reboot()
+        self.fail_verifier = True
+        with self.assertRaisesRegex(terraform.PolicyError, "command_failed"):
+            self.checks.reboot(defer_doctors=True)
         self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["reboot"], "uncertain")
         self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["openclaw.doctor"], "uncertain")
-        self.fail_doctor = False
-        self.assertEqual(self.checks.reboot(resume=True)["reboot"], "pass")
+        self.fail_verifier = False
+        self.assertEqual(self.reboot_verified(resume=True)["reboot"], "pass")
         self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["openclaw.doctor"], "pass")
         reboot_commands = [call for call in self.calls if shlex.split(call["args"][-1]) == ["sudo", "-n", "systemctl", "reboot"]]
         self.assertEqual(len(reboot_commands), 1)

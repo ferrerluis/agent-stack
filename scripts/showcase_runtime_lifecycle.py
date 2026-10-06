@@ -24,7 +24,7 @@ import showcase_runtime_probe as probe
 
 COMPOSE = ["/usr/bin/docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml"]
 INSPECT = '{"id":{{json .Id}},"image_id":{{json .Image}},"image_ref":{{json .Config.Image}},"state":{{json .State}},"restarts":{{json .RestartCount}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}'
-SOURCES = ("showcase_runtime_routes", "showcase_agents", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_strict_health", "showcase_runtime_lifecycle")
+SOURCES = ("showcase_runtime_routes", "showcase_agents", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe", "showcase_strict_health", "showcase_runtime_lifecycle")
 
 
 def need(value):
@@ -52,13 +52,15 @@ def source_command(checkout):
     root = Path(__file__).resolve().parents[1]
     payloads = {}
     for name in SOURCES:
-        relative = "skills/agent-stack-doctor/scripts/strict_health.py" if name == "showcase_strict_health" else "scripts/" + name + ".py"
+        relative = ("skills/agent-stack-doctor/scripts/strict_health.py" if name == "showcase_strict_health" else
+                    "modules/common/runtime/hermes_health.py" if name == "showcase_hermes_health" else "scripts/" + name + ".py")
         path = Path(checkout) / relative
         need(path.is_file() and not path.is_symlink())
         content = path.read_bytes(); need(content == (root / relative).read_bytes())
         payloads[name] = (str(path), content.decode())
     native = inline_source({name: payloads[name] for name in
-        ("showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe")})
+        ("showcase_runtime_routes", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe")})
+    native += "mods['showcase_runtime_probe'].HEALTH_MODULE=mods['showcase_hermes_health']\n"
     native += "raise SystemExit(mods['showcase_runtime_probe'].main())\n"
     code = inline_source(payloads)
     code += "mods['showcase_runtime_lifecycle'].PROBE_SOURCE=" + repr(wrapped_source(native)) + "\n"
@@ -172,14 +174,16 @@ class RuntimeLifecycle:
         result = agents.strict_json(self.execute(["/usr/bin/docker", "exec", "-i", "--user", str(routes.OWNERS[route["role"]]),
             context["container_id"], "env", "-i", *environment, *command],
             input=json.dumps(packet, separators=(",", ":")).encode(), timeout=10))
-        expected = {"schema": 1, "status": "runtime_native_route_verified" if action == "native" else "runtime_container_route_verified",
+        expected = {"schema": 1, "status": {"native": "runtime_native_route_verified", "transport": "runtime_container_route_verified", "readiness": "runtime_readiness_verified"}[action],
             "role": route["role"], "provider": route["provider"], "uid": routes.OWNERS[route["role"]],
             "config_sha256": context["config_sha256"], "source_revision": self.binding["source_revision"], "nonce": nonce}
         if route["role"] == "hermes": expected["environment_sha256"] = context["environment_sha256"]
         need(isinstance(result, dict) and type(result.get("schema")) is int and type(result.get("uid")) is int
              and all(result.get(k) == v for k, v in expected.items())
-             and set(result) == (set(expected) | ({"native_route"} if route["role"] == "hermes" else set())))
+             and set(result) == (set(expected) | ({"native_route"} if route["role"] == "hermes" else set())
+                                | ({"readiness_sha256"} if action == "readiness" else set())))
         if route["role"] == "hermes": probe.native_proof_valid(route, result["native_route"])
+        if action == "readiness": need(isinstance(result["readiness_sha256"], str) and re.fullmatch(r"[a-f0-9]{64}", result["readiness_sha256"]))
         return result
 
     def disarm(self, context):
@@ -223,13 +227,20 @@ class RuntimeLifecycle:
                     passed = DOCTOR_MODULE.doctor_healthy(parsed)
                 else: passed = DOCTOR_MODULE.hermes_doctor_healthy(raw.decode("utf-8"))
                 need(passed); self.current_files(context, route)
+                checks = {"service." + route["role"]: "pass", route["role"] + ".doctor": "pass"}
+                readiness = {}
+                if route["role"] == "hermes":
+                    report = self.container(context, route, "readiness", "")
+                    need(report["native_route"] == context["native_route"])
+                    readiness["readiness_sha256"] = report["readiness_sha256"]
+                    checks.update({"hermes.config": "pass", "hermes.readiness": "pass"})
                 need(self.native(context, route) == context["native_route"] and self.healthy(self.known(context)))
                 self.disarm(context); need(self.healthy(self.known(context))); self.current_files(context, route)
                 context.update(status="doctor_verified", doctor_sha256=routes.sha(raw)); self.save(context)
                 return {"schema": 1, "status": "runtime_doctor_verified", "binding": self.binding,
                     **{key: context[key] for key in ("role", "container_id", "image_ref", "image_id", "config_sha256", "native_route", "doctor_sha256")},
                     **({"environment_sha256": context["environment_sha256"]} if route["role"] == "hermes" else {}),
-                    "uid": routes.OWNERS[route["role"]], "health": "healthy", "watchdog": "disarmed"}
+                    "uid": routes.OWNERS[route["role"]], "health": "healthy", "watchdog": "disarmed", "checks": checks, **readiness}
             except BaseException:
                 try: self.stop(context)
                 except BaseException: pass

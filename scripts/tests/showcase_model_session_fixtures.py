@@ -9,6 +9,8 @@ import showcase_model_session as session
 import test_showcase_model_spend as terms
 import showcase_model_completion as completion
 import showcase_model_completion_fixtures as completions
+import showcase_runtime_routes as routes
+import showcase_runtime_probe as probe
 from showcase_policy import require
 
 CAPABILITY = "7" * 64
@@ -42,7 +44,7 @@ class FixtureGateway:
         return {"role": role, "provider": self.spend.policy["roles"][role]["provider"],
                 "base_url": PRIVATE_ROUTE + role, "credential": CAPABILITY}
     def new_probe(self, role, kind="channel"):
-        return {**self.client(role), "nonce": hashlib.sha256((role + kind).encode()).hexdigest()}
+        return {**self.client(role), "nonce": secrets.token_hex(32)}
     def probe_observed(self, role, nonce): return (role, nonce) in self.observed
     def seal_role(self, role): self.sealed.add(role)
     def close(self): self.alive = False
@@ -70,6 +72,45 @@ class FixtureSession(session.ModelSession):
         policy = terms.policy(checks.config, checks.provider)
         policy["source_revision"] = checks.attempt.prepared["source_revision"]
         super().__init__(checks, policy, gateway_factory=FixtureGateway, transport_factory=FixtureTransport)
+        self.lifecycle_calls = []
+
+    def runtime_lifecycle_command(self, target, packet, timeout):
+        # Native VM/Docker/doctor/readiness replies only; the production
+        # session, source/identity validators, ledger and sequencing are real.
+        self.lifecycle_calls.append(copy.deepcopy(packet))
+        role = packet.get("role") or packet["route"]["role"]
+        if packet["action"] == "restore":
+            require(not self.gateway.alive and not self.transport.alive, "fixture_restore_before_revoke")
+            return {"schema": 1, "status": "runtime_config_restored", "role": role,
+                    "binding": packet["binding"], "original_sha256": "c" * 64}
+        route = packet["route"]; config = routes.compile_config({}, route)
+        if role == "openclaw":
+            native = probe.native_openclaw({"valid": True, "configRevisionHash": "b" * 64, "appliedConfigHash": "b" * 64,
+                "config": config, "issues": [], "warnings": [], "legacyIssues": []}, route)
+        else:
+            actual = {"provider": "custom", "model": route["model"], "requested_provider": "as7-budget", "source": "custom_provider:as7-budget",
+                      "api_mode": config["model"]["api_mode"], "base_url": config["model"]["base_url"], "api_key": route["credential"]}
+            native = probe.native_hermes(config, route, lambda **_: actual)
+        value = {"schema": 1, "status": "runtime_reload_verified", "role": role, "binding": packet["binding"],
+            "container_id": hashlib.sha256(role.encode()).hexdigest(),
+            "image_ref": "ghcr.io/openclaw/openclaw@" + self.checks.config["pins"]["openclaw_digest"] if role == "openclaw" else self.checks.config["pins"]["hermes_image"],
+            "image_id": "sha256:" + "d" * 64, "config_sha256": "b" * 64, "native_route": native, "watchdog": "armed"}
+        if role == "hermes": value["environment_sha256"] = "e" * 64
+        if packet["action"] == "doctor":
+            require(role in self.gateway.diagnostic_roles and role not in self.gateway.started_roles, "fixture_doctor_not_isolated")
+            checks = {"service." + role: "pass", role + ".doctor": "pass"}
+            if role == "hermes": checks.update({"hermes.config": "pass", "hermes.readiness": "pass"}); value["readiness_sha256"] = "a" * 64
+            value.update(status="runtime_doctor_verified", uid=1000 if role == "openclaw" else 10000,
+                         health="healthy", watchdog="disarmed", doctor_sha256="f" * 64, checks=checks)
+        elif packet["action"] == "verify":
+            value.update(status="runtime_route_verified", watchdog="disarmed")
+            value["container_probe"] = {"schema": 1, "status": "runtime_container_route_verified", "role": role,
+                "provider": route["provider"], "uid": 1000 if role == "openclaw" else 10000, "config_sha256": "b" * 64,
+                "source_revision": packet["binding"]["source_revision"], "nonce": packet["nonce"]}
+            if role == "hermes": value["container_probe"].update(environment_sha256="e" * 64, native_route=native)
+            self.gateway.observed.add((role, packet["nonce"]))
+        else: require(packet["action"] == "prepare", "invalid_fixture_action")
+        return value
 
     def fixture_start(self):
         if self.state == "new": self.start("before_reboot")

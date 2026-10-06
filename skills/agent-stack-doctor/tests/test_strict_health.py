@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,43 @@ spec.loader.exec_module(doctor)
 
 
 class StrictHealthTest(unittest.TestCase):
+    def test_workspace_subset_still_requires_both_private_application_routes(self):
+        dns = "agent-stack.test.ts.net"
+        good = {"TCP": {"443": {"HTTPS": True}, "8443": {"HTTPS": True}}, "Web": {
+            dns + ":443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:18789"}}},
+            dns + ":8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:9119"}}}}}
+        for serve, passed in ((good, True), ({"TCP": {}, "Web": {}}, False), (good | {"AllowFunnel": {dns + ":443": True}}, False)):
+            def run(command, timeout=30):
+                if command[1] == "compose": return 0, "fixture-container"
+                if command[1] == "inspect": return 0, json.dumps([{"State": {"Running": True, "Health": {"Status": "healthy"}}}])
+                if command[-2:] == ["id", "-u"]: return 0, "1000"
+                if command[:2] == ["tailscale", "status"]: return 0, json.dumps({"Self": {"Online": True, "DNSName": dns}, "Health": []})
+                if command[:3] == ["tailscale", "serve", "status"]: return 0, json.dumps(serve)
+                return 0, "fixture-version"
+            with patch.object(doctor, "run", side_effect=run):
+                report = doctor.remote_report(["workspace"], True, True, "host", ["openclaw", "hermes"])
+            self.assertEqual(doctor.accepted(report, doctor.required_checks(["workspace"], True, True)), passed)
+            self.assertNotIn("openclaw.doctor", {row["name"] for row in report["checks"]})
+
+    def test_route_service_flag_refuses_empty_duplicate_unknown_or_unchecked_routes(self):
+        invalid = [[], ["--check-tailscale", "--route-services", ""], ["--check-tailscale", "--route-services", "openclaw,openclaw"],
+                   ["--check-tailscale", "--route-services", "workspace"], ["--route-services", "openclaw,hermes"]]
+        invalid[0] = ["--check-tailscale", "--route-services", "unknown"]
+        for flags in invalid:
+            with patch.object(sys, "argv", ["doctor", "--remote", "--services", "workspace", *flags]), \
+                 patch.object(doctor, "remote_report") as remote, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                doctor.main()
+            remote.assert_not_called()
+
+    def test_route_service_flag_is_forwarded_without_weakening_required_report_checks(self):
+        report = {"schema": 1, "checks": [{"name": name, "status": "pass"} for name in sorted(doctor.required_checks(["workspace"], True, True))]}
+        with patch.object(sys, "argv", ["doctor", "--json", "--services", "workspace", "--require-claude", "--check-tailscale", "--route-services", "openclaw,hermes"]), \
+             patch.object(doctor.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps(report))) as run, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.main(), 0)
+        command = run.call_args.args[0][-1]
+        self.assertIn("--route-services openclaw,hermes", command)
+
     def report(self):
         return {"schema": 1, "checks": [{"name": name, "status": "pass"} for name in sorted(
             doctor.required_checks(["openclaw", "hermes", "workspace"], True, True)

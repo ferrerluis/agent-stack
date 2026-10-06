@@ -50,7 +50,12 @@ class ModelSession:
         self.spend.activate(1)
         evidence = self.checks.evidence()
         require((self.stage == "before_reboot" and "reboot" not in evidence["checks"]) or
-                (self.stage == "after_reboot" and evidence["checks"].get("reboot") == "pass"), "model_session_boot_changed")
+                (self.stage == "after_reboot" and evidence["checks"].get("reboot") in ("pass", "pending_doctors")), "model_session_boot_changed")
+        if self.stage == "after_reboot" and evidence["checks"].get("reboot") == "pending_doctors":
+            before, after = evidence.get("baseline"), evidence.get("after_reboot")
+            require(evidence["checks"].get("reboot_boot") == "pass" and isinstance(before, dict) and isinstance(after, dict)
+                    and before.get("boot_id") != after.get("boot_id") and all(before.get(k) == after.get(k) for k in
+                    ("checksum", "disk_uuid", "data_volume_id", "dns")), "model_session_boot_changed")
         baseline = evidence.get("after_reboot") if self.stage == "after_reboot" else evidence.get("baseline")
         require(isinstance(baseline, dict) and baseline.get("boot_id") == self.transport.proof["boot_id"]
                 and baseline.get("checksum") == self.transport.proof["checksum"], "model_session_boot_changed")
@@ -62,7 +67,12 @@ class ModelSession:
                  (self.state == "closed" and self.stage == "before_reboot" and stage == "after_reboot")), "model_session_already_invoked")
         evidence = self.checks.evidence(); self.checks.require_container_gate(evidence)
         require(stage not in evidence.get("model_channels", {}), "model_session_already_invoked")
-        require(stage != "after_reboot" or evidence["checks"].get("reboot") == "pass", "model_session_boot_changed")
+        require(stage != "after_reboot" or evidence["checks"].get("reboot") in ("pass", "pending_doctors"), "model_session_boot_changed")
+        if stage == "after_reboot" and evidence["checks"].get("reboot") == "pending_doctors":
+            before, after = evidence.get("baseline"), evidence.get("after_reboot")
+            require(evidence["checks"].get("reboot_boot") == "pass" and isinstance(before, dict) and isinstance(after, dict)
+                    and before["boot_id"] != after["boot_id"] and all(before[k] == after[k] for k in
+                    ("checksum", "disk_uuid", "data_volume_id", "dns")), "model_session_boot_changed")
         # Reopening after reboot shares this same spend object and original
         # policy/holds; it never reserves a new allocation or replays a task.
         self.spend.activate(60)
@@ -257,18 +267,24 @@ class ModelSession:
                     "route": config["route"], "request_id": secrets.token_hex(16)}, 180)
                 identity = {key: ready[key] for key in ("binding", "role", "container_id", "image_ref", "image_id", "config_sha256", "native_route")}
                 if role == "hermes": identity["environment_sha256"] = ready["environment_sha256"]
-                require(isinstance(report, dict) and set(report) == set(identity) | {"schema", "status", "uid", "health", "watchdog", "doctor_sha256"}
+                checks = {"service." + role: "pass", role + ".doctor": "pass"}
+                if role == "hermes": checks.update({"hermes.config": "pass", "hermes.readiness": "pass"})
+                require(isinstance(report, dict) and set(report) == set(identity) | {"schema", "status", "uid", "health", "watchdog", "doctor_sha256", "checks"}
+                        | ({"readiness_sha256"} if role == "hermes" else set())
                         and type(report["schema"]) is int and report["schema"] == 1 and report["status"] == "runtime_doctor_verified"
                         and all(report.get(k) == v for k, v in identity.items()) and type(report["uid"]) is int
                         and report["uid"] == (1000 if role == "openclaw" else 10000) and report["health"] == "healthy"
                         and report["watchdog"] == "disarmed" and isinstance(report["doctor_sha256"], str)
                         and len(report["doctor_sha256"]) == 64 and all(c in "0123456789abcdef" for c in report["doctor_sha256"])
+                        and report["checks"] == checks
+                        and (role != "hermes" or isinstance(report["readiness_sha256"], str) and len(report["readiness_sha256"]) == 64
+                             and all(c in "0123456789abcdef" for c in report["readiness_sha256"]))
                         and requests() == previous, "runtime_doctor_unverified")
                 require(self.checks.probe(config["target"]) == baseline, "model_session_boot_changed")
                 self.active()
             evidence = self.checks.evidence()
             evidence["model_channels"][self.stage]["runtime_doctors"][role] = report
-            evidence["checks"].update({role + ".doctor": "pass", "service." + role: "pass"})
+            evidence["checks"].update(checks)
             private_write(self.checks.path, evidence)
             return copy.deepcopy(report)
         except BaseException:

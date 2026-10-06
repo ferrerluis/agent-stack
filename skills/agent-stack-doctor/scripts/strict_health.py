@@ -122,7 +122,7 @@ def routes_healthy(serve, dns_name, services):
     return isinstance(funnel, dict) and not any(funnel.values())
 
 
-def remote_report(services, require_claude, check_tailscale, tailscale_mode):
+def remote_report(services, require_claude, check_tailscale, tailscale_mode, route_services=None):
     checks = []
 
     def record(name, passed):
@@ -182,7 +182,7 @@ def remote_report(services, require_claude, check_tailscale, tailscale_mode):
                and isinstance(dns_name, str) and bool(dns_name) and not status.get("Health"))
         code, output = run(prefix + ["serve", "status", "--json"]) if prefix else (1, "")
         serve = parse_json(output)
-        record("tailscale.routes", code == 0 and isinstance(dns_name, str) and routes_healthy(serve, dns_name, services))
+        record("tailscale.routes", code == 0 and isinstance(dns_name, str) and routes_healthy(serve, dns_name, services if route_services is None else route_services))
     return {"schema": 1, "checks": checks}
 
 
@@ -196,13 +196,17 @@ def main():
     parser.add_argument("--require-claude", action="store_true")
     parser.add_argument("--check-tailscale", action="store_true")
     parser.add_argument("--tailscale-mode", choices=("auto", "host", "sidecar"), default="auto")
+    parser.add_argument("--route-services", help="also require these services' private HTTPS routes when collecting a service subset")
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
     services = args.services.split(",")
-    if not services or len(set(services)) != len(services) or set(services) - SERVICES or args.timeout <= 0:
+    route_services = args.route_services.split(",") if args.route_services is not None else None
+    if (not services or len(set(services)) != len(services) or set(services) - SERVICES or args.timeout <= 0
+            or route_services is not None and (not args.check_tailscale or len(set(route_services)) != len(route_services)
+                or set(route_services) - {"openclaw", "hermes"} or not route_services)):
         parser.error("select distinct supported services and a positive timeout")
     if args.remote:
-        report = remote_report(services, args.require_claude, args.check_tailscale, args.tailscale_mode)
+        report = remote_report(services, args.require_claude, args.check_tailscale, args.tailscale_mode, route_services)
         code = 0
     else:
         remote_args = ["sudo", "python3", "-", "--remote", "--services", args.services, "--tailscale-mode", args.tailscale_mode]
@@ -210,6 +214,8 @@ def main():
             remote_args.append("--require-claude")
         if args.check_tailscale:
             remote_args.append("--check-tailscale")
+        if args.route_services is not None:
+            remote_args.extend(["--route-services", args.route_services])
         try:
             result = subprocess.run([args.ssh_wrapper, "--", shlex.join(remote_args)], input=Path(__file__).read_text(), capture_output=True, text=True, timeout=args.timeout)
             report = parse_json(result.stdout)

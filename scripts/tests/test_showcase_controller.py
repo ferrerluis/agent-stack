@@ -141,6 +141,8 @@ class RemoteContainerTest(unittest.TestCase):
         self.fixture.session.secret.assert_not_called()
         result = self.checks.container_tests()
         self.assertEqual(result["status"], "pass")
+        self.fixture.models.start("before_reboot")
+        for role in ("openclaw", "hermes"): self.fixture.models.activate_runtime(role)
         self.checks.doctors()
         self.checks.runtime_task("openclaw")
         self.checks.workspace_task("codex")
@@ -268,8 +270,77 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(set(remote["agents"]), {"openclaw", "hermes"})
         self.assertEqual(set(remote["tasks"]), {"claude", "codex"})
         self.assertNotEqual(remote["network"]["before_reboot"]["request_id"], remote["network"]["after_reboot"]["request_id"])
+        steps = [row["name"] for row in cleanup.private_read(value.controller.path)["steps"]]
+        for suffix, doctor in (("", "doctors"), ("_after_reboot", "doctors_after_reboot")):
+            self.assertLess(steps.index("openclaw_activation" + suffix), steps.index(doctor))
+            self.assertLess(steps.index("hermes_activation" + suffix), steps.index(doctor))
+        self.assertLess(steps.index("model_channel_closed"), steps.index("reboot"))
+        self.assertLess(steps.index("doctors_after_reboot"), steps.index("reboot_verified"))
+        self.assertLess(steps.index("reboot_verified"), steps.index("after_reboot"))
+        self.assertEqual(len(ledger["attempts"][0]["model_requests"]), 4)
+        for stage in ("before_reboot", "after_reboot"):
+            proof = remote["doctor_stages"][stage]
+            self.assertEqual(set(proof["checks"].values()), {"pass"})
+            self.assertEqual(proof["boot_id"], remote["model_channels"][stage]["boot_id"])
+            self.assertEqual(set(remote["model_channels"][stage]["runtime_config_restores"]), {"openclaw", "hermes"})
+        self.assertEqual(remote["checks"]["hermes.readiness"], "uncertain")
         with self.assertRaisesRegex(terraform.PolicyError, "showcase_recovery_required"):
             value.controller.run_attempt(value.readiness, quote())
+
+    def test_matching_saved_and_observed_doctor_claims_still_need_native_identity_and_all_checks(self):
+        value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
+        original = cleanup.private_read(value.checks.path)
+        saved = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
+        for stage, receipt in (("before_reboot", "doctor_evidence"), ("after_reboot", "doctor_evidence_after_reboot")):
+            for role in ("openclaw", "hermes"):
+                for change in ({"uid": 0}, {"checks": {role + ".doctor": "pass"}}, {"doctor_sha256": "invalid"},
+                               {"native_route": {"kind": "client_echo"}}):
+                    evidence, observed = copy.deepcopy(original), copy.deepcopy(saved)
+                    doctor = evidence["model_channels"][stage]["runtime_doctors"][role]; doctor.update(change)
+                    proof = evidence["doctor_stages"][stage]
+                    proof["runtime_reports_sha256"][role] = controller.proof_hash(doctor)
+                    observed[receipt] = copy.deepcopy(proof)
+                    with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_changed"):
+                        value.controller.verdict(observed, evidence)
+
+    def test_stale_shutdown_or_reused_boot_probe_cannot_pass_with_green_doctor_history(self):
+        value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
+        original = cleanup.private_read(value.checks.path)
+        observed = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
+        for changed in ("status", "restore", "nonce"):
+            evidence, report = copy.deepcopy(original), copy.deepcopy(observed)
+            if changed == "status": evidence["checks"]["service.hermes"] = "pass"
+            elif changed == "restore": evidence["model_channels"]["after_reboot"]["runtime_config_restores"].pop("hermes")
+            else:
+                route = evidence["model_channels"]["after_reboot"]["runtime_routes"]["hermes"]
+                route["container_probe"]["nonce"] = evidence["model_channels"]["before_reboot"]["runtime_routes"]["hermes"]["container_probe"]["nonce"]
+                report["hermes_activation_after_reboot"] = copy.deepcopy(route)
+                proof = evidence["doctor_stages"]["after_reboot"]
+                proof["runtime_routes_sha256"]["hermes"] = controller.proof_hash(route)
+                report["doctor_evidence_after_reboot"] = copy.deepcopy(proof)
+            with self.assertRaises(terraform.PolicyError): value.controller.verdict(report, evidence)
+
+    def test_native_activation_or_doctor_failure_on_either_boot_restores_and_cleans_without_task_replay(self):
+        for stage in ("before_reboot", "after_reboot"):
+            for action in ("verify", "doctor"):
+                value = self.make(); original = value.models.runtime_lifecycle_command
+                def failed(target, packet, timeout):
+                    reply = original(target, packet, timeout)
+                    if value.models.stage == stage and packet["action"] == action and packet["route"]["role"] == "hermes":
+                        reply["status"] = "unverified"
+                    return reply
+                value.models.runtime_lifecycle_command = failed
+                report = value.controller.run_attempt(value.readiness, quote())
+                self.assertEqual(report["status"], "fail"); self.assertEqual(report["cleanup"], "verified")
+                self.assertEqual(set(report["cells"].values()), {"unverified"})
+                self.assertEqual(value.models.state, "closed")
+                count = len(value.controller.reservation().get("model_requests", []))
+                self.assertEqual(count, 0 if stage == "before_reboot" else 4)
+                evidence = cleanup.private_read(value.checks.path)
+                self.assertEqual(set(evidence["model_channels"][stage]["runtime_config_restores"]), {"openclaw", "hermes"})
+                before = len(value.calls)
+                self.assertEqual(value.controller.recover()["status"], "fail")
+                self.assertEqual(len(value.calls), before)
 
     def test_first_owned_vm_container_path_precedes_doctors_and_model_tasks(self):
         value = self.make()
@@ -290,7 +361,7 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         flow = cleanup.private_read(value.controller.path)
         steps = [row["name"] for row in flow["steps"]]
-        self.assertEqual(steps[:5], ["apply", "bootstrap", "containers", "model_channel", "doctors"])
+        self.assertEqual(steps[:7], ["apply", "bootstrap", "containers", "model_channel", "openclaw_activation", "hermes_activation", "doctors"])
         self.assertLess(steps.index("containers"), steps.index("openclaw"))
         self.assertEqual(value.attempt.record()["container_tests_gate"], "deferred_owned_vm")
         self.assertEqual(cleanup.private_read(value.checks.path)["checks"]["container_tests"], "pass")

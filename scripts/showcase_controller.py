@@ -23,7 +23,7 @@ from showcase_remote import RemoteChecks
 import showcase_task_evidence as task_evidence
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
-SOURCES = tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
+SOURCES = ("modules/common/runtime/hermes_health.py",) + tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
     "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
@@ -87,15 +87,20 @@ class RunController:
         evidence = self.remote.evidence() if evidence is None else evidence
         require(evidence.get("source_revision") == self.attempt.prepared["source_revision"], "acceptance_source_changed")
         required = self.remote.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
+        runtime_required = self.remote.doctor_module().required_checks(["openclaw", "hermes"], False, False)
         checks = evidence["checks"]
-        require(all(checks.get(name) == "pass" for name in required | {"launch_ssh", "reboot", "tailscale.acceptance",
+        require(all(checks.get(name) == "pass" for name in (required - runtime_required) | {"launch_ssh", "reboot", "reboot_boot", "tailscale.acceptance",
                 "openclaw.agent_turn", "hermes.agent_turn", "workspace.codex.execution", "workspace.claude.execution"}), "acceptance_incomplete")
+        # Verified close restores files while stopped. Historical diagnostics
+        # prove the tested boots; current runtime service status must be uncertain.
+        require(all(checks.get(name) == "uncertain" for name in runtime_required), "runtime_shutdown_proof_changed")
         require(observed["apply"] == {"deployment": "applied", "acceptance": "pending", "live_matrix": "not_tested"}
-                and observed["doctors"] == {name: "pass" for name in required}, "acceptance_incomplete")
+                and all(observed[name] == {name: "pass" for name in required} for name in ("doctors", "doctors_after_reboot")), "acceptance_incomplete")
         before, after = evidence.get("baseline"), evidence.get("after_reboot")
         require(isinstance(before, dict) and isinstance(after, dict) and before["boot_id"] != after["boot_id"]
                 and all(before[key] == after[key] for key in ("disk_uuid", "data_volume_id", "checksum", "dns")), "persistence_proof_required")
-        require(observed["bootstrap"] == before and observed["reboot"] == {"reboot": "pass", "workspace_files": "preserved", "doctors": "pass"},
+        require(observed["bootstrap"] == before and observed["reboot"] == {"reboot": "pass", "workspace_files": "preserved", "doctors": "pending"}
+                and observed["reboot_verified"] == {"reboot": "pass", "workspace_files": "preserved", "doctors": "pass"},
                 "persistence_proof_required")
         for runtime in ("openclaw", "hermes"):
             row = evidence.get("agents", {}).get(runtime, {})
@@ -118,6 +123,65 @@ class RunController:
             require(len(rows) == 1 and "model_policy" in rows[0], "model_task_receipt_unverified")
             return rows[0]
         model_account = self.ledger.operate(account)
+        nonces = []
+        for stage, baseline, suffix, doctor_name, receipt_name in (
+                ("before_reboot", before, "", "doctors", "doctor_evidence"),
+                ("after_reboot", after, "_after_reboot", "doctors_after_reboot", "doctor_evidence_after_reboot")):
+            channel = evidence.get("model_channels", {}).get(stage, {})
+            binding = {"run_id": self.run.name, "source_revision": evidence["source_revision"],
+                       "boot_id": baseline["boot_id"], "checksum": baseline["checksum"]}
+            stage_proof = evidence.get("doctor_stages", {}).get(stage, {})
+            require(stage_proof == observed[receipt_name] and set(stage_proof) == {"schema", "status", "run_id", "source_revision",
+                    "boot_id", "checksum", "checks", "runtime_reports_sha256", "runtime_routes_sha256"}
+                    and type(stage_proof.get("schema")) is int and stage_proof["schema"] == 1 and stage_proof["status"] == "verified"
+                    and all(stage_proof.get(k) == v for k, v in binding.items()) and stage_proof["checks"] == observed[doctor_name]
+                    and isinstance(stage_proof["runtime_reports_sha256"], dict) and isinstance(stage_proof["runtime_routes_sha256"], dict)
+                    and set(stage_proof["runtime_reports_sha256"]) == set(stage_proof["runtime_routes_sha256"]) == {"openclaw", "hermes"}
+                    and set(channel.get("runtime_config_restores", {})) == {"openclaw", "hermes"}, "runtime_doctor_proof_changed")
+            for role in ("openclaw", "hermes"):
+                route = channel.get("runtime_routes", {}).get(role, {})
+                doctor = channel.get("runtime_doctors", {}).get(role, {})
+                restored = channel["runtime_config_restores"][role]
+                role_required = self.remote.doctor_module().required_checks([role])
+                image = ("ghcr.io/openclaw/openclaw@" + self.config["pins"]["openclaw_digest"] if role == "openclaw" else self.config["pins"]["hermes_image"])
+                require(route == observed[role + "_activation" + suffix] and route.get("binding") == binding
+                        and type(route.get("schema")) is int and route["schema"] == 1 and route.get("status") == "runtime_route_verified"
+                        and route.get("role") == role and route.get("watchdog") == "disarmed" and route.get("image_ref") == image
+                        and isinstance(route.get("container_id"), str) and re.fullmatch(r"[a-f0-9]{64}", route["container_id"])
+                        and isinstance(route.get("image_id"), str) and re.fullmatch(r"sha256:[a-f0-9]{64}", route["image_id"])
+                        and stage_proof["runtime_routes_sha256"][role] == proof_hash(route)
+                        and stage_proof["runtime_reports_sha256"][role] == proof_hash(doctor), "runtime_doctor_proof_changed")
+                identity = {k: route.get(k) for k in ("binding", "role", "container_id", "image_ref", "image_id", "config_sha256", "native_route")}
+                if role == "hermes": identity["environment_sha256"] = route.get("environment_sha256")
+                require(set(doctor) == set(identity) | {"schema", "status", "uid", "health", "watchdog", "doctor_sha256", "checks"}
+                        | ({"readiness_sha256"} if role == "hermes" else set()) and all(doctor.get(k) == v for k, v in identity.items())
+                        and type(doctor.get("schema")) is int and doctor["schema"] == 1 and doctor.get("status") == "runtime_doctor_verified"
+                        and type(doctor.get("uid")) is int and doctor["uid"] == (1000 if role == "openclaw" else 10000)
+                        and doctor.get("health") == "healthy" and doctor.get("watchdog") == "disarmed"
+                        and doctor.get("checks") == {name: "pass" for name in role_required}, "runtime_doctor_proof_changed")
+                for key in ("config_sha256", "doctor_sha256") + (("environment_sha256", "readiness_sha256") if role == "hermes" else ()):
+                    require(isinstance(doctor.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", doctor[key]), "runtime_doctor_proof_changed")
+                terms = model_account["model_policy"]["roles"][role]
+                public_route = {"role": role, "provider": terms["provider"], "model": terms["model"], "credential": "0" * 64,
+                    "base_url": "http://" + channel["bridge_ipv4"] + ":" + str(channel["bridge_port"]) + "/" + role,
+                    "bridge_ipv4": channel["bridge_ipv4"], "context_tokens": terms["context_tokens_upper_bound"], "output_tokens": terms["output_tokens_upper_bound"]}
+                from showcase_runtime_probe import native_proof_valid
+                try: native_proof_valid(public_route, doctor["native_route"])
+                except (ValueError, TypeError, KeyError): raise PolicyError("runtime_doctor_proof_changed") from None
+                container = route.get("container_probe", {})
+                require(container.get("status") == "runtime_container_route_verified" and type(container.get("schema")) is int and container["schema"] == 1
+                        and container.get("role") == role and container.get("provider") == terms["provider"] and type(container.get("uid")) is int
+                        and container["uid"] == doctor["uid"] and container.get("source_revision") == evidence["source_revision"]
+                        and container.get("config_sha256") == doctor["config_sha256"] and isinstance(container.get("nonce"), str)
+                        and re.fullmatch(r"[a-f0-9]{64}", container["nonce"])
+                        and (role != "hermes" or container.get("environment_sha256") == doctor["environment_sha256"]
+                             and container.get("native_route") == doctor["native_route"]), "runtime_doctor_proof_changed")
+                nonces.append(container["nonce"])
+                require(set(restored) == {"schema", "status", "role", "binding", "original_sha256"}
+                        and type(restored.get("schema")) is int and restored["schema"] == 1 and restored.get("role") == role
+                        and restored.get("binding") == binding and restored.get("status") == "runtime_config_restored"
+                        and isinstance(restored.get("original_sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", restored["original_sha256"]), "runtime_shutdown_proof_changed")
+        require(len(set(nonces)) == 4, "runtime_doctor_proof_changed")
         for role in ("openclaw", "hermes", "codex", "claude"):
             receipt = observed[role].get("gateway_receipt")
             expected = [hold for hold in model_account["model_requests"] if hold["role"] == role]
@@ -212,15 +276,23 @@ class RunController:
             if gate == "deferred_owned_vm":
                 observed["containers"] = step("containers", self.remote.container_tests)
             observed["model_channel"] = step("model_channel", lambda: self.models.start("before_reboot"))
+            for runtime in ("openclaw", "hermes"):
+                observed[runtime + "_activation"] = step(runtime + "_activation", lambda runtime=runtime: self.models.activate_runtime(runtime))
             observed["doctors"] = step("doctors", self.remote.doctors)
+            observed["doctor_evidence"] = step("doctor_evidence", self.remote.doctor_receipt)
             for runtime in ("openclaw", "hermes"):
                 observed[runtime] = step(runtime, lambda runtime=runtime: self.remote.runtime_task(runtime))
             for cli in ("claude", "codex"):
                 observed[cli] = step(cli, lambda cli=cli: self.remote.workspace_task(cli))
             observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
             observed["model_channel_closed"] = step("model_channel_closed", self.models.close)
-            observed["reboot"] = step("reboot", self.remote.reboot)
+            observed["reboot"] = step("reboot", lambda: self.remote.reboot(defer_doctors=True))
             observed["model_channel_after_reboot"] = step("model_channel_after_reboot", lambda: self.models.start("after_reboot"))
+            for runtime in ("openclaw", "hermes"):
+                observed[runtime + "_activation_after_reboot"] = step(runtime + "_activation_after_reboot", lambda runtime=runtime: self.models.activate_runtime(runtime))
+            observed["doctors_after_reboot"] = step("doctors_after_reboot", self.remote.doctors)
+            observed["doctor_evidence_after_reboot"] = step("doctor_evidence_after_reboot", self.remote.doctor_receipt)
+            observed["reboot_verified"] = step("reboot_verified", self.remote.complete_reboot)
             observed["after_reboot"] = step("after_reboot", lambda: self.remote.network_checks("after_reboot"))
             observed["model_channel_after_reboot_closed"] = step("model_channel_after_reboot_closed", self.models.close)
             evidence = self.remote.evidence()

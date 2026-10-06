@@ -87,23 +87,68 @@ class NativeProbeTest(unittest.TestCase):
         with self.assertRaises(ValueError): probe.native_hermes(config, route, getter)
         getter.assert_not_called()
 
-    def call_hermes(self, action="transport", mutation=None, uid=10000):
+    def call_hermes(self, action="transport", mutation=None, uid=10000, readiness=None, status=200, factory=None):
         route = route_fixtures.route("hermes"); raw = routes.encoded(routes.compile_config({}, route))
-        env_raw = ("OPENAI_BASE_URL=" + route["base_url"] + "/v1\n").encode()
+        env_raw = ("OPENAI_BASE_URL=" + route["base_url"] + "/v1\nAPI_SERVER_KEY=fixture-app-readiness-key\n").encode()
         packet = {"action": action, "route": route, "config_sha256": hashlib.sha256(raw).hexdigest(),
                   "environment_sha256": hashlib.sha256(env_raw).hexdigest(),
                   "source_revision": "a" * 40, "nonce": "f" * 64 if action == "transport" else ""}
         if mutation: packet.update(mutation)
         reply = json.dumps({"schema": 1, "role": "hermes", "nonce": packet["nonce"], "source_revision": "a" * 40}, separators=(",", ":")).encode()
-        response = Mock(status=200); response.getheader.return_value = "application/json"; response.read.return_value = reply
+        if action == "readiness":
+            payload = {"status": "ok", "readiness": {"checks": {name: {"status": "ok"} for name in
+                ("state_db", "session_store", "config", "model", "disk", "gateway", "background_queues")}}}
+            reply = json.dumps(payload if readiness is None else readiness).encode() if not isinstance(readiness, bytes) else readiness
+        response = Mock(status=status); response.getheader.return_value = "application/json"; response.read.return_value = reply
         connection = Mock(); connection.getresponse.return_value = response
+        health = {"__name__": "fixture_checked_health"}
+        exec(compile((ROOT / "modules/common/runtime/hermes_health.py").read_bytes(), "checked-hermes-health", "exec"), health)
         info = SimpleNamespace(st_uid=10000, st_gid=10000, st_nlink=1, st_size=len(raw), st_mode=0o100600)
         with patch.object(probe.os, "geteuid", return_value=uid), patch.object(probe.Path, "is_symlink", return_value=False), \
              patch.object(probe.Path, "stat", return_value=info), patch.object(probe.Path, "is_file", return_value=True), \
              patch.object(probe.Path, "read_bytes", autospec=True, side_effect=lambda path: env_raw if path.name == ".env" else raw), \
-             patch.object(probe, "HTTPConnection", return_value=connection) as http:
+             patch.object(probe, "HEALTH_MODULE", SimpleNamespace(**health)), \
+             patch.object(probe, "HTTPConnection", side_effect=factory or (lambda *_, **__: connection)) as http:
             result = probe.hermes_probe(packet, Mock(return_value=resolver_result(route)))
         return result, connection, http
+
+    def test_readiness_uses_only_retained_app_key_and_fixed_bounded_local_endpoint(self):
+        result, connection, http = self.call_hermes("readiness")
+        self.assertEqual(result["status"], "runtime_readiness_verified")
+        http.assert_called_once_with("127.0.0.1", 8642, timeout=5)
+        connection.request.assert_called_once_with("GET", "/health/detailed", headers={"Authorization": "Bearer fixture-app-readiness-key"})
+        connection.getresponse.return_value.read.assert_called_once_with(65537)
+        connection.close.assert_called_once()
+        self.assertNotIn("fixture-app-readiness-key", json.dumps(result)); self.assertNotIn(CAPABILITY, json.dumps(result))
+
+    def test_readiness_rejects_redirect_auth_failure_missing_failed_or_ambiguous_checks(self):
+        for status in (302, 401, 403, 500):
+            with self.assertRaises(ValueError): self.call_hermes("readiness", status=status)
+        for payload in ({"status": "ok"}, {"status": "ok", "readiness": {"checks": {"model": {"status": "ok"}}}},
+                        {"status": "fail"}, b'{"status":"ok","status":"ok"}', b'{"status":NaN}', b'x' * 65537):
+            with self.assertRaises(ValueError): self.call_hermes("readiness", readiness=payload)
+
+    def test_actual_loopback_readiness_accepts_authenticated_health_without_generation(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        requests = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append((self.path, self.headers.get("Authorization")))
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(json.dumps({"status": "ok", "readiness": {"checks": {name: {"status": "ok"} for name in
+                    ("state_db", "session_store", "config", "model", "disk", "gateway", "background_queues")}}}).encode())
+            def log_message(self, *_): pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        self.addCleanup(server.server_close); self.addCleanup(lambda: thread.join(2)); self.addCleanup(server.shutdown)
+        original = probe.HTTPConnection
+        def factory(host, port, timeout):
+            self.assertEqual((host, port, timeout), ("127.0.0.1", 8642, 5))
+            return original(host, server.server_address[1], timeout=timeout)
+        result, _, _ = self.call_hermes("readiness", factory=factory)
+        self.assertEqual(result["status"], "runtime_readiness_verified")
+        self.assertEqual(requests, [("/health/detailed", "Bearer fixture-app-readiness-key")])
 
     def test_hermes_native_only_probe_never_connects_and_transport_uses_one_exact_nonce_without_proxy(self):
         result, connection, http = self.call_hermes("native")
@@ -189,11 +234,12 @@ class LifecycleTest(unittest.TestCase):
             packet = json.loads(input)
             self.assertEqual(packet["route"], self.route)
             self.assertIn("env", args); self.assertIn("-i", args)
-            value = {"schema": 1, "status": "runtime_native_route_verified" if packet["action"] == "native" else "runtime_container_route_verified",
+            value = {"schema": 1, "status": {"native": "runtime_native_route_verified", "transport": "runtime_container_route_verified", "readiness": "runtime_readiness_verified"}[packet["action"]],
                 "role": self.role, "provider": self.route["provider"], "uid": routes.OWNERS[self.role],
                 "config_sha256": packet["config_sha256"], "source_revision": packet["source_revision"], "nonce": packet["nonce"]}
             if self.role == "hermes": value["native_route"] = native(self.route)
             if self.role == "hermes": value["environment_sha256"] = packet["environment_sha256"]
+            if packet["action"] == "readiness": value["readiness_sha256"] = "a" * 64
             if self.probe_mutation: self.probe_mutation(value)
             return json.dumps(value).encode()
         raise AssertionError("unexpected fixture command")
@@ -340,7 +386,9 @@ class SessionReloadTest(unittest.TestCase):
                 self.assertEqual(timeout, 180); self.assertIn(role, fixture.models.gateway.diagnostic_roles)
                 self.assertNotIn(role, fixture.models.gateway.started_roles)
                 value.update(status="runtime_doctor_verified", uid=1000 if role == "openclaw" else 10000,
-                    health="healthy", watchdog="disarmed", doctor_sha256="d" * 64)
+                    health="healthy", watchdog="disarmed", doctor_sha256="d" * 64,
+                    checks={"service." + role: "pass", role + ".doctor": "pass"})
+                if role == "hermes": value["checks"].update({"hermes.config": "pass", "hermes.readiness": "pass"}); value["readiness_sha256"] = "a" * 64
                 if fixture.probe_mutation: fixture.probe_mutation(value)
             else:
                 self.assertEqual(timeout, 30)
@@ -358,7 +406,9 @@ class SessionReloadTest(unittest.TestCase):
 
     def test_both_native_reload_routes_require_independent_probe_and_cannot_authorize_runtime_task_yet(self):
         for role in ("openclaw", "hermes"):
-            fixture = self.make(); fixture.checks.doctors()
+            fixture = self.make()
+            evidence = cleanup.private_read(fixture.checks.path); evidence["checks"][role + ".doctor"] = "pass"
+            cleanup.private_write(fixture.checks.path, evidence)
             report = fixture.models.activate_runtime(role)
             self.assertEqual(report["status"], "runtime_route_verified")
             self.assertEqual(cleanup.private_read(fixture.checks.path)["checks"][role + ".doctor"], "uncertain")
