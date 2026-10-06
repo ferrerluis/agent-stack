@@ -1,4 +1,5 @@
 """Only test fixtures: cloud SSH/Docker/model replies are replaced, ledger is real."""
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -17,10 +18,21 @@ class FixtureGateway:
         self.spend, self.reader = spend, reader
         self.alive, self.observed, self.sealed = False, set(), set()
         self.started_roles = None
+        self.diagnostic_roles = set()
     def gate_task_starts(self): self.started_roles = set()
     def authorize_role(self, role):
         require(self.alive and role not in self.started_roles, "model_role_already_used")
+        require(role not in self.diagnostic_roles, "model_diagnostic_in_progress")
         self.started_roles.add(role)
+    @contextmanager
+    def diagnostic_window(self, role):
+        require(self.alive and role not in self.started_roles and role not in self.diagnostic_roles, "model_diagnostic_refused")
+        self.diagnostic_roles.add(role)
+        try: yield
+        except BaseException:
+            self.seal_role(role)
+            raise
+        finally: self.diagnostic_roles.discard(role)
     def __enter__(self): self.alive = True; return self
     def healthy(self): return self.alive
     def client(self, role):

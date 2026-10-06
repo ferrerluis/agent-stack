@@ -59,7 +59,7 @@ def native_hermes(config, route, resolver):
     need(config.get("providers") == {"as7-budget": {"api": base, "api_key": route["credential"],
          "transport": "openai_chat" if route["provider"] == "openai" else "anthropic_messages",
          "discover_models": False, "models": [route["model"]]}} and config.get("fallback_providers") == []
-         and not any(config.get(k) for k in ("custom_providers", "auxiliary", "model_routes", "model_aliases")))
+         and not any(config.get(k) for k in ("custom_providers", "auxiliary", "model_routes", "model_aliases", "secrets")))
     actual = resolver(requested="as7-budget", target_model=route["model"],
                       explicit_api_key=route["credential"], explicit_base_url=base)
     need(isinstance(actual, dict) and actual.get("provider") == "custom" and actual.get("model") == route["model"]
@@ -116,21 +116,30 @@ def native_proof_valid(route, report):
 
 
 def hermes_probe(packet, resolver=None):
-    need(isinstance(packet, dict) and set(packet) == {"action", "route", "config_sha256", "source_revision", "nonce"})
+    need(isinstance(packet, dict) and set(packet) == {"action", "route", "config_sha256", "environment_sha256", "source_revision", "nonce"})
     port = route_valid(packet["route"]); route = packet["route"]
     need(route["role"] == "hermes" and os.geteuid() == 10000 and packet["action"] in ("native", "transport")
          and isinstance(packet["config_sha256"], str) and re.fullmatch(r"[a-f0-9]{64}", packet["config_sha256"])
          and isinstance(packet["source_revision"], str) and re.fullmatch(r"[a-f0-9]{40}", packet["source_revision"])
+         and isinstance(packet["environment_sha256"], str) and re.fullmatch(r"[a-f0-9]{64}", packet["environment_sha256"])
          and isinstance(packet["nonce"], str) and (packet["nonce"] == "" if packet["action"] == "native" else re.fullmatch(r"[a-f0-9]{64}", packet["nonce"])))
     path = Path("/opt/data/config.yaml")
     need(not any(parent.is_symlink() for parent in (path, *path.parents)))
     info = path.stat(); need(path.is_file() and info.st_uid == 10000 and info.st_gid == 10000 and info.st_nlink == 1
                             and info.st_mode & 0o777 == 0o600 and 0 < info.st_size <= 262144)
     raw = path.read_bytes(); need(hashlib.sha256(raw).hexdigest() == packet["config_sha256"])
+    config = decoded(raw, 262144); need(not config.get("secrets"))
+    env_path = Path("/opt/data/.env")
+    need(not any(parent.is_symlink() for parent in (env_path, *env_path.parents)))
+    env_info = env_path.stat(); need(env_path.is_file() and env_info.st_uid == 10000 and env_info.st_gid == 10000
+        and env_info.st_nlink == 1 and env_info.st_mode & 0o777 == 0o600 and 0 < env_info.st_size <= 262144)
+    env_raw = env_path.read_bytes(); need(hashlib.sha256(env_raw).hexdigest() == packet["environment_sha256"])
+    from showcase_runtime_environment import selected_environment
+    selected_environment(env_raw, route)
     if resolver is None:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         resolver = resolve_runtime_provider
-    native = native_hermes(decoded(raw, 262144), route, resolver)
+    native = native_hermes(config, route, resolver)
     if packet["action"] == "transport":
         connection = HTTPConnection(route["bridge_ipv4"], port, timeout=3)
         try:
@@ -143,8 +152,10 @@ def hermes_probe(packet, resolver=None):
                  "source_revision": packet["source_revision"]}, separators=(",", ":")).encode())
         finally: connection.close()
     need(hashlib.sha256(path.read_bytes()).hexdigest() == packet["config_sha256"])
+    need(hashlib.sha256(env_path.read_bytes()).hexdigest() == packet["environment_sha256"])
     return {"schema": 1, "status": "runtime_native_route_verified" if packet["action"] == "native" else "runtime_container_route_verified",
             "role": "hermes", "provider": route["provider"], "uid": 10000, "config_sha256": packet["config_sha256"],
+            "environment_sha256": packet["environment_sha256"],
             "source_revision": packet["source_revision"], "nonce": packet["nonce"], "native_route": native}
 
 

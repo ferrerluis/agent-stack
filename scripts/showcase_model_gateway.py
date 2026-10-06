@@ -7,6 +7,7 @@ its selected route; upstream keys remain in this controller's memory. Every
 upstream request uses the original durable model-spending ledger. Native pinned
 runtime/tool compatibility and the full cost/launch gates remain unverified.
 """
+from contextlib import contextmanager
 import hmac
 from http.client import LineTooLong
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -209,6 +210,7 @@ class BudgetGateway:
         self.server = self.thread = self.watchdog = None
         self.stop_watchdog = threading.Event()
         self.started_roles = None
+        self.diagnostic_roles = set()
 
     def gate_task_starts(self):
         """The model session calls this before listening; it cannot be undone."""
@@ -219,6 +221,7 @@ class BudgetGateway:
     def authorize_role(self, role):
         with self.condition:
             require(self.healthy() and role in ROLES and role in self.tokens, "model_gateway_closed")
+            require(role not in self.diagnostic_roles, "model_diagnostic_in_progress")
             self.spend.activate(self.timeout)
             if self.started_roles is not None:
                 require(role not in self.started_roles, "model_role_already_used")
@@ -226,7 +229,20 @@ class BudgetGateway:
 
     def dispatch_allowed(self, role):
         with self.condition:
-            return self.healthy() and role in self.tokens and (self.started_roles is None or role in self.started_roles)
+            return self.healthy() and role in self.tokens and role not in self.diagnostic_roles and (self.started_roles is None or role in self.started_roles)
+
+    @contextmanager
+    def diagnostic_window(self, role):
+        with self.condition:
+            require(self.healthy() and self.started_roles is not None and role in self.tokens and role in ("openclaw", "hermes")
+                    and role not in self.started_roles and role not in self.diagnostic_roles, "model_diagnostic_refused")
+            self.diagnostic_roles.add(role)
+        try: yield
+        except BaseException:
+            self.seal_role(role)
+            raise
+        finally:
+            with self.condition: self.diagnostic_roles.discard(role)
 
     def __enter__(self):
         with self.condition:

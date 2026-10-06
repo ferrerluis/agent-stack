@@ -180,7 +180,7 @@ class ModelSession:
                    "boot_id": baseline["boot_id"], "checksum": baseline["checksum"]}
         image = ("ghcr.io/openclaw/openclaw@" + self.checks.config["pins"]["openclaw_digest"] if role == "openclaw"
                  else self.checks.config["pins"]["hermes_image"])
-        self.runtime_configs[role] = {"target": copy.deepcopy(target), "binding": binding, "lifecycle": True}
+        self.runtime_configs[role] = {"target": copy.deepcopy(target), "binding": binding, "lifecycle": True, "route": copy.deepcopy(route)}
         for key in ("service." + role, role + ".doctor", role + ".config", role + ".readiness"):
             if key in evidence["checks"]: evidence["checks"][key] = "uncertain"
         evidence["model_channels"][self.stage].setdefault("runtime_routes", {})[role] = {"status": "started"}
@@ -189,6 +189,7 @@ class ModelSession:
             ready = self.runtime_lifecycle_command(target, {"action": "prepare", "binding": binding, "route": route,
                 "image_ref": image, "request_id": secrets.token_hex(16)}, 180)
             fields = {"schema", "status", "binding", "role", "container_id", "image_ref", "image_id", "config_sha256", "native_route", "watchdog"}
+            if role == "hermes": fields.add("environment_sha256")
             require(set(ready) == fields and type(ready["schema"]) is int and ready["schema"] == 1
                     and ready["status"] == "runtime_reload_verified" and ready["binding"] == binding
                     and ready["role"] == role and ready["image_ref"] == image and ready["watchdog"] == "armed"
@@ -198,6 +199,8 @@ class ModelSession:
                     and len(ready["image_id"]) == 71 and all(c in "0123456789abcdef" for c in ready["image_id"][7:])
                     and isinstance(ready["config_sha256"], str) and len(ready["config_sha256"]) == 64
                     and all(c in "0123456789abcdef" for c in ready["config_sha256"]), "runtime_reload_unverified")
+            require(role != "hermes" or isinstance(ready["environment_sha256"], str) and len(ready["environment_sha256"]) == 64
+                    and all(c in "0123456789abcdef" for c in ready["environment_sha256"]), "runtime_reload_unverified")
             native_proof_valid(route, ready["native_route"])
             self.active()
             nonce = self.gateway.new_probe(role, kind="runtime")["nonce"]
@@ -208,6 +211,7 @@ class ModelSession:
             expected = {"schema": 1, "status": "runtime_container_route_verified", "role": role, "provider": route["provider"],
                 "uid": 1000 if role == "openclaw" else 10000, "config_sha256": ready["config_sha256"],
                 "source_revision": self.revision, "nonce": nonce}
+            if role == "hermes": expected["environment_sha256"] = ready["environment_sha256"]
             require(isinstance(container, dict) and type(container.get("schema")) is int and type(container.get("uid")) is int
                     and all(container.get(k) == v for k, v in expected.items())
                     and set(container) == (set(expected) | ({"native_route"} if role == "hermes" else set()))
@@ -227,6 +231,56 @@ class ModelSession:
                 private_write(self.checks.path, evidence)
             finally: self.close()
             raise PolicyError("runtime_route_unverified") from None
+
+    def runtime_doctor(self, role):
+        """Native diagnostic under denied generation; no task/hold is granted."""
+        evidence = self.active(); require(role in ("openclaw", "hermes"), "invalid_runtime")
+        config = self.runtime_configs.get(role)
+        require(isinstance(config, dict) and config.get("lifecycle") is True, "runtime_route_required")
+        row = evidence["model_channels"][self.stage]
+        require(role not in row.get("runtime_doctors", {}), "runtime_doctor_already_invoked")
+        ready = row.get("runtime_routes", {}).get(role)
+        require(isinstance(ready, dict) and ready.get("status") == "runtime_route_verified"
+                and ready.get("binding") == config["binding"], "runtime_route_required")
+        from showcase_attempt import remaining_timeout
+        require(remaining_timeout(self.checks.ensure()[1], 220, now=self.checks.now()) == 220, "runtime_doctor_time_required")
+        baseline = evidence["baseline"] if self.stage == "before_reboot" else evidence["after_reboot"]
+        require(self.checks.probe(config["target"]) == baseline, "model_session_boot_changed")
+        def requests():
+            return self.checks.ledger.operate(lambda state: copy.deepcopy(self.spend.account(state)["model_requests"]))
+        previous = requests()
+        row.setdefault("runtime_doctors", {})[role] = {"status": "started"}
+        evidence["checks"][role + ".doctor"] = "started"; private_write(self.checks.path, evidence)
+        try:
+            with self.gateway.diagnostic_window(role):
+                report = self.runtime_lifecycle_command(config["target"], {"action": "doctor", "binding": config["binding"],
+                    "route": config["route"], "request_id": secrets.token_hex(16)}, 180)
+                identity = {key: ready[key] for key in ("binding", "role", "container_id", "image_ref", "image_id", "config_sha256", "native_route")}
+                if role == "hermes": identity["environment_sha256"] = ready["environment_sha256"]
+                require(isinstance(report, dict) and set(report) == set(identity) | {"schema", "status", "uid", "health", "watchdog", "doctor_sha256"}
+                        and type(report["schema"]) is int and report["schema"] == 1 and report["status"] == "runtime_doctor_verified"
+                        and all(report.get(k) == v for k, v in identity.items()) and type(report["uid"]) is int
+                        and report["uid"] == (1000 if role == "openclaw" else 10000) and report["health"] == "healthy"
+                        and report["watchdog"] == "disarmed" and isinstance(report["doctor_sha256"], str)
+                        and len(report["doctor_sha256"]) == 64 and all(c in "0123456789abcdef" for c in report["doctor_sha256"])
+                        and requests() == previous, "runtime_doctor_unverified")
+                require(self.checks.probe(config["target"]) == baseline, "model_session_boot_changed")
+                self.active()
+            evidence = self.checks.evidence()
+            evidence["model_channels"][self.stage]["runtime_doctors"][role] = report
+            evidence["checks"].update({role + ".doctor": "pass", "service." + role: "pass"})
+            private_write(self.checks.path, evidence)
+            return copy.deepcopy(report)
+        except BaseException:
+            from showcase_cleanup import private_read
+            try:
+                evidence = private_read(self.checks.path)
+                require(evidence.get("run_id") == self.checks.run.name and evidence.get("source_revision") == self.revision, "model_session_scope_changed")
+                evidence["model_channels"][self.stage]["runtime_doctors"][role]["status"] = "uncertain"
+                evidence["checks"].update({role + ".doctor": "uncertain", "service." + role: "uncertain"})
+                private_write(self.checks.path, evidence)
+            finally: self.close()
+            raise PolicyError("runtime_doctor_unverified") from None
 
     def stage_runtime_config(self, role):
         """Stage a stopped runtime's file; does not restart it or authorize a task."""

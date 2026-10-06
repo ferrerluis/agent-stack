@@ -103,7 +103,7 @@ def compile_config(original, route):
     else:
         # A dedicated name avoids the builtin Anthropic route and its env/OAuth
         # resolution. Native resolution must still be independently measured.
-        need(not result.get("model_routes") and not result.get("model_aliases"))
+        need(not result.get("model_routes") and not result.get("model_aliases") and not result.get("secrets"))
         result["model"] = {"provider": "as7-budget", "default": model,
             "base_url": base + ("/v1" if provider == "openai" else ""), "api_key": route["credential"],
             "api_mode": "chat_completions" if provider == "openai" else "anthropic_messages"}
@@ -187,7 +187,8 @@ class ConfigurationTransaction:
         snapshot = {"schema": 1, "role": role, "binding": binding, "original": base64.b64encode(before).decode(),
             "original_sha256": sha(before), "installed_sha256": sha(after), "uid": info.st_uid, "gid": info.st_gid,
             "mode": stat.S_IMODE(info.st_mode)}
-        atomic_write(record, encoded(snapshot), 0, 0, 0o600, exclusive=True)
+        packet = encoded(snapshot); need(len(packet) <= LIMIT)
+        atomic_write(record, packet, 0, 0, 0o600, exclusive=True)
         # A crash here retains restoration authority, whether the original or
         # installed file is observed. No operation silently repeats install.
         need(checked_path(target, owner=OWNERS[role]) == info and target.read_bytes() == before)

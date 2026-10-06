@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import showcase_runtime_routes as routes
 import showcase_runtime_probe as probe
+import showcase_runtime_environment as environment
 import showcase_runtime_lifecycle as lifecycle
 import showcase_model_session as session
 import showcase_cleanup as cleanup
@@ -26,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[2]
 CAPABILITY = route_fixtures.CAPABILITY
 CONTAINER = "c" * 64
 IMAGE_ID = "sha256:" + "d" * 64
+HERMES_DOCTOR = ("◆ Python Environment\n✓ valid\n◆ Required Packages\n✓ valid\n◆ Configuration Files\n✓ valid\n"
+    "◆ Directory Structure\n✓ valid\n◆ API Connectivity\n✓ selected route\nAll checks passed!\n").encode()
 
 
 def image(role):
@@ -86,7 +89,9 @@ class NativeProbeTest(unittest.TestCase):
 
     def call_hermes(self, action="transport", mutation=None, uid=10000):
         route = route_fixtures.route("hermes"); raw = routes.encoded(routes.compile_config({}, route))
+        env_raw = ("OPENAI_BASE_URL=" + route["base_url"] + "/v1\n").encode()
         packet = {"action": action, "route": route, "config_sha256": hashlib.sha256(raw).hexdigest(),
+                  "environment_sha256": hashlib.sha256(env_raw).hexdigest(),
                   "source_revision": "a" * 40, "nonce": "f" * 64 if action == "transport" else ""}
         if mutation: packet.update(mutation)
         reply = json.dumps({"schema": 1, "role": "hermes", "nonce": packet["nonce"], "source_revision": "a" * 40}, separators=(",", ":")).encode()
@@ -95,7 +100,8 @@ class NativeProbeTest(unittest.TestCase):
         info = SimpleNamespace(st_uid=10000, st_gid=10000, st_nlink=1, st_size=len(raw), st_mode=0o100600)
         with patch.object(probe.os, "geteuid", return_value=uid), patch.object(probe.Path, "is_symlink", return_value=False), \
              patch.object(probe.Path, "stat", return_value=info), patch.object(probe.Path, "is_file", return_value=True), \
-             patch.object(probe.Path, "read_bytes", return_value=raw), patch.object(probe, "HTTPConnection", return_value=connection) as http:
+             patch.object(probe.Path, "read_bytes", autospec=True, side_effect=lambda path: env_raw if path.name == ".env" else raw), \
+             patch.object(probe, "HTTPConnection", return_value=connection) as http:
             result = probe.hermes_probe(packet, Mock(return_value=resolver_result(route)))
         return result, connection, http
 
@@ -109,14 +115,14 @@ class NativeProbeTest(unittest.TestCase):
         self.assertEqual(json.loads(connection.request.call_args.args[2]), {"nonce": "f" * 64})
         connection.close.assert_called_once()
         self.assertNotIn(CAPABILITY, json.dumps(result))
-        for mutation in ({"config_sha256": "c" * 64}, {"nonce": "bad"}, {"action": "paid"}, {"source_revision": "b" * 64}):
+        for mutation in ({"config_sha256": "c" * 64}, {"environment_sha256": "c" * 64}, {"nonce": "bad"}, {"action": "paid"}, {"source_revision": "b" * 64}):
             with self.assertRaises(ValueError): self.call_hermes(mutation=mutation)
         with self.assertRaises(ValueError): self.call_hermes(uid=0)
 
     def test_python_probe_and_complete_inline_loader_fail_redacted_without_vm_module_files(self):
         commands = [[sys.executable, "-B", "-I", "-c", (ROOT / "scripts/showcase_runtime_probe.py").read_text()],
                     lifecycle.source_command(ROOT)[2:]]
-        # Substitute only the local executable; the complete four-module
+        # Substitute only the local executable; the complete checked
         # loader really executes, without installed VM modules or cache files.
         commands[1][0] = sys.executable
         for command in commands:
@@ -130,13 +136,23 @@ class LifecycleTest(unittest.TestCase):
         if getattr(self, "files", None): self.files.doCleanups()
         files = route_fixtures.TransactionTest("runTest"); files.setUp(); self.addCleanup(files.doCleanups)
         self.files, self.role, self.route = files, role, route_fixtures.route(role, provider)
+        self.original_environment = b"OPENAI_API_KEY=as7-model-gateway-not-active\nANTHROPIC_API_KEY=as7-model-gateway-not-active\nAPI_SERVER_KEY=fixture-server-key\n"
+        self.environment_path = files.root / "hermes/.env"
+        self.environment_path.write_bytes(self.original_environment); self.environment_path.chmod(0o600)
         self.running, self.timer, self.clock, self.health = True, False, 0.0, "healthy"
         self.identifier, self.image_ref, self.image_id, self.restarts = CONTAINER, image(role), IMAGE_ID, 0
         self.calls = []; self.native_mutation = self.probe_mutation = None
+        self.doctor_output = (json.dumps({"schemaVersion": 1, "ok": True, "checksRun": 12, "checksSkipped": 0,
+            "findings": [], "warnings": []}).encode() if role == "openclaw" else HERMES_DOCTOR)
+        self.doctor_failure = self.doctor_change = False
+        self.stop_on_disarm = False
         self.vm = lifecycle.RuntimeLifecycle(route_fixtures.binding(), self.execute, files.transaction,
                                              now=lambda: self.clock, sleep=self.sleep)
         patcher = patch.object(lifecycle, "PROBE_SOURCE", (ROOT / "scripts/showcase_runtime_probe.py").read_text())
         patcher.start(); self.addCleanup(patcher.stop)
+        namespace = {"__name__": "fixture_native_doctor", "__file__": str(ROOT / remote_fixtures.remote.DOCTOR_PATH)}
+        exec(compile((ROOT / remote_fixtures.remote.DOCTOR_PATH).read_bytes(), namespace["__file__"], "exec"), namespace)
+        parser = patch.object(lifecycle, "DOCTOR_MODULE", SimpleNamespace(**namespace)); parser.start(); self.addCleanup(parser.stop)
         return self.vm
 
     def sleep(self, amount): self.clock += amount
@@ -154,9 +170,18 @@ class LifecycleTest(unittest.TestCase):
         if args[:2] == ["/usr/bin/docker", "start"]: self.running = True; return CONTAINER.encode()
         if args[0] == "systemd-run": self.timer = True; return b""
         if args[:2] == ["systemctl", "is-active"]: return b"active" if self.timer else b"inactive"
-        if args[:2] == ["systemctl", "stop"]: self.timer = False; return b""
+        if args[:2] == ["systemctl", "stop"]:
+            self.timer = False
+            if self.stop_on_disarm: self.running = False
+            return b""
         if args[:2] == ["systemctl", "show"]: return b"active" if self.timer else b"inactive"
         if args[:2] == ["/usr/bin/docker", "exec"]:
+            if "doctor" in args:
+                self.assertNotIn("--fix", args); self.assertNotIn("--live", args); self.assertIn("-i", args)
+                self.assertEqual(timeout, 90)
+                if self.doctor_failure: raise lifecycle.agents.ProbeError("fixture timeout")
+                if self.doctor_change: self.files.target(self.role).write_bytes(b'{"operator":"change"}\n')
+                return self.doctor_output
             if "config.get" in args:
                 value = snapshot(self.route)
                 if self.native_mutation: self.native_mutation(value)
@@ -168,6 +193,7 @@ class LifecycleTest(unittest.TestCase):
                 "role": self.role, "provider": self.route["provider"], "uid": routes.OWNERS[self.role],
                 "config_sha256": packet["config_sha256"], "source_revision": packet["source_revision"], "nonce": packet["nonce"]}
             if self.role == "hermes": value["native_route"] = native(self.route)
+            if self.role == "hermes": value["environment_sha256"] = packet["environment_sha256"]
             if self.probe_mutation: self.probe_mutation(value)
             return json.dumps(value).encode()
         raise AssertionError("unexpected fixture command")
@@ -186,6 +212,7 @@ class LifecycleTest(unittest.TestCase):
                 self.assertEqual(restored["status"], "runtime_config_restored")
                 self.assertFalse(self.running); self.assertFalse(self.timer)
                 self.assertEqual(self.files.target(role).read_bytes(), self.files.before[role])
+                self.assertEqual(self.environment_path.read_bytes(), self.original_environment)
                 self.assertFalse(self.vm.path(role).exists())
                 for args, _, _ in self.calls:
                     if args[:2] in (["/usr/bin/docker", "stop"], ["/usr/bin/docker", "start"]): self.assertEqual(args[-1], CONTAINER)
@@ -241,6 +268,54 @@ class LifecycleTest(unittest.TestCase):
         self.vm.path(self.role).write_bytes(routes.encoded(context))
         with self.assertRaises(ValueError): self.vm.load(self.role)
 
+    def test_both_native_doctors_parse_unchanged_output_bind_identity_and_cannot_replay(self):
+        for role in ("openclaw", "hermes"):
+            for provider in ("openai", "anthropic"):
+                self.make(role, provider); self.prepare(); ready = self.vm.verify(self.route, "f" * 64)
+                report = self.vm.doctor(self.route, "a" * 32)
+                self.assertEqual(report["status"], "runtime_doctor_verified"); self.assertEqual(report["health"], "healthy")
+                self.assertEqual(report["native_route"], ready["native_route"]); self.assertFalse(self.timer)
+                self.assertEqual(report["doctor_sha256"], routes.sha(self.doctor_output)); self.assertNotIn(CAPABILITY, json.dumps(report))
+                before = len(self.calls)
+                with self.assertRaises(ValueError): self.vm.doctor(self.route, "b" * 32)
+                self.assertEqual(len(self.calls), before)
+                self.vm.restore(role); self.assertFalse(self.running); self.assertEqual(self.environment_path.read_bytes(), self.original_environment)
+
+    def test_native_failed_incomplete_doctor_or_timeout_keeps_recovery_and_stops_captured_container(self):
+        for role in ("openclaw", "hermes"):
+            for failure in ("failed", "incomplete", "timeout", "malformed"):
+                self.make(role); self.prepare(); self.vm.verify(self.route, "f" * 64)
+                if failure == "timeout": self.doctor_failure = True
+                elif role == "hermes": self.doctor_output = HERMES_DOCTOR.replace(b"All checks passed!", b"Found 1 issue" if failure == "failed" else b"unfinished")
+                else: self.doctor_output = json.dumps({"schemaVersion": True if failure == "malformed" else 1, "ok": failure != "failed", "checksRun": 12, "checksSkipped": 1 if failure == "incomplete" else 0, "findings": []}).encode()
+                with self.assertRaises((ValueError, lifecycle.agents.ProbeError)): self.vm.doctor(self.route, "a" * 32)
+                self.assertFalse(self.running); self.assertTrue(self.timer)
+                self.assertEqual(json.loads(self.vm.path(role).read_text())["status"], "uncertain")
+                self.vm.restore(role); self.assertFalse(self.timer); self.assertFalse(self.running)
+
+    def test_doctor_changed_configuration_or_environment_cannot_keep_old_green_or_overwrite(self):
+        for role in ("openclaw", "hermes"):
+            self.make(role); self.prepare(); self.vm.verify(self.route, "f" * 64); self.doctor_change = True
+            with self.assertRaises(ValueError): self.vm.doctor(self.route, "a" * 32)
+            self.assertFalse(self.running); self.assertTrue(self.timer)
+            with self.assertRaises(ValueError): self.vm.restore(role)
+            self.assertEqual(self.files.target(role).read_bytes(), b'{"operator":"change"}\n')
+        self.make("hermes"); self.prepare(); self.vm.verify(self.route, "f" * 64)
+        self.environment_path.write_bytes(b"OPENAI_BASE_URL=https://foreign.invalid\n")
+        with self.assertRaises(ValueError): self.vm.doctor(self.route, "a" * 32)
+        with self.assertRaises(ValueError): self.vm.restore("hermes")
+        self.assertEqual(self.environment_path.read_bytes(), b"OPENAI_BASE_URL=https://foreign.invalid\n")
+        for action in ("route", "doctor"):
+            self.make("hermes"); self.prepare()
+            if action == "doctor": self.vm.verify(self.route, "f" * 64)
+            self.stop_on_disarm = True
+            with self.assertRaises(ValueError):
+                if action == "doctor": self.vm.doctor(self.route, "a" * 32)
+                else: self.vm.verify(self.route, "f" * 64)
+            self.assertFalse(self.running)
+            self.assertEqual(json.loads(self.vm.path("hermes").read_text())["status"], "uncertain")
+            self.vm.restore("hermes")
+
 
 class SessionReloadTest(unittest.TestCase):
     def make(self):
@@ -257,9 +332,16 @@ class SessionReloadTest(unittest.TestCase):
             value = {"schema": 1, "status": "runtime_reload_verified", "role": role, "binding": packet["binding"],
                 "container_id": CONTAINER, "image_ref": "ghcr.io/openclaw/openclaw@" + fixture.config["pins"]["openclaw_digest"] if role == "openclaw" else fixture.config["pins"]["hermes_image"],
                 "image_id": IMAGE_ID, "config_sha256": "b" * 64, "native_route": native(route), "watchdog": "armed"}
+            if role == "hermes": value["environment_sha256"] = "e" * 64
             if packet["action"] == "prepare":
                 self.assertEqual(timeout, 180)
                 if fixture.prepare_mutation: fixture.prepare_mutation(value)
+            elif packet["action"] == "doctor":
+                self.assertEqual(timeout, 180); self.assertIn(role, fixture.models.gateway.diagnostic_roles)
+                self.assertNotIn(role, fixture.models.gateway.started_roles)
+                value.update(status="runtime_doctor_verified", uid=1000 if role == "openclaw" else 10000,
+                    health="healthy", watchdog="disarmed", doctor_sha256="d" * 64)
+                if fixture.probe_mutation: fixture.probe_mutation(value)
             else:
                 self.assertEqual(timeout, 30)
                 value.update(status="runtime_route_verified", watchdog="disarmed")
@@ -267,6 +349,7 @@ class SessionReloadTest(unittest.TestCase):
                     "provider": route["provider"], "uid": 1000 if role == "openclaw" else 10000, "config_sha256": "b" * 64,
                     "source_revision": packet["binding"]["source_revision"], "nonce": packet["nonce"]}
                 if role == "hermes": value["container_probe"]["native_route"] = value["native_route"]
+                if role == "hermes": value["container_probe"]["environment_sha256"] = "e" * 64
                 if fixture.observe: fixture.models.gateway.observed.add((role, packet["nonce"]))
                 if fixture.probe_mutation: fixture.probe_mutation(value)
             return value
@@ -301,6 +384,40 @@ class SessionReloadTest(unittest.TestCase):
             self.assertEqual(evidence["model_channels"]["before_reboot"]["runtime_routes"]["openclaw"]["status"], "uncertain")
             self.assertEqual(fixture.reload_calls[-1]["action"], "restore")
 
+    def test_session_native_doctor_uses_denied_generation_original_account_and_clears_current_green_on_close(self):
+        for role in ("openclaw", "hermes"):
+            fixture = self.make(); fixture.models.activate_runtime(role)
+            report = fixture.models.runtime_doctor(role)
+            self.assertEqual(report["status"], "runtime_doctor_verified"); self.assertEqual(fixture.models.gateway.started_roles, set())
+            self.assertEqual(fixture.models.gateway.diagnostic_roles, set())
+            evidence = cleanup.private_read(fixture.checks.path)
+            self.assertEqual(evidence["checks"][role + ".doctor"], "pass"); self.assertEqual(evidence["checks"]["service." + role], "pass")
+            with self.assertRaisesRegex(PolicyError, "runtime_doctor_already_invoked"): fixture.models.runtime_doctor(role)
+            with self.assertRaisesRegex(PolicyError, "runtime_model_route_required"): fixture.models.runtime_client(role)
+            fixture.models.close(); self.assertEqual(cleanup.private_read(fixture.checks.path)["checks"][role + ".doctor"], "uncertain")
+
+    def test_session_forged_doctor_uid_native_hash_health_and_schema_revoke_and_restore(self):
+        for changed in ("uid", "native", "hash", "health", "schema"):
+            fixture = self.make(); fixture.models.activate_runtime("hermes")
+            def mutate(value):
+                if changed == "native": value["native_route"]["base_url_sha256"] = "a" * 64
+                elif changed == "uid": value["uid"] = 0
+                elif changed == "hash": value["doctor_sha256"] = "invalid"
+                elif changed == "health": value["health"] = "stopped"
+                elif changed == "schema": value["schema"] = True
+            fixture.probe_mutation = mutate
+            with self.assertRaisesRegex(PolicyError, "runtime_doctor_unverified"): fixture.models.runtime_doctor("hermes")
+            self.assertEqual(fixture.models.state, "closed"); self.assertIn("hermes", fixture.models.gateway.sealed)
+            self.assertEqual(fixture.reload_calls[-1]["action"], "restore")
+
+    def test_session_any_new_diagnostic_hold_is_uncertain_and_never_refunded(self):
+        fixture = self.make(); fixture.models.activate_runtime("hermes")
+        fixture.probe_mutation = lambda value: fixture.models.spend.reserve("hermes", "c" * 64, 1)
+        with self.assertRaisesRegex(PolicyError, "runtime_doctor_unverified"): fixture.models.runtime_doctor("hermes")
+        account = fixture.models.checks.ledger.operate(lambda state: fixture.models.spend.account(state))
+        self.assertEqual(len(account["model_requests"]), 1)
+        self.assertEqual(fixture.models.state, "closed")
+
 
 class GatewayStartTest(unittest.TestCase):
     def make(self):
@@ -332,6 +449,23 @@ class GatewayStartTest(unittest.TestCase):
         self.assertEqual(fixture.models.gateway.started_roles, set())
         with self.assertRaises(PolicyError): fixture.models.gateway.new_probe("hermes", kind="runtime")
         with self.assertRaises(PolicyError): fixture.models.gateway.new_probe("codex", kind="runtime")
+
+    def test_actual_gateway_diagnostic_window_blocks_racing_start_and_generation_then_seals_on_failure(self):
+        fixture, helper = self.make(); gateway = fixture.models.gateway
+        for role in ("openclaw", "hermes"):
+            with gateway.diagnostic_window(role):
+                self.assertEqual(helper.request(fixture, role), 403)
+                with self.assertRaisesRegex(PolicyError, "model_diagnostic_in_progress"): gateway.authorize_role(role)
+                with self.assertRaisesRegex(PolicyError, "model_diagnostic_refused"):
+                    with gateway.diagnostic_window(role): pass
+            self.assertFalse(gateway.dispatch_allowed(role)); self.assertEqual(gateway.diagnostic_roles, set())
+        with self.assertRaises(RuntimeError):
+            with gateway.diagnostic_window("hermes"): raise RuntimeError("fixture failed doctor")
+        self.assertNotIn("hermes", gateway.tokens)
+        with self.assertRaises(PolicyError): gateway.authorize_role("hermes")
+        self.assertEqual(helper.account(fixture)["model_requests"], [])
+        fixture.reader.assert_not_called(); fixture.opener.open.assert_not_called()
+        gateway.authorize_role("openclaw"); self.assertTrue(gateway.dispatch_allowed("openclaw"))
 
 
 if __name__ == "__main__": unittest.main()

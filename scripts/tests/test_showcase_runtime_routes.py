@@ -76,7 +76,8 @@ class CompileTest(unittest.TestCase):
                   ("openclaw", {"agents": {"defaults": {"cliBackends": {"personal": {}}}}}),
                   ("openclaw", {"agents": {"defaults": {"compaction": {"model": "other"}}}}),
                   ("hermes", {"auxiliary": {"compression": {"provider": "other"}}}),
-                  ("hermes", {"model_routes": {"other": "route"}}), ("hermes", {"model_aliases": {"a": "b"}})]
+                  ("hermes", {"model_routes": {"other": "route"}}), ("hermes", {"model_aliases": {"a": "b"}}),
+                  ("hermes", {"secrets": {"sources": [{"type": "op"}]}})]
         for role, original in values:
             with self.subTest(role=role, keys=list(original)), self.assertRaises(ValueError):
                 routes.compile_config(original, route(role))
