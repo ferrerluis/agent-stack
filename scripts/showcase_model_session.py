@@ -18,6 +18,7 @@ from showcase_model_transport import SSHModelTransport
 from showcase_policy import PolicyError, require
 
 PROBE = "scripts/showcase_model_container.py"
+RUNTIME_CONFIG = "scripts/showcase_runtime_routes.py"
 
 
 class ModelSession:
@@ -28,6 +29,7 @@ class ModelSession:
         self.gateway = self.transport = None
         self.stage, self.state, self.routes = None, "new", {}
         self.tasks = {}
+        self.runtime_configs = {}
         self.spend = ModelSpend(checks.ledger, checks.run.name, checks.provider,
                                 checks.attempt.prepared["source_revision"], self.policy, now=checks.now)
 
@@ -132,9 +134,67 @@ class ModelSession:
     def runtime_client(self, role):
         require(role in ("openclaw", "hermes"), "invalid_runtime")
         self.active()
-        # Runtime processes need their own checked configuration adapters.
-        # Never run their old direct-origin path with an unverified route.
+        # A staged file does not prove the running process selected its route.
+        # Native route/doctor/generation checks are still required before paid
+        # work, including when stage_runtime_config() has succeeded.
         raise PolicyError("runtime_model_route_required")
+
+    def runtime_config_command(self, target, packet):
+        source = self.checks.attempt.checkout / RUNTIME_CONFIG
+        require(source.is_file() and not source.is_symlink() and source.read_bytes() ==
+                (Path(__file__).resolve().parents[1] / RUNTIME_CONFIG).read_bytes(), "runtime_config_source_changed")
+        verify_prepared(self.checks.run, self.checks.config, self.checks.provider)
+        from showcase_remote import decoded
+        return decoded(self.checks.ssh(target, ["sudo", "-n", "python3", "-B", "-I", "-c", source.read_text()],
+                                       input=json.dumps(packet).encode(), timeout=20))
+
+    def stage_runtime_config(self, role):
+        """Stage a stopped runtime's file; does not restart it or authorize a task."""
+        require(role in ("openclaw", "hermes"), "invalid_runtime")
+        evidence = self.active()
+        require(role not in self.runtime_configs, "runtime_config_already_invoked")
+        target = self.checks.bind()
+        baseline = evidence["baseline"] if self.stage == "before_reboot" else evidence["after_reboot"]
+        require(self.checks.probe(target) == baseline, "model_session_boot_changed")
+        bundle = self.transport.client(role)
+        address = self.transport.ready["bridge_ipv4"]
+        route = {**bundle, "base_url": "http://" + address + ":" + str(self.transport.ready["bridge_port"]) + "/" + role,
+                 "bridge_ipv4": address, "model": self.policy["roles"][role]["model"],
+                 "context_tokens": self.policy["roles"][role]["context_tokens_upper_bound"],
+                 "output_tokens": self.policy["roles"][role]["output_tokens_upper_bound"]}
+        from showcase_runtime_routes import route_valid
+        route_valid(route)
+        binding = {"run_id": self.checks.run.name, "source_revision": self.revision,
+                   "boot_id": baseline["boot_id"], "checksum": baseline["checksum"]}
+        # Restoration authority precedes SSH, covering a lost install reply.
+        self.runtime_configs[role] = {"target": copy.deepcopy(target), "binding": binding}
+        evidence["model_channels"][self.stage].setdefault("runtime_configs", {})[role] = {"status": "started"}
+        private_write(self.checks.path, evidence)
+        try:
+            report = self.runtime_config_command(target, {"action": "install", "binding": binding, "route": route})
+            require(set(report) == {"schema", "status", "role", "binding", "config_sha256", "base_url_sha256", "native_contract"}
+                    and report["status"] == "runtime_config_installed" and report["role"] == role
+                    and report["binding"] == binding and report["native_contract"] == "unverified"
+                    and report["base_url_sha256"] == hashlib.sha256(route["base_url"].encode()).hexdigest()
+                    and isinstance(report["config_sha256"], str) and len(report["config_sha256"]) == 64
+                    and all(c in "0123456789abcdef" for c in report["config_sha256"]), "runtime_config_route_unverified")
+            require(self.checks.probe(target) == baseline, "model_session_boot_changed")
+            self.active(); evidence = self.checks.evidence()
+            evidence["model_channels"][self.stage]["runtime_configs"][role] = report
+            private_write(self.checks.path, evidence)
+            return copy.deepcopy(report)
+        except BaseException:
+            # An expired work window or lost ledger access must not prevent
+            # capability revocation. This read is for failure recording only.
+            from showcase_cleanup import private_read
+            try:
+                evidence = private_read(self.checks.path)
+                require(evidence.get("run_id") == self.checks.run.name and evidence.get("source_revision") == self.revision,
+                        "model_session_scope_changed")
+                evidence["model_channels"][self.stage]["runtime_configs"][role]["status"] = "uncertain"
+                private_write(self.checks.path, evidence)
+            finally: self.close()
+            raise PolicyError("runtime_config_route_unverified") from None
 
     def task_receipt(self, role, start):
         self.active()
@@ -167,6 +227,21 @@ class ModelSession:
             if component is not None:
                 try: component.close()
                 except BaseException: failed = True
+        # Revoke the channel before restoring files. Even a failed restore
+        # cannot leave the staged capability able to buy another response.
+        restored = {}
+        for role, config in self.runtime_configs.items():
+            try:
+                report = self.runtime_config_command(config["target"],
+                    {"action": "restore", "binding": config["binding"], "role": role})
+                require(set(report) == {"schema", "status", "role", "binding", "original_sha256"}
+                        and report["status"] == "runtime_config_restored" and report["role"] == role
+                        and report["binding"] == config["binding"] and isinstance(report["original_sha256"], str)
+                        and len(report["original_sha256"]) == 64 and
+                        all(c in "0123456789abcdef" for c in report["original_sha256"]), "runtime_config_restore_unverified")
+                restored[role] = report
+            except BaseException:
+                failed = True; restored[role] = {"status": "uncertain"}
         self.state = "closed_unverified" if failed else "closed"
         self.routes.clear()
         self.tasks.clear()
@@ -178,6 +253,8 @@ class ModelSession:
             row = evidence.get("model_channels", {}).get(self.stage)
             if row is not None:
                 row["shutdown"] = "uncertain" if failed else "verified"
+                if restored: row["runtime_config_restores"] = restored
                 private_write(self.checks.path, evidence)
+        if not failed: self.runtime_configs.clear()
         require(not failed, "model_session_shutdown_unverified")
         return {"status": "closed"}
