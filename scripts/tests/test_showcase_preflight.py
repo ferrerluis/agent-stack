@@ -1,5 +1,6 @@
 import base64
 import copy
+from datetime import datetime, timezone
 import io
 import importlib.util
 import json
@@ -7,13 +8,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import showcase_preflight as preflight
-from test_showcase_policy import config
+from test_showcase_policy import config, NOW
 from test_showcase_models import FakeModels
 
 PREFIX = "as7-fixture01"
@@ -58,7 +60,7 @@ def hcloud_routes():
     routes = {base + "/" + key: {key: [], "meta": {"pagination": {"next_page": None}}}
               for key in ("servers", "volumes", "firewalls", "ssh_keys", "networks", "primary_ips", "floating_ips", "load_balancers")}
     routes[base + "/server_types"] = {"server_types": [{"name": "fixture-size", "memory": 8, "architecture": "x86", "prices": [{"location": "us-east1"}],
-                                                      "locations": [{"location": {"name": "us-east1"}, "available": True}]}],
+                                                      "locations": [{"id": 1, "name": "us-east1", "deprecation": None, "available": True}]}],
                                        "meta": {"pagination": {"next_page": None}}}
     return routes
 
@@ -97,6 +99,14 @@ class HTTPAndSecretTest(unittest.TestCase):
                 http.request("https://api.digitalocean.com/v2/account", "Bearer " + SECRET)
         self.assertNotIn(SECRET, str(caught.exception))
         self.assertEqual(http.queries, 0)
+
+    def test_duplicate_or_nonfinite_provider_json_is_refused_without_leaking_or_retry(self):
+        for raw in (b'{"pricing":{},"pricing":{}}', b'{"quota":NaN}', b'{"value":Infinity}'):
+            http = preflight.JsonHTTP()
+            response = Mock(); response.__enter__ = Mock(return_value=SimpleNamespace(status=200, read=lambda size: raw)); response.__exit__ = Mock(return_value=False)
+            with patch.object(http.opener, "open", return_value=response) as opened, self.assertRaisesRegex(preflight.PreflightError, "provider_request_failed") as caught:
+                http.request("https://api.hetzner.cloud/v1/pricing", "Bearer " + SECRET)
+            self.assertNotIn(SECRET, str(caught.exception)); self.assertEqual(http.queries, 0); self.assertEqual(opened.call_count, 1)
 
     def test_cli_requires_opt_in_before_reading_input_or_secret(self):
         script = Path(preflight.__file__)
@@ -177,6 +187,42 @@ class HetznerTest(unittest.TestCase):
         routes[preflight.Hetzner.base + "/servers"]["meta"]["pagination"]["next_page"] = 1
         with self.assertRaisesRegex(preflight.PreflightError, "invalid_pagination"):
             self.adapter(routes).preflight(PREFIX)
+
+    def test_current_flat_location_is_required_and_duplicates_or_legacy_shape_refused(self):
+        row = hcloud_routes()[preflight.Hetzner.base + "/server_types"]["server_types"][0]
+        self.assertEqual(preflight.hetzner_location(row, "us-east1", NOW)["id"], 1)
+        original = copy.deepcopy(row["locations"][0])
+        for locations in ([original, original], [{"location": {"name": "us-east1"}, "available": True}],
+                          [dict(original, available=False)], [dict(original, id=True)],
+                          [{k: v for k, v in original.items() if k != "deprecation"}]):
+            with self.subTest(locations=locations), self.assertRaises(preflight.PreflightError):
+                preflight.hetzner_location(dict(row, locations=locations), "us-east1", NOW)
+
+    def test_nonfinite_or_boolean_memory_is_refused_before_integer_conversion(self):
+        for memory in (True, float("inf"), float("nan"), 1000001):
+            routes = hcloud_routes(); routes[preflight.Hetzner.base + "/server_types"]["server_types"][0]["memory"] = memory
+            with self.subTest(memory=memory), self.assertRaisesRegex(preflight.PreflightError, "vm_memory_below_8_gib"):
+                self.adapter(routes).preflight(PREFIX)
+
+    def test_deprecation_must_cover_whole_four_hour_attempt(self):
+        stamp = lambda seconds: datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+        preflight.hetzner_deprecation({"announced": stamp(NOW - 1), "unavailable_after": stamp(NOW + 14401)}, NOW)
+        for value in ({"announced": stamp(NOW - 1), "unavailable_after": stamp(NOW + 14400)},
+                      {"announced": stamp(NOW + 1), "unavailable_after": stamp(NOW + 20000)},
+                      {"announced": "2026-01-01", "unavailable_after": stamp(NOW + 20000)}, {}, "legacy-date"):
+            with self.subTest(value=value), self.assertRaises(preflight.PreflightError):
+                preflight.hetzner_deprecation(value, NOW)
+        for now in (float("nan"), float("inf"), True):
+            with self.assertRaises(preflight.PreflightError): preflight.hetzner_deprecation(None, now)
+
+    def test_fixed_image_filters_survive_each_pagination_query(self):
+        base = preflight.Hetzner.base
+        routes = {base + "/images": lambda url, _: {"images": [], "meta": {"pagination": {
+            "next_page": 2 if "page=1&" in url else None}}}}
+        adapter = self.adapter(routes)
+        adapter.pages("/images?type=system&name=ubuntu-22.04", "images", "hetzner")
+        self.assertEqual([call[0] for call in adapter.http.calls], [base + "/images?type=system&name=ubuntu-22.04&page=1&per_page=100",
+            base + "/images?type=system&name=ubuntu-22.04&page=2&per_page=100"])
 
 
 class GoogleTest(unittest.TestCase):

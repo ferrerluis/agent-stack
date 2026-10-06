@@ -6,7 +6,9 @@ and never enter the report. Successful read checks do not authorize a launch.
 """
 import argparse
 import base64
+from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -97,12 +99,20 @@ class JsonHTTP:
         if payload is not None:
             data = urlencode(payload).encode() if form else json.dumps(payload).encode()
             headers["Content-Type"] = "application/x-www-form-urlencoded" if form else "application/json"
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate key")
+                result[key] = value
+            return result
         try:
             with self.opener.open(Request(url, data=data, headers=headers), timeout=20) as response:
                 check(response.status == 200, "provider_request_failed")
                 body = response.read(MAX_RESPONSE + 1)
             check(len(body) <= MAX_RESPONSE, "provider_response_too_large")
-            value = json.loads(body)
+            value = json.loads(body, object_pairs_hook=unique,
+                               parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite number")))
             check(isinstance(value, dict), "invalid_provider_response")
         except HTTPError as error:
             # Never include the error's body, URL, headers or credential.
@@ -131,7 +141,7 @@ class RestCloud:
             query = {"page": number, "per_page": 100} if style != "gcp" else {"maxResults": 500}
             if next_token is not None:
                 query["pageToken"] = next_token
-            value = self.get(path + "?" + urlencode(query))
+            value = self.get(path + ("&" if "?" in path else "?") + urlencode(query))
             # GCP omits items for an empty collection, but never accept a
             # malformed present collection as empty.
             if style == "gcp" and "items" not in value:
@@ -197,6 +207,30 @@ class DigitalOcean(RestCloud):
                 "not_verified": ["create_delete_permissions", "disk_network_quotas", "live_capacity"]}
 
 
+def hetzner_deprecation(value, now, horizon_seconds=14400):
+    """A selected image/type must remain available for the whole attempt."""
+    check(type(now) in (int, float) and 0 <= now <= 253402286400, "invalid_provider_clock")
+    if value is None:
+        return
+    check(isinstance(value, dict), "invalid_deprecation_response")
+    try:
+        dates = [datetime.fromisoformat(value[key].replace("Z", "+00:00")) for key in ("announced", "unavailable_after")]
+        check(all(date.tzinfo is not None for date in dates) and 0 <= dates[0].timestamp() <= now
+              and dates[1].timestamp() > now + horizon_seconds, "vm_or_image_removal_during_attempt")
+    except (ValueError, TypeError, AttributeError, KeyError, OverflowError):
+        raise PreflightError("invalid_deprecation_response") from None
+
+
+def hetzner_location(size, name, now=None):
+    locations = objects(size, "locations")
+    matches = [row for row in locations if row.get("name") == name]
+    check(len(matches) == 1 and matches[0].get("available") is True
+          and type(matches[0].get("id")) is int and matches[0]["id"] > 0
+          and "deprecation" in matches[0], "vm_size_unavailable")
+    hetzner_deprecation(matches[0]["deprecation"], time.time() if now is None else now)
+    return matches[0]
+
+
 class Hetzner(RestCloud):
     base = "https://api.hetzner.cloud/v1"
 
@@ -211,13 +245,12 @@ class Hetzner(RestCloud):
         matches = [row for row in sizes if row.get("name") == self.cloud["size"]]
         check(len(matches) == 1, "vm_size_unavailable")
         size = matches[0]
-        check(type(size.get("memory")) in (int, float) and size["memory"] >= 8, "vm_memory_below_8_gib")
+        check(type(size.get("memory")) in (int, float) and math.isfinite(size["memory"])
+              and 8 <= size["memory"] <= 1000000, "vm_memory_below_8_gib")
         check(size.get("architecture") == "x86", "vm_architecture_not_x86_64")
         prices = objects(size, "prices")
         check(any(row.get("location") == self.cloud["region"] for row in prices), "vm_size_unavailable")
-        locations = objects(size, "locations")
-        matches = [row for row in locations if field(row, "location").get("name") == self.cloud["region"]]
-        check(len(matches) == 1 and matches[0].get("available") is True, "vm_size_unavailable")
+        hetzner_location(size, self.cloud["region"])
         return {"identity": "declared_only", "project": "token_scope_verified_empty", "vm_memory_mib": int(size["memory"] * 1024),
                 "architecture": "x86_64", "size_available_in_region": True,
                 "not_verified": ["account_project_token_mapping", "create_delete_permissions", "quotas", "live_capacity"]}

@@ -1,0 +1,104 @@
+{
+  "resource_changes": [
+    {
+      "address": "module.hetzner[0].hcloud_firewall.this",
+      "mode": "managed",
+      "type": "hcloud_firewall",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "as7-fixture01-fw"
+        },
+        "after_unknown": {}
+      }
+    },
+    {
+      "address": "module.hetzner[0].hcloud_server.this",
+      "mode": "managed",
+      "type": "hcloud_server",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "as7-fixture01",
+          "server_type": "cpx31",
+          "location": "ash",
+          "image": "ubuntu-22.04",
+          "backups": null,
+          "public_net": [],
+          "network": [],
+          "iso": null,
+          "rescue": null,
+          "placement_group_id": null,
+          "keep_disk": null,
+          "datacenter": null
+        },
+        "after_unknown": {
+          "public_net": [],
+          "network": [],
+          "datacenter": true
+        }
+      }
+    },
+    {
+      "address": "module.hetzner[0].hcloud_ssh_key.this",
+      "mode": "managed",
+      "type": "hcloud_ssh_key",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "as7-fixture01-key"
+        },
+        "after_unknown": {}
+      }
+    },
+    {
+      "address": "module.hetzner[0].hcloud_volume.this[0]",
+      "mode": "managed",
+      "type": "hcloud_volume",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "as7-fixture01-data",
+          "size": 50,
+          "location": "ash",
+          "server_id": null
+        },
+        "after_unknown": {
+          "server_id": true
+        }
+      }
+    },
+    {
+      "address": "module.hetzner[0].hcloud_volume_attachment.this",
+      "mode": "managed",
+      "type": "hcloud_volume_attachment",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "volume_id": null,
+          "server_id": null,
+          "automount": false
+        },
+        "after_unknown": {
+          "volume_id": true,
+          "server_id": true
+        }
+      }
+    }
+  ]
+}
