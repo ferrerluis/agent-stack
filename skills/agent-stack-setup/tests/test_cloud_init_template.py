@@ -459,7 +459,8 @@ class RuntimeTemplateTest(unittest.TestCase):
         self.assertIn("Already online; keeping current login.", self.host_tailscale)
         self.assertIn('tailscale set --hostname="$TAILSCALE_HOSTNAME" --accept-routes || true', self.host_tailscale)
         self.assertNotIn("tailscale logout || true", self.host_tailscale)
-        self.assertIn("tailscale serve --bg 127.0.0.1:18789", self.host_tailscale)
+        self.assertIn("tailscale serve --bg --yes --https=443 127.0.0.1:18789", self.host_tailscale)
+        self.assertIn("tailscale serve --bg --yes --https=8443 127.0.0.1:9119", self.host_tailscale)
 
 
 class RuntimeProvisioningContractTest(unittest.TestCase):

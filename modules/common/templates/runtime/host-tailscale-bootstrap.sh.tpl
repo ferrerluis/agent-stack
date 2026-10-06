@@ -63,8 +63,13 @@ fi
 
 tailscale serve reset || true
 if [ "$${OPENCLAW_ENABLED:-false}" = "true" ]; then
-  tailscale serve --bg 127.0.0.1:18789
+  tailscale serve --bg --yes --https=443 127.0.0.1:18789
   tailscale serve status || true
 else
   echo "[tailscale-host] OpenClaw is disabled; no Tailscale Serve route configured."
 fi
+
+%{ if hermes_enabled && hermes_dashboard_enabled }
+tailscale serve --bg --yes --https=8443 127.0.0.1:9119
+tailscale serve status
+%{ endif }

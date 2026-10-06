@@ -1,4 +1,12 @@
 override_module {
+  target          = module.runtime_access
+  override_during = plan
+  outputs = {
+    tailscale_dns = "agent-stack.test-tailnet.ts.net"
+  }
+}
+
+override_module {
   target = module.aws
   outputs = {
     instance_public_ip = "203.0.113.10"
@@ -26,6 +34,16 @@ override_module {
     server_id          = 31337
     volume_id          = "31338"
     ssh_command        = "ssh admin@203.0.113.30"
+  }
+}
+
+override_module {
+  target = module.gcp
+  outputs = {
+    instance_public_ip = "203.0.113.40"
+    instance_id        = "projects/agent-stack-tests/zones/us-east1-b/instances/agent-stack"
+    volume_id          = "projects/agent-stack-tests/zones/us-east1-b/disks/agent-stack-data"
+    device_name        = "agent-stack-data"
   }
 }
 
@@ -80,12 +98,12 @@ run "tailscale_private_outputs" {
   }
 
   assert {
-    condition     = strcontains(output.dashboard_url, "https://agent-stack") && strcontains(output.dashboard_url, "mode=sidecar")
-    error_message = "Private Tailscale dashboard URL should point at the AgentStack Tailscale Serve name."
+    condition     = output.dashboard_url == "https://agent-stack.test-tailnet.ts.net" && output.hermes_url == "https://agent-stack.test-tailnet.ts.net:8443"
+    error_message = "Private dashboard URLs must use the observed full tailnet DNS name and distinct HTTPS ports."
   }
 
   assert {
-    condition     = output.dashboard_url_with_token_import == "https://agent-stack/#token=gateway-token-agent-stack-tests"
+    condition     = output.dashboard_url_with_token_import == "https://agent-stack.test-tailnet.ts.net/#token=gateway-token-agent-stack-tests"
     error_message = "Token import URL should use the explicit gateway token during tests."
   }
 
@@ -150,8 +168,8 @@ run "workspace_host_outputs" {
   }
 
   assert {
-    condition     = strcontains(output.dashboard_url, "mode=host")
-    error_message = "Host Tailscale mode should be visible in access outputs."
+    condition     = output.dashboard_url == "https://agent-stack.test-tailnet.ts.net" && strcontains(output.tailscale_note, "host mode")
+    error_message = "Host Tailscale mode should use observed HTTPS URLs and describe its mode."
   }
 }
 
@@ -213,7 +231,7 @@ run "disabled_service_outputs" {
   }
 
   assert {
-    condition     = strcontains(output.tailscale_note, "OpenClaw is disabled")
+    condition     = strcontains(output.tailscale_note, "OpenClaw: disabled") && output.hermes_url == "https://agent-stack.test-tailnet.ts.net:8443"
     error_message = "Tailscale note should call out that no OpenClaw Serve route is configured."
   }
 }

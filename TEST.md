@@ -5,7 +5,7 @@ it must not create, mutate, inspect, or destroy live cloud resources.
 
 ## Default Local Suite
 
-Run from the repo root:
+Deployment requires Terraform >=1.9 for cross-variable validation. The local test suite requires >=1.11 for plan-time overrides and has been exercised with 1.16.5. Run from the repo root:
 
 ```bash
 ./scripts/test-local.sh
@@ -51,7 +51,7 @@ These tests use `command = plan`, `mock_provider`, mock data files under
 
 Coverage expectations:
 
-- AWS, DigitalOcean, and Hetzner root provider selection all plan without credentials
+- AWS, DigitalOcean, Hetzner and GCP root provider selection all plan without credentials
 - provider child modules plan with mocked providers and stable fake IDs/IPs
 - root outputs cover private Tailscale URLs, public-domain URLs, disabled services, and token-import URLs with explicit test tokens
 - validation failures cover invalid cloud provider, root SSH user, missing Tailscale key, missing public-domain values, missing external Postgres values, DigitalOcean existing-volume name requirements, invalid model providers, empty default model, and invalid enabled services
@@ -72,6 +72,10 @@ cannot inspect well:
 - provider migration helper help text and safety invariants
 - cloud-init loader scope, runtime template contents, private staging permissions, layout migration, and Terraform runtime provisioning contracts
 - module input parity across AWS, DigitalOcean, and Hetzner shared runtime inputs
+- Hermes config preservation, authenticated detailed readiness, installer readiness and safe rollback contracts
+- workspace coding-task verification and command-scoped secret handling, using fake CLI results only
+- observed tailnet DNS collection without fabricated URLs
+- strict doctor failure behavior for absent services, empty/malformed/incomplete reports, failed SSH, timeouts and invalid/private routes
 - doctor scripts and legacy compatibility checks
 
 Keep these tests local-only. They may create temporary files, but they must not
@@ -79,7 +83,7 @@ read real Codex auth, Terraform state, provider tokens, or cloud resources.
 
 ## Optional Live Smoke Suite
 
-Live smoke testing is intentionally not implemented in the default runner. If it
+The four-cloud TODO #7 live runner is still being implemented; no live result is claimed. Live smoke testing is intentionally not part of the default runner. If it
 is added later, gate it behind an explicit opt-in such as:
 
 ```bash

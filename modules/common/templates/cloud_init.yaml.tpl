@@ -65,6 +65,15 @@ write_files:
       done
       [ -e "$device" ] || { echo "[volume] ERROR: Hetzner volume $volume_id not found" >&2; exit 1; }
 %{ endif }
+%{ if provider_type == "gcp" }
+      device="/dev/disk/by-id/google-${gcp_device_name}"
+      echo "[volume] Waiting for Google persistent disk..."
+      for attempt in $(seq 1 30); do
+        [ -e "$device" ] && break
+        sleep 5
+      done
+      [ -e "$device" ] || { echo "[volume] ERROR: Google data disk not found" >&2; exit 1; }
+%{ endif }
 
       if ! blkid "$device" >/dev/null 2>&1; then
         echo "[volume] Formatting $device as ext4..."

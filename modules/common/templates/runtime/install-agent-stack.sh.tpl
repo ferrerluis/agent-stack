@@ -46,6 +46,7 @@ require_file workspace-entrypoint.sh
 require_file workspace-para-memory-drive-skill.md
 require_file workspace-codex-update.sh
 require_file workspace-codex-control.py
+require_file workspace-cli-task.py
 require_file agent-stack-workspace-codex-update
 require_file agent-stack-workspace-codex-update.service
 require_file agent-stack-workspace-codex-update.timer
@@ -470,9 +471,10 @@ restore_workspace_codex_auto_update_host() {
 
 wait_agent_stack_initial_restart() {
   for attempt in $(seq 1 60); do
-    local agent_state openclaw_status workspace_status codex_status
+    local agent_state openclaw_status hermes_status workspace_status codex_status
     agent_state="$(systemctl is-active agent-stack 2>/dev/null || true)"
     openclaw_status=disabled
+    hermes_status=disabled
     workspace_status=disabled
     codex_status=disabled
     if [ "$agent_state" = "active" ]; then
@@ -508,12 +510,27 @@ wait_agent_stack_initial_restart() {
           fi
         fi
       fi
+      if [ "${hermes_enabled}" = "true" ]; then
+        container_id="$(docker compose -f "$app/docker-compose.yml" ps -q hermes 2>/dev/null || true)"
+        if [ -z "$container_id" ]; then
+          hermes_status=missing
+          all_ready=0
+        elif [ "${hermes_api_server_enabled}" = "true" ]; then
+          health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)"
+          hermes_status="$${health_status:-unknown}"
+          [ "$health_status" = "healthy" ] || all_ready=0
+        else
+          health_status="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+          hermes_status="$${health_status:-unknown}"
+          [ "$health_status" = "running" ] || all_ready=0
+        fi
+      fi
       if [ "$all_ready" -eq 1 ]; then
         return 0
       fi
     fi
     if [ "$attempt" -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
-      echo "[runtime] readiness attempt $attempt/60: agent-stack=$agent_state openclaw=$openclaw_status workspace=$workspace_status codex=$codex_status" >&2
+      echo "[runtime] readiness attempt $attempt/60: agent-stack=$agent_state openclaw=$openclaw_status hermes=$hermes_status workspace=$workspace_status codex=$codex_status" >&2
     fi
     sleep 3
   done
@@ -527,7 +544,7 @@ docker compose --env-file "$staging/.env" -f "$staging/docker-compose.yml" confi
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"
-for path in docker-compose.yml .env workspace.env Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py; do
+for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
   [ -e "$app/$path" ] && cp -a "$app/$path" "$previous/" || true
 done
 backup_workspace_image
@@ -535,6 +552,17 @@ backup_workspace_image
 install -m 0644 "$staging/docker-compose.yml" "$app/docker-compose.yml"
 install -m 0600 "$staging/.env" "$app/.env"
 install -m 0600 "$staging/workspace.env" "$app/workspace.env"
+install -m 0644 "$staging/hermes_health.py" "$app/hermes_health.py"
+install -m 0644 "$staging/hermes_config.py" "$app/hermes_config.py"
+install -m 0755 "$staging/workspace-cli-task.py" "$app/workspace-cli-task.py"
+hermes_config_changed=0
+if [ "${hermes_enabled}" = "true" ]; then
+  if [ -f "$app/data/hermes/config.yaml" ]; then
+    cp -a "$app/data/hermes/config.yaml" "$previous/hermes-config.yaml"
+  fi
+  hermes_config_result="$(python3 "$app/hermes_config.py" --data-dir "$app/data/hermes" --seed "$staging/hermes-seed.json" --mode "${hermes_config_mode}")"
+  [ "$hermes_config_result" != "changed" ] || hermes_config_changed=1
+fi
 if [ -f "$staging/Caddyfile" ]; then
   install -m 0600 "$staging/Caddyfile" "$app/Caddyfile"
 else
@@ -587,7 +615,14 @@ if [ "$restart_status" -ne 0 ]; then
 fi
 if ! wait_agent_stack_initial_restart; then
   echo "[runtime] restart did not recover; restoring previous runtime files" >&2
-  for path in docker-compose.yml .env workspace.env Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py; do
+  if [ "$hermes_config_changed" = "1" ]; then
+    if [ -f "$previous/hermes-config.yaml" ]; then
+      cp -a "$previous/hermes-config.yaml" "$app/data/hermes/config.yaml"
+    else
+      rm -f "$app/data/hermes/config.yaml"
+    fi
+  fi
+  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
     rm -rf "$app/$path"
     if [ -e "$previous/$path" ]; then
       cp -a "$previous/$path" "$app/$path"
@@ -1140,15 +1175,7 @@ restart_agent_stack_for_config() {
     echo "[openclaw] WARNING: systemctl restart agent-stack exited $restart_status; waiting for service recovery before deciding failure."
   fi
 
-  for attempt in $(seq 1 36); do
-    if systemctl is-active --quiet agent-stack; then
-      if [ "$OPENCLAW_ENABLED" != "true" ] || wait_openclaw_healthy; then
-        return 0
-      fi
-    fi
-    sleep 5
-  done
-  return 1
+  wait_agent_stack_initial_restart
 }
 
 openclaw_config_backup=""
@@ -1174,6 +1201,9 @@ if [ "$NEEDS_RESTART" = "1" ]; then
 fi
 rm -f "$openclaw_config_backup"
 
+jq -n --arg dns "$TAILSCALE_DNS" '{schema:1, tailscale_dns:$dns}' > "$app/.access.json"
+chmod 0644 "$app/.access.json"
+
 jq -n \
   --arg checksum "$checksum" \
   --arg applied_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -1187,11 +1217,14 @@ echo "========================================================"
 echo " AgentStack runtime apply complete  $(date)"
 echo " Services: ${enabled_services_json}"
 if [ "$OPENCLAW_ENABLED" = "true" ]; then
-  if [ -n "${project_name}" ] && [ "${tailscale_enabled}" = "true" ]; then
-    echo " OpenClaw: https://${project_name} (via Tailscale Serve, mode=${tailscale_mode})"
+  if [ -n "$TAILSCALE_DNS" ] && [ "${tailscale_enabled}" = "true" ]; then
+    echo " OpenClaw: https://$TAILSCALE_DNS (via Tailscale Serve, mode=${tailscale_mode})"
   else
     echo " OpenClaw: ssh -L 18789:127.0.0.1:18789 ${admin_username}@<IP>"
   fi
+fi
+if [ "${hermes_enabled}" = "true" ] && [ "${hermes_dashboard_enabled}" = "true" ] && [ -n "$TAILSCALE_DNS" ]; then
+  echo " Hermes: https://$TAILSCALE_DNS:8443 (via Tailscale Serve)"
 fi
 if [ "${workspace_enabled}" = "true" ]; then
   echo " Workspace SSH: ssh -p ${workspace_ssh_host_port} ${workspace_username}@${workspace_ssh_host} (via Tailscale)"

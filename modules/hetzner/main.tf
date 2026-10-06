@@ -15,6 +15,7 @@ locals {
 
   cloud_init_vars = {
     provider_type                        = "hetzner"
+    gcp_device_name                      = ""
     project_name                         = var.project_name
     admin_username                       = var.admin_username
     admin_ssh_public_key                 = var.ssh_public_key

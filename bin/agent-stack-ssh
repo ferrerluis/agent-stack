@@ -12,7 +12,7 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: bin/agent-stack-ssh [--key <path>] [--host <user@ip>] [--] [remote-command...]
+Usage: bin/agent-stack-ssh [--key <path>] [--host <user@ip>] [--batch] [--known-hosts <path>] [--] [remote-command...]
 
 Defaults:
 - host is read from: terraform output -raw ssh_command
@@ -21,8 +21,22 @@ EOF
 }
 
 HOST_OVERRIDE=""
+SSH_OPTIONS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --batch)
+      SSH_OPTIONS+=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+      shift
+      ;;
+    --known-hosts)
+      if [[ -z "${2:-}" ]]; then
+        echo "error: --known-hosts requires a path" >&2
+        exit 1
+      fi
+      mkdir -p "$(dirname "$2")"
+      SSH_OPTIONS+=(-o "UserKnownHostsFile=$2")
+      shift 2
+      ;;
     --key)
       KEY_PATH="${2:-}"
       if [[ -z "$KEY_PATH" ]]; then
@@ -73,6 +87,7 @@ else
 fi
 
 exec ssh \
+  "${SSH_OPTIONS[@]}" \
   -i "$KEY_PATH" \
   -o IdentitiesOnly=yes \
   -o ConnectTimeout=10 \

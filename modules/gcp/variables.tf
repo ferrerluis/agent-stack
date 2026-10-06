@@ -1,0 +1,13 @@
+variable "project_name" { type = string }
+variable "admin_username" { type = string }
+variable "ssh_public_key" { type = string }
+variable "allowed_ssh_cidr" { type = string }
+variable "gcp_project_id" { type = string }
+variable "gcp_region" { type = string }
+variable "gcp_zone" { type = string }
+variable "gcp_machine_type" { type = string }
+variable "gcp_image" { type = string }
+variable "gcp_disk_size_gb" { type = number }
+variable "gcp_boot_disk_size_gb" { type = number }
+variable "tailscale_enabled" { type = bool }
+variable "public_domain_enabled" { type = bool }

@@ -1,3 +1,5 @@
+mock_provider "google" {}
+
 override_module {
   target = module.aws
   outputs = {
@@ -26,6 +28,16 @@ override_module {
     server_id          = 31337
     volume_id          = "31338"
     ssh_command        = "ssh admin@203.0.113.30"
+  }
+}
+
+override_module {
+  target = module.gcp
+  outputs = {
+    instance_public_ip = "203.0.113.40"
+    instance_id        = "projects/agent-stack-tests/zones/us-east1-b/instances/agent-stack"
+    volume_id          = "projects/agent-stack-tests/zones/us-east1-b/disks/agent-stack-data"
+    device_name        = "agent-stack-data"
   }
 }
 
@@ -501,4 +513,29 @@ run "rejects_invalid_tailscale_mode" {
   expect_failures = [
     var.tailscale_mode,
   ]
+}
+
+run "rejects_missing_gcp_project" {
+  command = plan
+  variables { cloud_provider = "gcp" }
+  expect_failures = [var.gcp_project_id]
+}
+run "rejects_wrong_gcp_zone" {
+  command = plan
+  variables {
+    cloud_provider = "gcp"
+    gcp_project_id = "agent-stack-tests"
+    gcp_zone       = "us-west1-a"
+  }
+  expect_failures = [var.gcp_zone]
+}
+run "rejects_unpinned_claude" {
+  command = plan
+  variables {
+    enabled_services         = ["workspace"]
+    workspace_password       = "tests-only-long-password"
+    workspace_claude_enabled = true
+    workspace_claude_release = "latest"
+  }
+  expect_failures = [var.workspace_claude_release]
 }

@@ -2,6 +2,14 @@
 # Providers
 # ─────────────────────────────────────────────────────────────────────────────
 
+provider "google" {
+  project = trimspace(var.gcp_project_id) != "" ? var.gcp_project_id : "agent-stack-inactive"
+  region  = var.gcp_region
+  zone    = var.gcp_zone
+  # Avoid ADC discovery when another provider is selected; never call Google APIs then.
+  access_token = var.cloud_provider == "gcp" ? null : "agent-stack-inactive"
+}
+
 provider "aws" {
   region     = var.aws_region
   access_key = var.cloud_provider == "aws" ? (var.aws_access_key != "" ? var.aws_access_key : null) : "mock_access_key"
@@ -29,6 +37,16 @@ resource "random_password" "gateway_token" {
 }
 
 resource "random_password" "hermes_api_server_key" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "hermes_dashboard_password" {
+  length  = 48
+  special = false
+}
+
+resource "random_password" "hermes_dashboard_secret" {
   length  = 64
   special = false
 }
@@ -106,6 +124,16 @@ resource "terraform_data" "input_validation" {
       error_message = "n8n_database_mode = \"external_postgres\" requires external_postgres_host, external_postgres_database, external_postgres_user, and external_postgres_password."
     }
   }
+}
+
+module "runtime_access" {
+  count      = var.tailscale_enabled ? 1 : 0
+  source     = "./modules/common/runtime-access"
+  depends_on = [terraform_data.runtime_apply]
+  repo_root  = abspath(path.root)
+  key_path   = var.repo_ssh_private_key_path
+  host       = local.admin_ssh_host
+  user       = var.admin_username
 }
 
 data "external" "repo_ssh_public_key" {
@@ -343,6 +371,24 @@ module "hetzner" {
   tailscale_auth_key                   = var.tailscale_auth_key
 }
 
+module "gcp" {
+  count                 = var.cloud_provider == "gcp" ? 1 : 0
+  source                = "./modules/gcp"
+  project_name          = var.project_name
+  admin_username        = var.admin_username
+  ssh_public_key        = local.resolved_ssh_public_key
+  allowed_ssh_cidr      = var.allowed_ssh_cidr
+  gcp_project_id        = var.gcp_project_id
+  gcp_region            = var.gcp_region
+  gcp_zone              = var.gcp_zone
+  gcp_machine_type      = var.gcp_machine_type
+  gcp_image             = var.gcp_image
+  gcp_disk_size_gb      = var.gcp_disk_size_gb
+  gcp_boot_disk_size_gb = var.gcp_boot_disk_size_gb
+  tailscale_enabled     = var.tailscale_enabled
+  public_domain_enabled = var.public_domain_enabled
+}
+
 locals {
   runtime_instance_id = (
     var.cloud_provider == "aws"
@@ -350,7 +396,7 @@ locals {
     : (
       var.cloud_provider == "digitalocean"
       ? one(module.digitalocean[*].droplet_id)
-      : one(module.hetzner[*].server_id)
+      : (var.cloud_provider == "hetzner" ? one(module.hetzner[*].server_id) : one(module.gcp[*].instance_id))
     )
   )
 
@@ -360,13 +406,18 @@ locals {
     : (
       var.cloud_provider == "digitalocean"
       ? one(module.digitalocean[*].volume_id)
-      : one(module.hetzner[*].volume_id)
+      : (var.cloud_provider == "hetzner" ? one(module.hetzner[*].volume_id) : one(module.gcp[*].volume_id))
     )
   )
 
   runtime_do_volume_name = var.cloud_provider == "digitalocean" ? one(module.digitalocean[*].volume_name) : ""
 
   runtime_template_vars = {
+    hermes_config_mode                             = var.hermes_config_mode
+    hermes_dashboard_username                      = var.hermes_dashboard_username
+    hermes_dashboard_password                      = trimspace(var.hermes_dashboard_password) != "" ? var.hermes_dashboard_password : random_password.hermes_dashboard_password.result
+    hermes_dashboard_secret                        = trimspace(var.hermes_dashboard_secret) != "" ? var.hermes_dashboard_secret : random_password.hermes_dashboard_secret.result
+    gcp_device_name                                = var.cloud_provider == "gcp" ? one(module.gcp[*].device_name) : ""
     provider_type                                  = var.cloud_provider
     project_name                                   = var.project_name
     admin_username                                 = var.admin_username
@@ -393,6 +444,7 @@ locals {
     tailscale_enabled                              = var.tailscale_enabled
     tailscale_auth_key                             = var.tailscale_auth_key
     openclaw_version                               = var.openclaw_version
+    openclaw_image                                 = var.openclaw_image_digest != "" ? "ghcr.io/openclaw/openclaw@${var.openclaw_image_digest}" : "ghcr.io/openclaw/openclaw:${var.openclaw_version}"
     openclaw_node_options                          = var.openclaw_node_options
     openclaw_swap_size_mb                          = var.openclaw_swap_size_mb
     openclaw_health_start_period_seconds           = var.openclaw_health_start_period_seconds
@@ -434,6 +486,8 @@ locals {
     ui_auth_username                               = var.ui_auth_username
     ui_auth_password                               = local.resolved_ui_auth_password
     workspace_enabled                              = local.workspace_enabled
+    workspace_claude_enabled                       = var.workspace_claude_enabled
+    workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
     workspace_codex_auto_update_enabled            = var.workspace_codex_auto_update_enabled
     workspace_codex_auto_update_timezone           = trimspace(var.workspace_codex_auto_update_timezone)
@@ -458,6 +512,10 @@ locals {
 
   runtime_docker_compose          = templatefile("${path.module}/modules/common/templates/runtime/docker-compose.yml.tpl", local.runtime_template_vars)
   runtime_env                     = templatefile("${path.module}/modules/common/templates/runtime/env.tpl", local.runtime_template_vars)
+  runtime_hermes_seed             = jsonencode({ model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model })
+  runtime_workspace_cli_task      = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
+  runtime_hermes_config           = file("${path.module}/modules/common/runtime/hermes_config.py")
+  runtime_hermes_health           = file("${path.module}/modules/common/runtime/hermes_health.py")
   runtime_workspace_env           = templatefile("${path.module}/modules/common/templates/runtime/workspace.env.tpl", local.runtime_template_vars)
   runtime_caddyfile_template      = templatefile("${path.module}/modules/common/templates/runtime/Caddyfile.template.tpl", local.runtime_template_vars)
   runtime_tailscale_bootstrap     = templatefile("${path.module}/modules/common/templates/runtime/tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
@@ -492,6 +550,10 @@ locals {
   runtime_artifact_checksum = nonsensitive(sha256(join("\n---agent-stack-artifact---\n", [
     nonsensitive(local.runtime_docker_compose),
     nonsensitive(local.runtime_env),
+    local.runtime_hermes_seed,
+    local.runtime_workspace_cli_task,
+    local.runtime_hermes_config,
+    local.runtime_hermes_health,
     nonsensitive(local.runtime_workspace_env),
     nonsensitive(local.runtime_caddyfile_template),
     nonsensitive(local.runtime_tailscale_bootstrap),
@@ -541,6 +603,7 @@ resource "terraform_data" "runtime_apply" {
     module.aws,
     module.digitalocean,
     module.hetzner,
+    module.gcp,
   ]
 
   connection {
@@ -571,6 +634,23 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_env
     destination = "${local.runtime_staging_dir}/.env"
+  }
+
+  provisioner "file" {
+    content     = local.runtime_hermes_seed
+    destination = "${local.runtime_staging_dir}/hermes-seed.json"
+  }
+  provisioner "file" {
+    content     = local.runtime_hermes_config
+    destination = "${local.runtime_staging_dir}/hermes_config.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_hermes_health
+    destination = "${local.runtime_staging_dir}/hermes_health.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_workspace_cli_task
+    destination = "${local.runtime_staging_dir}/workspace-cli-task.py"
   }
 
   provisioner "file" {

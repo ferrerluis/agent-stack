@@ -1,3 +1,5 @@
+mock_provider "google" {}
+
 override_module {
   target = module.aws
   outputs = {
@@ -26,6 +28,16 @@ override_module {
     server_id          = 31337
     volume_id          = "31338"
     ssh_command        = "ssh admin@203.0.113.30"
+  }
+}
+
+override_module {
+  target = module.gcp
+  outputs = {
+    instance_public_ip = "203.0.113.40"
+    instance_id        = "projects/agent-stack-tests/zones/us-east1-b/instances/agent-stack"
+    volume_id          = "projects/agent-stack-tests/zones/us-east1-b/disks/agent-stack-data"
+    device_name        = "agent-stack-data"
   }
 }
 
@@ -154,5 +166,34 @@ run "hetzner_provider_matrix" {
   assert {
     condition     = terraform_data.runtime_apply.triggers_replace.volume_id == "31338"
     error_message = "Runtime replacement triggers should include the selected Hetzner volume ID."
+  }
+}
+
+run "gcp_provider_matrix" {
+  command   = plan
+  state_key = "gcp-provider-matrix"
+  variables {
+    cloud_provider           = "gcp"
+    gcp_project_id           = "agent-stack-tests"
+    enabled_services         = ["openclaw", "hermes", "workspace"]
+    workspace_password       = "tests-only-long-password"
+    workspace_claude_enabled = true
+    workspace_claude_release = "2.1.211"
+  }
+  assert {
+    condition     = output.instance_public_ip == "203.0.113.40" && output.provider_used == "gcp"
+    error_message = "GCP selection must use the Google endpoint."
+  }
+  assert {
+    condition     = terraform_data.runtime_apply.triggers_replace.instance_id == "projects/agent-stack-tests/zones/us-east1-b/instances/agent-stack"
+    error_message = "Runtime deployment must track the Google instance."
+  }
+  assert {
+    condition     = strcontains(local.runtime_mount_volume, "/dev/disk/by-id/google-agent-stack-data")
+    error_message = "GCP runtime must mount the attached data disk by stable device name."
+  }
+  assert {
+    condition     = strcontains(local.runtime_workspace_dockerfile, "ARG CLAUDE_RELEASE=2.1.211") && strcontains(local.runtime_workspace_dockerfile, "/usr/local/bin/claude")
+    error_message = "The combined workspace must render a pinned, user-accessible Claude installation."
   }
 }
