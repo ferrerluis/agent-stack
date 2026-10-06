@@ -31,7 +31,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.fixture = preparation_fixtures.PreparationTest("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        for name in ("bin/agent-stack-ssh", remote.DOCTOR_PATH):
+        for name in ("bin/agent-stack-ssh", remote.DOCTOR_PATH, remote.AGENT_PATH):
             target = self.fixture.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / name).read_bytes())
@@ -81,6 +81,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.rebooted = False
         self.task_mutation = None
         self.file_mutation = None
+        self.agent_mutation = None
         self.checks = remote.RemoteChecks(self.attempt, self.ledger, execute=self.execute, now=lambda: self.clock, sleep=self.sleep)
 
     def sleep(self, amount):
@@ -98,6 +99,17 @@ class RemoteChecksTest(unittest.TestCase):
             report = {"schema": 1, "status": "pass", "checks": [{"name": name, "status": "pass"} for name in sorted(names)]}
             if self.fail_doctor:
                 report["checks"][0]["status"] = "fail"
+            return json.dumps(report).encode()
+        if input == (ROOT / remote.AGENT_PATH).read_bytes():
+            _, _, _, _, runtime, model, request_id, challenge_json = words
+            challenge = json.loads(challenge_json)
+            report = {"schema": 1, "status": "pass", "runtime": runtime, "served_model": model,
+                "request_id": request_id, "watchdog": "disarmed", "duration_seconds": 1.25,
+                "transport": "gateway_rpc" if runtime == "openclaw" else "api_runs",
+                "answer": {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]},
+                "model_usage": {"input_tokens": 30, "output_tokens": 25, "cache_read_tokens": 0, "cache_write_tokens": 0}}
+            if self.agent_mutation:
+                self.agent_mutation(report)
             return json.dumps(report).encode()
         if "--cli" in words:
             cli = words[words.index("--cli") + 1]
@@ -132,8 +144,61 @@ class RemoteChecksTest(unittest.TestCase):
     def baseline(self):
         self.checks.bootstrap()
         self.checks.doctors()
+        for runtime in ("openclaw", "hermes"):
+            self.checks.runtime_task(runtime)
         for cli in ("codex", "claude"):
             self.checks.workspace_task(cli)
+
+    def test_both_runtime_challenges_are_fresh_single_invocation_and_private(self):
+        self.checks.bootstrap()
+        self.checks.doctors()
+        proofs = [self.checks.runtime_task(runtime) for runtime in ("openclaw", "hermes")]
+        self.assertTrue(all(proof["status"] == "pass" for proof in proofs))
+        self.assertNotEqual(proofs[0]["request_id"], proofs[1]["request_id"])
+        evidence = cleanup.private_read(self.checks.path)
+        self.assertNotEqual(evidence["agents"]["openclaw"]["challenge"]["nonce"], evidence["agents"]["hermes"]["challenge"]["nonce"])
+        self.assertNotIn(terraform_fixtures.SECRET, json.dumps(evidence))
+        self.assertFalse(list((self.run / "repo").rglob("__pycache__")))
+        for runtime in ("openclaw", "hermes"):
+            with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_already_invoked"):
+                self.checks.runtime_task(runtime)
+        agent_calls = [call for call in self.calls if call["input"] == (ROOT / remote.AGENT_PATH).read_bytes()]
+        self.assertEqual(len(agent_calls), 2)
+        self.assertTrue(all(call["timeout"] == 300 for call in agent_calls))
+
+    def test_bad_runtime_answer_invalidates_health_evidence_and_blocks_repeat(self):
+        self.checks.bootstrap()
+        self.checks.doctors()
+        self.agent_mutation = lambda report: report["answer"].update(sum=0)
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_failed"):
+            self.checks.runtime_task("hermes")
+        evidence = cleanup.private_read(self.checks.path)
+        self.assertEqual(evidence["agents"]["hermes"]["status"], "uncertain")
+        self.assertEqual(evidence["checks"]["hermes.agent_turn"], "uncertain")
+        self.assertEqual(evidence["checks"]["service.hermes"], "uncertain")
+        self.assertTrue(all(value == "uncertain" for key, value in evidence["checks"].items() if key.startswith("hermes.")))
+        for cli in ("codex", "claude"):
+            self.checks.workspace_task(cli)
+        with self.assertRaisesRegex(terraform.PolicyError, "persistence_baseline_required"):
+            self.checks.reboot()
+        self.assertFalse(self.rebooted)
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
+            self.checks.runtime_task("hermes")
+        self.checks.doctors()
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_already_invoked"):
+            self.checks.runtime_task("hermes")
+
+    def test_runtime_task_needs_doctors_and_full_containment_time_before_dispatch(self):
+        self.checks.bootstrap()
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
+            self.checks.runtime_task("openclaw")
+        self.checks.doctors()
+        self.clock = self.attempt.active(self.ledger)["work_deadline"] - 299
+        before = len(self.calls)
+        with self.assertRaisesRegex(terraform.PolicyError, "agent_task_time_required"):
+            self.checks.runtime_task("openclaw")
+        self.assertEqual(len(self.calls), before)
+        self.assertEqual(cleanup.private_read(self.checks.path)["agents"], {})
 
     def test_measured_bootstrap_both_doctors_tasks_and_reboot_keep_disk_and_files(self):
         self.baseline()
@@ -246,8 +311,10 @@ class RemoteChecksTest(unittest.TestCase):
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_failed"):
             self.checks.reboot()
         self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["reboot"], "uncertain")
+        self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["openclaw.doctor"], "uncertain")
         self.fail_doctor = False
         self.assertEqual(self.checks.reboot(resume=True)["reboot"], "pass")
+        self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["openclaw.doctor"], "pass")
         reboot_commands = [call for call in self.calls if shlex.split(call["args"][-1]) == ["sudo", "-n", "systemctl", "reboot"]]
         self.assertEqual(len(reboot_commands), 1)
 

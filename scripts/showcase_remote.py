@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Measured SSH, doctor, workspace-task and reboot checks for an owned attempt.
+"""Measured SSH, doctor, runtime/workspace tasks and reboot checks for an owned attempt.
 
-This is a controller component, not a launch/readiness override. Runtime agent
-turns and authenticated second-peer browser checks are separate requirements.
+This is a controller component, not a launch/readiness override. Authenticated
+second-peer browser checks are a separate requirement.
 Raw command output and secrets never enter the evidence record.
 """
 import importlib.util
@@ -11,9 +11,11 @@ import json
 import math
 import os
 import re
+import secrets
 import shlex
 import stat
 import time
+import uuid
 
 from showcase_attempt import KEY_PATH, command, isolated_environment, remaining_timeout, verify_prepared
 from showcase_cleanup import capture, private_read, private_write
@@ -24,6 +26,7 @@ from showcase_terraform import exclusive, guard_state
 VM_TYPES = {"aws": "aws_instance", "digitalocean": "digitalocean_droplet", "gcp": "google_compute_instance", "hetzner": "hcloud_server"}
 DISK_TYPES = {"aws": "aws_ebs_volume", "digitalocean": "digitalocean_volume", "gcp": "google_compute_disk", "hetzner": "hcloud_volume"}
 DOCTOR_PATH = "skills/agent-stack-doctor/scripts/strict_health.py"
+AGENT_PATH = "scripts/showcase_agents.py"
 HOME = "/home/user"
 COMPOSE = ["sudo", "-n", "docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml"]
 WORKSPACE = COMPOSE + ["exec", "-T", "--user", "1000", "-e", "HOME=" + HOME,
@@ -154,9 +157,11 @@ class RemoteChecks:
     def evidence(self):
         prepared, _ = self.ensure()
         result = private_read(self.path) if self.path.exists() else {"schema": 1, "run_id": self.run.name,
-            "source_revision": prepared["source_revision"], "checks": {}, "tasks": {}, "baseline": None}
+            "source_revision": prepared["source_revision"], "checks": {}, "tasks": {}, "agents": {}, "baseline": None}
         require(result.get("schema") == 1 and result.get("run_id") == self.run.name and result.get("source_revision") == prepared["source_revision"]
                 and isinstance(result.get("checks"), dict) and isinstance(result.get("tasks"), dict), "remote_evidence_scope_mismatch")
+        result.setdefault("agents", {})
+        require(isinstance(result["agents"], dict), "remote_evidence_scope_mismatch")
         return result
 
     def bind(self):
@@ -263,6 +268,51 @@ class RemoteChecks:
                 and re.fullmatch(HEX, report["result_sha256"]), "workspace_file_verification_failed")
         return report["result_sha256"]
 
+    def agent_module(self):
+        source = self.attempt.checkout / AGENT_PATH
+        require(source.is_file(), "verified_agent_probe_required")
+        spec = importlib.util.spec_from_file_location("owned_showcase_agents", source)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source.read_bytes(), str(source), "exec"), module.__dict__)
+        return module
+
+    @exclusive
+    def runtime_task(self, runtime):
+        require(runtime in ("openclaw", "hermes"), "invalid_runtime")
+        evidence = self.evidence()
+        require(evidence["checks"].get("launch_ssh") == "pass", "bootstrap_proof_required")
+        required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
+        require(all(evidence["checks"].get(key) == "pass" for key in required), "runtime_doctor_proof_required")
+        require(runtime not in evidence["agents"], "runtime_task_already_invoked")
+        target, module = self.bind(), self.agent_module()
+        model = self.config["models"][runtime]
+        require(isinstance(model, str) and re.fullmatch(module.MODEL, model), "model_ids_required")
+        challenge = {"lhs": secrets.randbelow(1000000), "rhs": secrets.randbelow(1000000), "nonce": secrets.token_hex(16)}
+        request_id = str(uuid.uuid4())
+        _, active = self.ensure()
+        require(remaining_timeout(active, 300, now=self.now()) == 300, "agent_task_time_required")
+        evidence["agents"][runtime] = {"status": "started", "model": model, "request_id": request_id, "challenge": challenge}
+        private_write(self.path, evidence)
+        try:
+            report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", runtime, model, request_id, json.dumps(challenge)],
+                input=(self.attempt.checkout / AGENT_PATH).read_bytes(), timeout=300))
+            try:
+                proof = module.validate_proof(report, runtime, model, challenge, request_id)
+            except module.ProbeError:
+                raise PolicyError("runtime_task_failed") from None
+            evidence["agents"][runtime].update(proof)
+            evidence["checks"][runtime + ".agent_turn"] = "pass"
+        except BaseException:
+            evidence["agents"][runtime]["status"] = "uncertain"
+            # A failed task can stop its test container. Prior healthy/doctor
+            # evidence cannot remain green after that uncertainty.
+            evidence["checks"].update({key: "uncertain" for key in required if key.startswith(runtime + ".") or key == "service." + runtime})
+            evidence["checks"][runtime + ".agent_turn"] = "uncertain"
+            private_write(self.path, evidence)
+            raise
+        private_write(self.path, evidence)
+        return proof
+
     @exclusive
     def workspace_task(self, cli):
         require(cli in ("codex", "claude"), "invalid_workspace_cli")
@@ -304,9 +354,11 @@ class RemoteChecks:
     @exclusive
     def reboot(self, resume=False):
         evidence = self.evidence()
+        required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         baseline = evidence["baseline"]
         require(isinstance(baseline, dict) and all(cli in evidence["tasks"] and evidence["tasks"][cli].get("status") == "pass"
-                for cli in ("codex", "claude")), "persistence_baseline_required")
+                for cli in ("codex", "claude")) and all(evidence["agents"].get(runtime, {}).get("status") == "pass"
+                for runtime in ("openclaw", "hermes")), "persistence_baseline_required")
         require(type(resume) is bool and ((resume and evidence["checks"].get("reboot") in ("started", "uncertain"))
                 or (not resume and "reboot" not in evidence["checks"])), "reboot_already_invoked")
         target = self.bind()
@@ -338,12 +390,14 @@ class RemoteChecks:
                     break
             require(isinstance(after, dict) and after["boot_id"] != baseline["boot_id"], "new_boot_not_verified")
             require(all(after[key] == baseline[key] for key in ("disk_uuid", "data_volume_id", "checksum", "dns")), "persistent_disk_or_runtime_changed")
-            self.check_doctors(target)
+            checks = self.check_doctors(target)
             for task in evidence["tasks"].values():
                 require(self.verify_files(target, task) == task["result_sha256"], "persisted_workspace_result_changed")
             evidence["after_reboot"] = after
+            evidence["checks"].update(checks)
             evidence["checks"]["reboot"] = "pass"
         except BaseException:
+            evidence["checks"].update({key: "uncertain" for key in required})
             evidence["checks"]["reboot"] = "uncertain"
             private_write(self.path, evidence)
             raise
