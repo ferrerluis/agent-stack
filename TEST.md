@@ -109,7 +109,7 @@ python3 scripts/showcase_policy.py --config <private-inputs.json> --provider aws
 
 `inputs_complete` means the required fields and approved limits are present. Identity, project isolation, permissions, prices, model availability, minimum VM memory and second-peer access still require live preflight; none is established by an input declaration.
 
-The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project. A new config or ledger must not be used to restart the same batch's spending allowance. The deployment/test runner and independent provider/tailnet cleanup adapters remain to be implemented.
+The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project/region/zone. A new config or ledger must not be used to restart the same batch's spending allowance. Ledger schema 3 requires this complete scope; an older ledger is refused and must be preserved, not replaced to reset the budget. Deployment/test execution and resource/node deletion remain to be implemented.
 
 ## Read-only Cloud Preflight
 
@@ -128,6 +128,32 @@ Checks cover exact AWS/DO/GCP identity where available, dedicated-project occupa
 `read_checks_passed` is deliberately distinct from deployment readiness: `launch_ready` remains false, and each provider lists unverified permissions, quotas or capacity. Current prices, model access, enrollment/deletion authority, actual peer connectivity/browser authentication and live matrix results remain unverified. This preflight must not be used to bypass the remaining launch gates.
 
 Default unit tests use generated RSA keys and provider fixtures; when the optional AWS SDK is installed, an offline SDK test validates actual request shapes and rejects inherited personal-profile/endpoint settings. These tests perform no secret retrieval or provider request and do not establish real authentication or cloud support.
+
+## Read-only Cleanup Verification
+
+The inventory/verification component retrieves selected fields through `op` and makes read requests only. It requires an active attempt in the same private spending ledger, the original account/project/region/zone, and a fresh-prefix preflight before capture. Capture records observed IDs before deletion; it does not authorize deletion or replace the isolated Terraform state.
+
+```bash
+AGENT_STACK_LIVE_TESTS=1 python3 scripts/showcase_cleanup.py \
+  --config <private-inputs.json> --provider aws --run-id <as7-unique-id> \
+  --ledger <private-batch-directory> --inventory <private-run-directory>/inventory.json \
+  --phase capture
+```
+
+After the execution controller has destroyed only the owned resources and removed only the owned tailnet nodes, independently verify their absence:
+
+```bash
+AGENT_STACK_LIVE_TESTS=1 python3 scripts/showcase_cleanup.py \
+  --config <private-inputs.json> --provider aws --run-id <as7-unique-id> \
+  --ledger <private-batch-directory> --inventory <private-run-directory>/inventory.json \
+  --phase verify --state <isolated-checkout>/terraform.tfstate
+```
+
+Directories must have mode 0700, input/state/inventory files mode 0600. Capture includes AWS boot disks and default VPC children, GCP boot disks and Hetzner primary IPv4/IPv6 IDs. Recapture preserves previously observed IDs and nodes after partial deletion. Renamed IDs, orphan disks, project-membership remnants and unknown resources in the dedicated Hetzner project prevent a cleanup receipt. The original runner peer cannot be captured as an owned node; preflight rejects an already-existing node using the attempt's prefix.
+
+Verification requires an empty private local Terraform state plus successful independent cloud and tailnet queries. Only documented AWS resource-not-found errors count as absence; permission errors, timeouts, incomplete inventories or malformed responses fail. A terminated AWS instance is a retained tombstone, with its disks checked separately. A successful receipt is saved privately and marks the original attempt cleaned without refunding its spending reservation. Missing state after a pre-create failure needs controller proof; this standalone command does not assume that missing state means no resources were created.
+
+Hetzner capture is implemented, but a verified receipt still requires separate account/project-token mapping evidence: its API does not return those IDs. The live deployment/deletion controller, that proof path and real cleanup remain pending. Tests use provider fixtures and offline SDK responses, including the full capture/verify/ledger flow; they cannot establish live deletion.
 
 ## Optional Live Smoke Suite
 

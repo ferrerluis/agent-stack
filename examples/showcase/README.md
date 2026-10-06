@@ -21,7 +21,9 @@ The [container command](../../TEST.md) accepts exact Codex and Claude versions a
 
 AWS and DigitalOcean account identities are checked through their APIs. GCP uses the explicitly supplied service-account field for an in-memory signed token exchange, then checks the target project, billing, permissions, CPU quota and inventories across zones. Hetzner's token scope can be checked for existing resources and VM availability, but account/project mapping needs separate proof because its Cloud API does not return those IDs. Prices, complete quotas/lifecycle permissions, model execution and peer browser access remain pending.
 
-The deployment, test and independently verified cleanup runner remains in development. Adding another cloud's inputs or repairing pins preserves the batch ledger's spending/retry history; retries and cleanup stay tied to the originally recorded account/project.
+The [read-only inventory and cleanup verifier](../../TEST.md#read-only-cleanup-verification) now records implicit boot disks, VPC children, IPs and tailnet nodes, preserves them through partial cleanup and requires both empty Terraform state and independent API absence checks. It creates or deletes nothing; Hetzner receipts still need separate scope-mapping proof.
+
+The deployment, test and deletion controller remains in development. Adding another cloud's inputs or repairing pins preserves the batch ledger's spending/retry history; retries and cleanup stay tied to the originally recorded account/project/region/zone.
 
 After apply, `openclaw_url` and `hermes_url` use the observed full tailnet DNS name on HTTPS ports 443 and 8443. Retrieve `dashboard_url_with_token_import` and `hermes_dashboard_password` privately with `terraform output -raw`; ordinary apply output hides these values.
 

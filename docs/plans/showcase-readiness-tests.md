@@ -57,11 +57,11 @@ Build rendered templates with fake inputs, verify CLI paths/versions under UID 1
 
 The implemented command covers workspace SSH, versions, persistent data/host keys, missing-binary/password failures and ownership-checked cleanup. Native agent image/readiness checks and real model execution remain in the live tier; no container run has passed on the current host because Docker is absent.
 
-Private input structure and approved limits can be checked per provider with `python3 scripts/showcase_policy.py --config <mode-0600-inputs.json> --provider <provider>`. This retrieves no secret and performs no live preflight. The reservation/fresh-plan library and opt-in read-only provider preflight are implemented; deployment/test execution and independent provider/tailnet cleanup adapters are pending.
+Private input structure and approved limits can be checked per provider with `python3 scripts/showcase_policy.py --config <mode-0600-inputs.json> --provider <provider>`. This retrieves no secret and performs no live preflight. The reservation/fresh-plan library, opt-in read-only preflight and inventory/cleanup verifier are implemented; deployment/test execution and resource/node deletion remain pending.
 
 After installing the optional task-local dependencies, run `AGENT_STACK_LIVE_TESTS=1 python3 scripts/showcase_preflight.py --config <mode-0600-inputs.json> --provider <provider> --run-id <as7-unique-id>`. It retrieves selected 1Password fields once, checks cloud identity/project/VM size and selected permissions/quotas, inventories project/prefix resources and finds the registered authorized second peer. Tests use generated signing keys, paginated fixtures and the actual offline AWS SDK without live secrets or requests.
 
-The report always keeps `launch_ready: false` and lists unresolved checks; registered peer status does not prove browser connectivity, and price/model/deletion checks remain pending. Hetzner's project-scoped token cannot return account/project IDs, so that mapping requires separate evidence. Adding a later provider's inputs or repairing pins must preserve spending/retry history; each provider's recorded account/project must remain unchanged for retries and cleanup.
+The report always keeps `launch_ready: false` and lists unresolved checks; registered peer status does not prove browser connectivity, and price/model/deletion checks remain pending. Hetzner's project-scoped token cannot return account/project IDs, so that mapping requires separate evidence. Adding a later provider's inputs or repairing pins must preserve spending/retry history; each provider's recorded account/project/region/zone must remain unchanged for retries and cleanup.
 
 ## Proposed live-run interface and resource ownership
 
@@ -149,6 +149,7 @@ Also require no CLI error/permission-denied result and independently inspect the
 - On failure, retain sanitized evidence, diagnose and make the smallest repository fix. Rerun affected local tests and the failed live cases; if shared runtime/template code changes, revalidate affected cells on every cloud at the final version.
 - Handle EXIT/INT/TERM with cleanup; support cleanup resumption after runner crashes. Preserve private state until independent deletion verification succeeds; never delete the only recovery record when cleanup fails.
 - Cleanup requires both Terraform-state removal and provider-side confirmation of owned IDs, plus temporary Tailscale-node deletion. Failure or uncertain ownership is escalated; do not delete existing or unowned resources.
+- The read-only `scripts/showcase_cleanup.py` component captures IDs before deletion and verifies them afterward against provider/tailnet inventories and a private empty local state. It includes implicit boot disks, default VPC children and primary IPs; recapture cannot discard old IDs. Read failures, renamed/orphan resources, old prefix collisions and runner-peer capture fail. The actual deletion/controller path and Hetzner mapping proof are still pending; fixture/offline-SDK tests do not prove live cleanup.
 - A quota/auth/policy problem is blocked or failed evidence, never a pass. Continue independent implementation work; involve Luis for missing authorization, secrets, unavailable account privileges or an expanded budget/scope, not routine test prompts.
 
 ## Acceptance record

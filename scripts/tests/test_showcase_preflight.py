@@ -379,6 +379,15 @@ class OrchestrationTest(unittest.TestCase):
             with self.assertRaisesRegex(preflight.PreflightError, "authorized_second_peer_not_found"):
                 preflight.check_tailnet(value, SECRET, FakeHTTP({url: {"devices": [row]}}))
 
+    def test_old_node_with_attempt_prefix_blocks_capture_of_existing_peer(self):
+        value = config()["tailnet"]
+        url = "https://api.tailscale.com/api/v2/tailnet/fixture-tailnet/devices"
+        for row in ({"name": PREFIX + ".fixture.ts.net", "hostname": PREFIX},
+                    {"name": "renamed.fixture.ts.net", "hostname": PREFIX + "-old"}):
+            http = FakeHTTP({url: {"devices": [{"name": value["runner_dns"], "authorized": True}, row]}})
+            with self.assertRaisesRegex(preflight.PreflightError, "tailnet_prefix_already_exists"):
+                preflight.check_tailnet(value, SECRET, http, PREFIX)
+
 
 if __name__ == "__main__":
     unittest.main()

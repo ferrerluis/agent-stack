@@ -415,19 +415,24 @@ class AWS:
                 "not_verified": ["terraform_selected_zone", "create_delete_permissions", "quotas", "live_capacity"]}
 
 
-def check_tailnet(config, key, http):
+def check_tailnet(config, key, http, prefix=None):
     check(text(key), "invalid_secret_field")
     authorization = "Basic " + base64.b64encode((key + ":").encode()).decode()
     value = http.request("https://api.tailscale.com/api/v2/tailnet/" + segment(config["name"]) + "/devices", authorization)
     devices = objects(value, "devices")
+    if prefix is not None:
+        for row in devices:
+            check(text(row.get("name")), "invalid_provider_response")
+            label = row["name"].split(".", 1)[0]
+            hostname = row.get("hostname", "")
+            check(not any(isinstance(name, str) and (name == prefix or name.startswith(prefix + "-"))
+                          for name in (label, hostname)), "tailnet_prefix_already_exists")
     matches = [row for row in devices if row.get("name", "").rstrip(".") == config["runner_dns"]]
     check(len(matches) == 1 and matches[0].get("authorized") is True, "authorized_second_peer_not_found")
     return {"second_peer": "registered_authorized", "not_verified": ["enrollment_key", "node_delete_permission", "peer_connectivity", "serve_https_browser_auth"]}
 
 
-def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aws_factory=None):
-    validate_inputs(config, provider)
-    require(isinstance(prefix, str) and bool(re.fullmatch(r"as7-[a-z0-9-]{8,30}", prefix)), "invalid_resource_scope")
+def check_dependencies(provider, aws_factory=None):
     # Check local prerequisites before prompting for any secret.
     if provider == "aws" and aws_factory is None:
         try:
@@ -439,6 +444,12 @@ def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aw
             import cryptography  # noqa: F401
         except ImportError:
             raise PreflightError("cryptography_dependency_required") from None
+
+
+def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aws_factory=None):
+    validate_inputs(config, provider)
+    require(isinstance(prefix, str) and bool(re.fullmatch(r"as7-[a-z0-9-]{8,30}", prefix)), "invalid_resource_scope")
+    check_dependencies(provider, aws_factory)
     http = JsonHTTP() if http is None else http
     cloud = config["providers"][provider]
     # Same field referenced more than once is read once, then reused in memory.
@@ -455,7 +466,7 @@ def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aw
     else:
         adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[provider](cloud, credentials["token"], http)
     report = adapter.preflight(prefix)
-    tailnet = check_tailnet(config["tailnet"], secret(config["tailnet"]["cleanup_key_ref"]), http)
+    tailnet = check_tailnet(config["tailnet"], secret(config["tailnet"]["cleanup_key_ref"]), http, prefix)
     return {"schema": 1, "provider": provider, "status": "read_checks_passed", "cloud": report, "tailnet": tailnet,
             "successful_read_queries": http.queries + getattr(adapter, "queries", 0), "launch_ready": False,
             "live_matrix": "not_tested", "prices_and_model_access": "not_verified"}

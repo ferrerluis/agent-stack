@@ -212,10 +212,10 @@ class Reservations:
                 except (ValueError, OSError):
                     raise PolicyError("ledger_unreadable") from None
             else:
-                state = {"schema": 2, "owner_fingerprint": self.fingerprint, "limits": {
+                state = {"schema": 3, "owner_fingerprint": self.fingerprint, "limits": {
                     "budget_usd": self.config["budget_usd"], "max_attempts": self.config["max_attempts"], "attempt_seconds": self.config["attempt_seconds"]
                 }, "provider_bindings": {}, "attempts": []}
-            require(isinstance(state, dict) and state.get("schema") == 2 and state.get("owner_fingerprint") == self.fingerprint
+            require(isinstance(state, dict) and state.get("schema") == 3 and state.get("owner_fingerprint") == self.fingerprint
                     and isinstance(state.get("attempts"), list) and isinstance(state.get("provider_bindings"), dict), "ledger_scope_mismatch")
             object_fields(state.get("limits"), ("budget_usd", "max_attempts", "attempt_seconds"))
             require(money(self.config["budget_usd"]) <= money(state["limits"]["budget_usd"])
@@ -250,7 +250,8 @@ class Reservations:
             require(sum(item["provider"] == provider for item in attempts) < self.config["max_attempts"], "attempt_limit_reached")
             require(sum((money(item["reserved_usd"]) for item in attempts), Decimal(0)) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
             cloud = self.config["providers"][provider]
-            binding = {"account_id": cloud["account_id"], "project_id": cloud.get("project_id", "")}
+            binding = {"account_id": cloud["account_id"], "project_id": cloud.get("project_id", ""),
+                       "region": cloud["region"], "zone": cloud.get("zone", "")}
             require(provider not in state["provider_bindings"] or state["provider_bindings"][provider] == binding, "provider_scope_changed")
             state["provider_bindings"][provider] = binding
             attempt = {"run_id": run_id, "provider": provider, "reserved_usd": str(amount), "started_at": now,
@@ -260,7 +261,8 @@ class Reservations:
         return self.operate(update)
 
     def confirm_cleanup(self, run_id, receipt):
-        object_fields(receipt, ("provider", "account_id", "project_id", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"))
+        object_fields(receipt, ("provider", "account_id", "project_id", "region", "zone", "terraform_state_verified_empty", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"))
+        require(receipt["terraform_state_verified_empty"] is True, "terraform_state_removal_unverified")
         require(type(receipt["owned_ids_checked"]) is int and receipt["owned_ids_checked"] >= 0 and receipt["remaining_ids"] == []
                 and type(receipt["tailnet_nodes_checked"]) is int and receipt["tailnet_nodes_checked"] >= 0 and receipt["remaining_tailnet_nodes"] == []
                 and all(type(receipt[key]) is int and receipt[key] > 0 for key in ("cloud_queries_succeeded", "tailnet_queries_succeeded")), "cleanup_unverified")
@@ -270,7 +272,7 @@ class Reservations:
             attempt = matches[0]
             binding = state["provider_bindings"].get(attempt["provider"])
             require(receipt["provider"] == attempt["provider"] and isinstance(binding, dict)
-                    and receipt["account_id"] == binding.get("account_id") and receipt["project_id"] == binding.get("project_id"), "cleanup_identity_mismatch")
+                    and all(receipt[key] == binding.get(key) for key in ("account_id", "project_id", "region", "zone")), "cleanup_identity_mismatch")
             require(type(receipt["verified_at"]) in (int, float) and receipt["verified_at"] >= attempt["started_at"], "cleanup_unverified")
             attempt.update(status="cleaned", cleanup_receipt=receipt)
             return {"run_id": run_id, "cleanup": "verified", "reserved_usd": attempt["reserved_usd"]}

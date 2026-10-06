@@ -96,7 +96,7 @@ class ReservationTest(unittest.TestCase):
         self.ledger = policy.Reservations(Path(self.temp.name) / "batch", self.config)
 
     def receipt(self, **changes):
-        return {"provider": "aws", "account_id": "123456789012", "project_id": "", "cloud_queries_succeeded": 1, "owned_ids_checked": 10, "remaining_ids": [],
+        return {"provider": "aws", "account_id": "123456789012", "project_id": "", "region": "us-east1", "zone": "", "terraform_state_verified_empty": True, "cloud_queries_succeeded": 1, "owned_ids_checked": 10, "remaining_ids": [],
                 "tailnet_queries_succeeded": 1, "tailnet_nodes_checked": 1, "remaining_tailnet_nodes": [], "verified_at": NOW + 100, **changes}
 
     def test_only_one_attempt_and_cleanup_required_even_after_deadline(self):
@@ -106,7 +106,7 @@ class ReservationTest(unittest.TestCase):
         with self.assertRaisesRegex(policy.PolicyError, "cleanup_required"):
             self.ledger.reserve("gcp", "as7-fixture02", quote("gcp"), now=NOW + 14500)
         for receipt in (self.receipt(remaining_ids=["operator-or-owned-disk"]), self.receipt(remaining_tailnet_nodes=["test-node"]),
-                        self.receipt(cloud_queries_succeeded=0), self.receipt(account_id="wrong-account")):
+                        self.receipt(cloud_queries_succeeded=0), self.receipt(account_id="wrong-account"), self.receipt(terraform_state_verified_empty=False)):
             with self.assertRaises(policy.PolicyError):
                 self.ledger.confirm_cleanup("as7-fixture01", receipt)
         self.ledger.confirm_cleanup("as7-fixture01", self.receipt())
@@ -177,8 +177,18 @@ class ReservationTest(unittest.TestCase):
         changed["providers"]["gcp"]["project_id"] = "different-project"
         recovery = policy.Reservations(self.ledger.directory, changed)
         with self.assertRaisesRegex(policy.PolicyError, "cleanup_identity_mismatch"):
-            recovery.confirm_cleanup("as7-fixture01", self.receipt(provider="gcp", account_id="fixture-account", project_id="different-project"))
-        recovery.confirm_cleanup("as7-fixture01", self.receipt(provider="gcp", account_id="fixture-account", project_id="agent-stack-fixture"))
+            recovery.confirm_cleanup("as7-fixture01", self.receipt(provider="gcp", account_id="fixture-account", project_id="different-project", zone="us-east1-b"))
+        recovery.confirm_cleanup("as7-fixture01", self.receipt(provider="gcp", account_id="fixture-account", project_id="agent-stack-fixture", zone="us-east1-b"))
+
+    def test_retry_and_cleanup_cannot_switch_to_empty_region_or_zone(self):
+        self.ledger.reserve("aws", "as7-fixture01", quote(), now=NOW)
+        with self.assertRaisesRegex(policy.PolicyError, "cleanup_identity_mismatch"):
+            self.ledger.confirm_cleanup("as7-fixture01", self.receipt(region="different-region"))
+        self.ledger.confirm_cleanup("as7-fixture01", self.receipt())
+        changed = config()
+        changed["providers"]["aws"]["region"] = "different-region"
+        with self.assertRaisesRegex(policy.PolicyError, "provider_scope_changed"):
+            policy.Reservations(self.ledger.directory, changed).reserve("aws", "as7-fixture02", quote(), now=NOW)
 
     def test_fresh_official_price_and_nonzero_model_cleanup_allowances_required(self):
         self.assertEqual(policy.reserve_amount(quote(hourly="0.101"), "aws", 14400, NOW), policy.money("2.01"))
