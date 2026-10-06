@@ -30,6 +30,7 @@ ERRORS = {
     "model_gateway_header_refused": (400, "invalid_request_error"),
     "model_gateway_method_refused": (405, "invalid_request_error"),
     "model_gateway_closed": (503, "api_error"),
+    "model_task_start_required": (403, "permission_error"),
     "model_transport_probe_refused": (400, "invalid_request_error"),
     "model_request_scope_changed": (400, "invalid_request_error"),
     "invalid_model_request": (400, "invalid_request_error"),
@@ -184,6 +185,7 @@ class Handler(BaseHTTPRequestHandler):
                 reply = json.dumps(gateway.probe_reply(role, raw), separators=(",", ":")).encode()
                 self.start("application/json"); self.write(reply); self.complete()
                 return
+            require(gateway.dispatch_allowed(role), "model_task_start_required")
             gate = RequestGate(gateway.spend, gateway.key, gateway.opener, now=gateway.now,
                                permit=lambda: gateway.permitted(self.request))
             gate.forward(role, path, raw, gateway.timeout, sink=self)
@@ -206,6 +208,25 @@ class BudgetGateway:
         self.transport, self.probes, self.probe_kinds = None, {}, set()
         self.server = self.thread = self.watchdog = None
         self.stop_watchdog = threading.Event()
+        self.started_roles = None
+
+    def gate_task_starts(self):
+        """The model session calls this before listening; it cannot be undone."""
+        with self.condition:
+            require(self.state == "new" and self.started_roles is None, "model_gateway_already_used")
+            self.started_roles = set()
+
+    def authorize_role(self, role):
+        with self.condition:
+            require(self.healthy() and role in ROLES and role in self.tokens, "model_gateway_closed")
+            self.spend.activate(self.timeout)
+            if self.started_roles is not None:
+                require(role not in self.started_roles, "model_role_already_used")
+                self.started_roles.add(role)
+
+    def dispatch_allowed(self, role):
+        with self.condition:
+            return self.healthy() and role in self.tokens and (self.started_roles is None or role in self.started_roles)
 
     def __enter__(self):
         with self.condition:
@@ -244,7 +265,8 @@ class BudgetGateway:
     def new_probe(self, role, kind="channel"):
         with self.condition:
             bundle = self.client(role)
-            require(kind in ("channel", "workspace") and (kind != "workspace" or role in ("codex", "claude")),
+            require(kind in ("channel", "workspace", "runtime") and (kind != "workspace" or role in ("codex", "claude"))
+                    and (kind != "runtime" or role in ("openclaw", "hermes")),
                     "model_transport_probe_refused")
             require((role, kind) not in self.probe_kinds and (role not in self.probes or self.probes[role]["observed"]),
                     "model_transport_probe_already_used")

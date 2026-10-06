@@ -1,0 +1,337 @@
+import copy
+from http.client import HTTPConnection
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import showcase_runtime_routes as routes
+import showcase_runtime_probe as probe
+import showcase_runtime_lifecycle as lifecycle
+import showcase_model_session as session
+import showcase_cleanup as cleanup
+from showcase_policy import PolicyError
+import test_showcase_runtime_routes as route_fixtures
+import test_showcase_model_session as model_fixtures
+import test_showcase_remote as remote_fixtures
+
+ROOT = Path(__file__).resolve().parents[2]
+CAPABILITY = route_fixtures.CAPABILITY
+CONTAINER = "c" * 64
+IMAGE_ID = "sha256:" + "d" * 64
+
+
+def image(role):
+    return ("ghcr.io/openclaw/openclaw" if role == "openclaw" else "ghcr.io/nousresearch/hermes-agent") + "@sha256:" + "e" * 64
+
+
+def snapshot(route):
+    return {"valid": True, "configRevisionHash": "b" * 64, "appliedConfigHash": "b" * 64,
+            "config": routes.compile_config({}, route), "issues": [], "warnings": [], "legacyIssues": []}
+
+
+def resolver_result(route):
+    return {"provider": "custom", "model": route["model"], "requested_provider": "as7-budget", "source": "custom_provider:as7-budget",
+            "api_mode": "chat_completions" if route["provider"] == "openai" else "anthropic_messages",
+            "base_url": route["base_url"] + ("/v1" if route["provider"] == "openai" else ""), "api_key": route["credential"]}
+
+
+def native(route):
+    if route["role"] == "openclaw": return probe.native_openclaw(snapshot(route), route)
+    return probe.native_hermes(routes.compile_config({}, route), route, lambda **_: resolver_result(route))
+
+
+class NativeProbeTest(unittest.TestCase):
+    def test_all_four_native_route_pairs_bind_model_wire_endpoint_and_full_bounds(self):
+        for role in ("openclaw", "hermes"):
+            for provider in ("openai", "anthropic"):
+                route = route_fixtures.route(role, provider)
+                report = native(route); probe.native_proof_valid(route, report)
+                self.assertEqual(report["model"], route["model"])
+                self.assertNotIn(CAPABILITY, json.dumps(report))
+
+    def test_openclaw_disk_echo_stale_applied_revision_wrong_model_endpoint_or_extra_provider_fail(self):
+        route = route_fixtures.route()
+        mutations = [lambda value: value.pop("appliedConfigHash"), lambda value: value.update(appliedConfigHash="c" * 64),
+                     lambda value: value.update(valid=False), lambda value: value.update(warnings=["fixture"]),
+                     lambda value: value["config"]["models"].update(mode="merge"),
+                     lambda value: value["config"]["models"]["providers"].update(other={}),
+                     lambda value: value["config"]["models"]["providers"]["openai"].update(baseUrl="https://api.openai.com/v1"),
+                     lambda value: value["config"]["models"]["providers"]["openai"]["models"][0].update(id="other"),
+                     lambda value: value["config"]["agents"]["defaults"]["model"].update(fallbacks=["other/model"])]
+        for mutation in mutations:
+            value = snapshot(route); mutation(value)
+            with self.assertRaises(ValueError): probe.native_openclaw(value, route)
+
+    def test_hermes_native_pool_oauth_or_other_route_is_not_accepted_as_a_config_echo(self):
+        route = route_fixtures.route("hermes", "anthropic"); config = routes.compile_config({}, route)
+        for changes in ({"provider": "anthropic"}, {"requested_provider": "auto"}, {"model": "other"},
+                        {"source": "pool:as7-budget"}, {"base_url": "https://api.anthropic.com"},
+                        {"api_mode": "chat_completions"}, {"api_key": "other-secret"}, {"credential_pool": "fixture"},
+                        {"extra_headers": {"authorization": "other-secret"}}, {"request_overrides": {"service_tier": "priority"}}):
+            getter = Mock(return_value=resolver_result(route) | changes)
+            with self.assertRaises(ValueError): probe.native_hermes(config, route, getter)
+            getter.assert_called_once_with(requested="as7-budget", target_model=route["model"],
+                                          explicit_api_key=CAPABILITY, explicit_base_url=route["base_url"])
+        config["model"]["openai_runtime"] = "codex_app_server"; getter = Mock()
+        with self.assertRaises(ValueError): probe.native_hermes(config, route, getter)
+        getter.assert_not_called()
+
+    def call_hermes(self, action="transport", mutation=None, uid=10000):
+        route = route_fixtures.route("hermes"); raw = routes.encoded(routes.compile_config({}, route))
+        packet = {"action": action, "route": route, "config_sha256": hashlib.sha256(raw).hexdigest(),
+                  "source_revision": "a" * 40, "nonce": "f" * 64 if action == "transport" else ""}
+        if mutation: packet.update(mutation)
+        reply = json.dumps({"schema": 1, "role": "hermes", "nonce": packet["nonce"], "source_revision": "a" * 40}, separators=(",", ":")).encode()
+        response = Mock(status=200); response.getheader.return_value = "application/json"; response.read.return_value = reply
+        connection = Mock(); connection.getresponse.return_value = response
+        info = SimpleNamespace(st_uid=10000, st_gid=10000, st_nlink=1, st_size=len(raw), st_mode=0o100600)
+        with patch.object(probe.os, "geteuid", return_value=uid), patch.object(probe.Path, "is_symlink", return_value=False), \
+             patch.object(probe.Path, "stat", return_value=info), patch.object(probe.Path, "is_file", return_value=True), \
+             patch.object(probe.Path, "read_bytes", return_value=raw), patch.object(probe, "HTTPConnection", return_value=connection) as http:
+            result = probe.hermes_probe(packet, Mock(return_value=resolver_result(route)))
+        return result, connection, http
+
+    def test_hermes_native_only_probe_never_connects_and_transport_uses_one_exact_nonce_without_proxy(self):
+        result, connection, http = self.call_hermes("native")
+        self.assertEqual(result["status"], "runtime_native_route_verified"); http.assert_not_called()
+        result, connection, http = self.call_hermes()
+        self.assertEqual(result["uid"], 10000); self.assertEqual(result["nonce"], "f" * 64)
+        http.assert_called_once_with("172.17.0.1", 23456, timeout=3)
+        self.assertEqual(connection.request.call_args.args[:2], ("POST", "/hermes/_transport"))
+        self.assertEqual(json.loads(connection.request.call_args.args[2]), {"nonce": "f" * 64})
+        connection.close.assert_called_once()
+        self.assertNotIn(CAPABILITY, json.dumps(result))
+        for mutation in ({"config_sha256": "c" * 64}, {"nonce": "bad"}, {"action": "paid"}, {"source_revision": "b" * 64}):
+            with self.assertRaises(ValueError): self.call_hermes(mutation=mutation)
+        with self.assertRaises(ValueError): self.call_hermes(uid=0)
+
+    def test_python_probe_and_complete_inline_loader_fail_redacted_without_vm_module_files(self):
+        commands = [[sys.executable, "-B", "-I", "-c", (ROOT / "scripts/showcase_runtime_probe.py").read_text()],
+                    lifecycle.source_command(ROOT)[2:]]
+        # Substitute only the local executable; the complete four-module
+        # loader really executes, without installed VM modules or cache files.
+        commands[1][0] = sys.executable
+        for command in commands:
+            result = subprocess.run(command, input=json.dumps({"credential": CAPABILITY}).encode(), capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 1); self.assertNotIn(CAPABILITY.encode(), result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["schema"], 1)
+
+
+class LifecycleTest(unittest.TestCase):
+    def make(self, role="openclaw", provider="openai"):
+        if getattr(self, "files", None): self.files.doCleanups()
+        files = route_fixtures.TransactionTest("runTest"); files.setUp(); self.addCleanup(files.doCleanups)
+        self.files, self.role, self.route = files, role, route_fixtures.route(role, provider)
+        self.running, self.timer, self.clock, self.health = True, False, 0.0, "healthy"
+        self.identifier, self.image_ref, self.image_id, self.restarts = CONTAINER, image(role), IMAGE_ID, 0
+        self.calls = []; self.native_mutation = self.probe_mutation = None
+        self.vm = lifecycle.RuntimeLifecycle(route_fixtures.binding(), self.execute, files.transaction,
+                                             now=lambda: self.clock, sleep=self.sleep)
+        patcher = patch.object(lifecycle, "PROBE_SOURCE", (ROOT / "scripts/showcase_runtime_probe.py").read_text())
+        patcher.start(); self.addCleanup(patcher.stop)
+        return self.vm
+
+    def sleep(self, amount): self.clock += amount
+
+    def execute(self, args, timeout=10, input=None):
+        self.calls.append((args, timeout, input))
+        if args[:len(lifecycle.COMPOSE)] == lifecycle.COMPOSE: return self.identifier.encode()
+        if args[:2] == ["/usr/bin/docker", "inspect"]:
+            return json.dumps({"id": self.identifier, "image_id": self.image_id, "image_ref": self.image_ref,
+                "state": {"Running": self.running, "Restarting": False, "Dead": False, "Health": {"Status": self.health}},
+                "restarts": self.restarts, "labels": {"com.docker.compose.project": "agent-stack", "com.docker.compose.service": self.role},
+                "mounts": [{"Destination": "/home/node/.openclaw" if self.role == "openclaw" else "/opt/data", "Type": "bind", "RW": True,
+                            "Source": str(self.files.root / self.role)}]}).encode()
+        if args[:2] == ["/usr/bin/docker", "stop"]: self.running = False; return CONTAINER.encode()
+        if args[:2] == ["/usr/bin/docker", "start"]: self.running = True; return CONTAINER.encode()
+        if args[0] == "systemd-run": self.timer = True; return b""
+        if args[:2] == ["systemctl", "is-active"]: return b"active" if self.timer else b"inactive"
+        if args[:2] == ["systemctl", "stop"]: self.timer = False; return b""
+        if args[:2] == ["systemctl", "show"]: return b"active" if self.timer else b"inactive"
+        if args[:2] == ["/usr/bin/docker", "exec"]:
+            if "config.get" in args:
+                value = snapshot(self.route)
+                if self.native_mutation: self.native_mutation(value)
+                return json.dumps(value).encode()
+            packet = json.loads(input)
+            self.assertEqual(packet["route"], self.route)
+            self.assertIn("env", args); self.assertIn("-i", args)
+            value = {"schema": 1, "status": "runtime_native_route_verified" if packet["action"] == "native" else "runtime_container_route_verified",
+                "role": self.role, "provider": self.route["provider"], "uid": routes.OWNERS[self.role],
+                "config_sha256": packet["config_sha256"], "source_revision": packet["source_revision"], "nonce": packet["nonce"]}
+            if self.role == "hermes": value["native_route"] = native(self.route)
+            if self.probe_mutation: self.probe_mutation(value)
+            return json.dumps(value).encode()
+        raise AssertionError("unexpected fixture command")
+
+    def prepare(self): return self.vm.prepare(self.route, image(self.role), "f" * 32)
+
+    def test_all_four_reload_probe_restore_paths_use_exact_container_and_private_original(self):
+        for role in ("openclaw", "hermes"):
+            for provider in ("openai", "anthropic"):
+                self.make(role, provider)
+                ready = self.prepare(); self.assertEqual(ready["watchdog"], "armed"); self.assertTrue(self.timer)
+                report = self.vm.verify(self.route, "f" * 64)
+                self.assertEqual(report["status"], "runtime_route_verified"); self.assertFalse(self.timer)
+                self.assertTrue(self.running); self.assertNotIn(CAPABILITY, json.dumps(report))
+                restored = self.vm.restore(role)
+                self.assertEqual(restored["status"], "runtime_config_restored")
+                self.assertFalse(self.running); self.assertFalse(self.timer)
+                self.assertEqual(self.files.target(role).read_bytes(), self.files.before[role])
+                self.assertFalse(self.vm.path(role).exists())
+                for args, _, _ in self.calls:
+                    if args[:2] in (["/usr/bin/docker", "stop"], ["/usr/bin/docker", "start"]): self.assertEqual(args[-1], CONTAINER)
+                self.assertFalse(any("pull" in args or "restart" in args for args, _, _ in self.calls))
+
+    def test_repeated_prepare_and_verify_never_replays_reload_or_nonce(self):
+        self.make(); self.prepare(); count = len(self.calls)
+        with self.assertRaises(ValueError): self.prepare()
+        self.assertEqual(len(self.calls), count)
+        self.vm.verify(self.route, "f" * 64); count = len(self.calls)
+        with self.assertRaises(ValueError): self.vm.verify(self.route, "c" * 64)
+        self.assertEqual(len(self.calls), count)
+
+    def test_wrong_image_replacement_container_and_automatic_restart_fail_without_other_resource_stop(self):
+        for change in ("image", "id", "restart"):
+            self.make(); self.prepare()
+            if change == "image": self.image_ref = image("hermes")
+            elif change == "id": self.identifier = "a" * 64
+            else: self.restarts = 1
+            with self.assertRaises(ValueError): self.vm.verify(self.route, "f" * 64)
+            self.assertTrue(self.timer)
+            self.assertFalse(any(args[:2] == ["/usr/bin/docker", "stop"] and args[-1] != CONTAINER for args, _, _ in self.calls))
+
+    def test_stale_native_revision_or_container_uid_nonce_failure_preserves_guardian_and_stops(self):
+        for change in ("revision", "uid", "nonce"):
+            self.make(); self.prepare()
+            if change == "revision": self.native_mutation = lambda value: value.update(appliedConfigHash="c" * 64)
+            else: self.probe_mutation = lambda value: value.update({change: 0 if change == "uid" else "bad"})
+            with self.assertRaises(ValueError): self.vm.verify(self.route, "f" * 64)
+            self.assertFalse(self.running); self.assertTrue(self.timer)
+            self.assertEqual(json.loads(self.vm.path(self.role).read_text())["status"], "uncertain")
+            self.vm.restore(self.role); self.assertFalse(self.timer); self.assertFalse(self.running)
+
+    def test_bounded_unhealthy_reload_leaves_captured_container_stopped_and_original_restorable(self):
+        self.make(); original = self.execute
+        def unhealthy(args, **kwargs):
+            result = original(args, **kwargs)
+            if args[:2] == ["/usr/bin/docker", "start"]: self.health = "starting"
+            return result
+        self.vm.execute = unhealthy
+        with self.assertRaises(ValueError): self.prepare()
+        self.assertEqual(self.clock, 90); self.assertFalse(self.running); self.assertTrue(self.timer)
+        self.vm.restore(self.role)
+        self.assertEqual(self.files.target().read_bytes(), self.files.before[self.role])
+        self.assertFalse(self.running)
+
+    def test_changed_original_or_context_binding_never_overwrites_unknown_configuration(self):
+        self.make(); self.prepare(); self.vm.verify(self.route, "f" * 64)
+        self.files.target().write_text('{"operator":"change"}\n')
+        with self.assertRaises(ValueError): self.vm.restore(self.role)
+        self.assertEqual(self.files.target().read_text(), '{"operator":"change"}\n'); self.assertFalse(self.running)
+        context = json.loads(self.vm.path(self.role).read_text()); context["binding"]["source_revision"] = "c" * 40
+        self.vm.path(self.role).write_bytes(routes.encoded(context))
+        with self.assertRaises(ValueError): self.vm.load(self.role)
+
+
+class SessionReloadTest(unittest.TestCase):
+    def make(self):
+        helper = route_fixtures.SessionStagingTest("runTest"); fixture = helper.make(); self.addCleanup(helper.doCleanups)
+        self.fixture = fixture; fixture.reload_calls = []
+        fixture.prepare_mutation = fixture.probe_mutation = None; fixture.observe = True
+        def command(target, packet, timeout):
+            fixture.reload_calls.append(packet)
+            role = packet.get("role") or packet["route"]["role"]
+            if packet["action"] == "restore":
+                self.assertFalse(fixture.models.gateway.alive); self.assertFalse(fixture.models.transport.alive)
+                return {"schema": 1, "status": "runtime_config_restored", "role": role, "binding": packet["binding"], "original_sha256": "c" * 64}
+            route = packet["route"]
+            value = {"schema": 1, "status": "runtime_reload_verified", "role": role, "binding": packet["binding"],
+                "container_id": CONTAINER, "image_ref": "ghcr.io/openclaw/openclaw@" + fixture.config["pins"]["openclaw_digest"] if role == "openclaw" else fixture.config["pins"]["hermes_image"],
+                "image_id": IMAGE_ID, "config_sha256": "b" * 64, "native_route": native(route), "watchdog": "armed"}
+            if packet["action"] == "prepare":
+                self.assertEqual(timeout, 180)
+                if fixture.prepare_mutation: fixture.prepare_mutation(value)
+            else:
+                self.assertEqual(timeout, 30)
+                value.update(status="runtime_route_verified", watchdog="disarmed")
+                value["container_probe"] = {"schema": 1, "status": "runtime_container_route_verified", "role": role,
+                    "provider": route["provider"], "uid": 1000 if role == "openclaw" else 10000, "config_sha256": "b" * 64,
+                    "source_revision": packet["binding"]["source_revision"], "nonce": packet["nonce"]}
+                if role == "hermes": value["container_probe"]["native_route"] = value["native_route"]
+                if fixture.observe: fixture.models.gateway.observed.add((role, packet["nonce"]))
+                if fixture.probe_mutation: fixture.probe_mutation(value)
+            return value
+        fixture.models.runtime_lifecycle_command = command
+        return fixture
+
+    def test_both_native_reload_routes_require_independent_probe_and_cannot_authorize_runtime_task_yet(self):
+        for role in ("openclaw", "hermes"):
+            fixture = self.make(); fixture.checks.doctors()
+            report = fixture.models.activate_runtime(role)
+            self.assertEqual(report["status"], "runtime_route_verified")
+            self.assertEqual(cleanup.private_read(fixture.checks.path)["checks"][role + ".doctor"], "uncertain")
+            self.assertEqual(fixture.models.gateway.started_roles, set())
+            with self.assertRaisesRegex(PolicyError, "runtime_model_route_required"): fixture.models.runtime_client(role)
+            fixture.models.close()
+            evidence = cleanup.private_read(fixture.checks.path)
+            self.assertNotIn(CAPABILITY, json.dumps(evidence))
+            self.assertEqual(evidence["model_channels"]["before_reboot"]["shutdown"], "verified")
+            self.assertEqual([packet["action"] for packet in fixture.reload_calls], ["prepare", "verify", "restore"])
+
+    def test_forged_reload_receipt_or_echoed_unobserved_nonce_revokes_and_restores(self):
+        for changed in ("image", "native", "schema", "schema_bool", "uid", "observe"):
+            fixture = self.make()
+            if changed == "image": fixture.prepare_mutation = lambda value: value.update(image_ref=image("hermes"))
+            elif changed == "native": fixture.prepare_mutation = lambda value: value["native_route"].update(base_url_sha256="a" * 64)
+            elif changed in ("schema", "schema_bool"): fixture.prepare_mutation = lambda value: value.update(schema=True if changed == "schema_bool" else 2)
+            elif changed == "uid": fixture.probe_mutation = lambda value: value["container_probe"].update(uid=0)
+            else: fixture.observe = False
+            with self.assertRaisesRegex(PolicyError, "runtime_route_unverified"): fixture.models.activate_runtime("openclaw")
+            self.assertEqual(fixture.models.state, "closed")
+            evidence = cleanup.private_read(fixture.checks.path)
+            self.assertEqual(evidence["model_channels"]["before_reboot"]["runtime_routes"]["openclaw"]["status"], "uncertain")
+            self.assertEqual(fixture.reload_calls[-1]["action"], "restore")
+
+
+class GatewayStartTest(unittest.TestCase):
+    def make(self):
+        helper = model_fixtures.OriginalAccountSessionTest("runTest"); fixture = helper.make(real_gateway=True)
+        self.addCleanup(helper.doCleanups)
+        return fixture, helper
+
+    def test_actual_gateway_generation_requires_controller_task_start_before_hold_key_or_upstream(self):
+        fixture, helper = self.make()
+        self.assertEqual(helper.request(fixture), 403)
+        self.assertEqual(helper.account(fixture)["model_requests"], [])
+        fixture.reader.assert_not_called(); fixture.opener.open.assert_not_called()
+        started = fixture.models.begin_task("codex")
+        self.assertEqual(helper.request(fixture), 200)
+        self.assertEqual(fixture.models.task_receipt("codex", started)["status"], "gateway_responses_received")
+        with self.assertRaises(PolicyError): fixture.models.gateway.authorize_role("codex")
+
+    def test_runtime_nonce_before_task_start_uses_actual_http_without_hold_key_or_authorization(self):
+        fixture, helper = self.make(); bundle = fixture.models.gateway.new_probe("hermes", kind="runtime")
+        connection = HTTPConnection("127.0.0.1", fixture.models.gateway.server.server_port, timeout=3)
+        try:
+            connection.request("POST", "/hermes/_transport", json.dumps({"nonce": bundle["nonce"]}, separators=(",", ":")),
+                {"Authorization": "Bearer " + bundle["credential"], "Content-Type": "application/json"})
+            result = connection.getresponse(); self.assertEqual(result.status, 200); result.read()
+        finally: connection.close()
+        self.assertTrue(fixture.models.gateway.probe_observed("hermes", bundle["nonce"]))
+        self.assertEqual(helper.account(fixture)["model_requests"], [])
+        fixture.reader.assert_not_called(); fixture.opener.open.assert_not_called()
+        self.assertEqual(fixture.models.gateway.started_roles, set())
+        with self.assertRaises(PolicyError): fixture.models.gateway.new_probe("hermes", kind="runtime")
+        with self.assertRaises(PolicyError): fixture.models.gateway.new_probe("codex", kind="runtime")
+
+
+if __name__ == "__main__": unittest.main()

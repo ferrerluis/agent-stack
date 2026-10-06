@@ -16,6 +16,11 @@ class FixtureGateway:
     def __init__(self, spend, reader):
         self.spend, self.reader = spend, reader
         self.alive, self.observed, self.sealed = False, set(), set()
+        self.started_roles = None
+    def gate_task_starts(self): self.started_roles = set()
+    def authorize_role(self, role):
+        require(self.alive and role not in self.started_roles, "model_role_already_used")
+        self.started_roles.add(role)
     def __enter__(self): self.alive = True; return self
     def healthy(self): return self.alive
     def client(self, role):
