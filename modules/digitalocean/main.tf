@@ -171,6 +171,17 @@ resource "digitalocean_volume_attachment" "this" {
   volume_id  = local.do_volume_id
 }
 
+# Assign only resources created here. Reused disks retain their existing
+# project membership; a caller-supplied project is never created or deleted.
+resource "digitalocean_project_resources" "this" {
+  count   = var.do_project_id != "" ? 1 : 0
+  project = var.do_project_id
+  resources = concat(
+    [digitalocean_droplet.this.urn],
+    digitalocean_volume.this[*].urn,
+  )
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Firewall — SSH only + Tailscale UDP (if enabled)
 # ─────────────────────────────────────────────────────────────────────────────

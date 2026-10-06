@@ -53,7 +53,7 @@ OpenClaw, Hermes, n8n, Postgres, and the optional workspace run as Docker contai
 |-------------|-------|
 | Terraform ≥ 1.9 | [Install](https://developer.hashicorp.com/terraform/install) |
 | SSH key pair | Optional; if omitted, Terraform auto-creates a repo-local keypair in `./.ssh` |
-| Cloud credentials | AWS access key + secret, DigitalOcean API token, **or** Hetzner Cloud API token |
+| Cloud credentials | AWS access key + secret, DigitalOcean API token, Hetzner Cloud API token, or an authorized Google Cloud identity |
 | LLM credentials | At least one model provider credential: Anthropic/OpenAI/Groq/Gemini API key, or imported Codex auth for subscription-backed OpenAI |
 | Tailscale account (recommended) | [Sign up free](https://tailscale.com/) — generate an auth key |
 | VPN credentials (optional) | Required only when `vpn_enabled = true`; use manual service credentials for OpenVPN or a non-expiring Nord access token for NordLynx, never the normal account password |
@@ -173,7 +173,9 @@ The [showcase example](examples/showcase/README.md) runs both agents and both co
 
 Hermes seeds the selected `hermes_model` (or `default_model`) on fresh installs. `hermes_config_mode = "auto"` preserves existing configuration; `manage` changes the model in AgentStack-generated JSON only and fails safely on operator-written YAML. Its private dashboard uses a generated or supplied password/session secret, and API readiness requires bearer authentication and all reported checks green.
 
-Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host` to enforce service/config/doctor/tool/route checks. Human diagnostics collect evidence but do not establish a passing deployment; real model tasks and second-peer browser checks are separate acceptance requirements.
+OpenClaw receives a minimal authenticated local gateway configuration before its first start. Existing configuration is preserved during seeding; host Tailscale uses the container's LAN listener behind Docker's loopback-only published port, while the shared sidecar namespace uses loopback.
+
+Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host` to enforce service/config/doctor/tool/route checks, including both native doctors. Human diagnostics collect evidence but do not establish a passing deployment; real model tasks and second-peer browser checks are separate acceptance requirements.
 
 The TODO #7 live matrix remains pending for AWS, DigitalOcean, GCP and Hetzner. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation](docs/plans/showcase-readiness-implementation.md) and [test](docs/plans/showcase-readiness-tests.md) plans.
 
@@ -404,6 +406,7 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 | `aws_existing_volume_id` | `""` | Reuse existing EBS volume |
 | `do_token` | `""` | DigitalOcean API token |
 | `do_region` | `"nyc3"` | DO region slug |
+| `do_project_id` | `""` | Assign newly created Droplet/disk to this project; blank keeps default behavior |
 | `do_droplet_size` | `"s-2vcpu-2gb"` | Droplet size slug |
 | `do_disk_size_gb` | `20` | Extra block storage size (GB) |
 | `do_existing_volume_id` | `""` | Reuse existing DO volume (needs `do_existing_volume_name` too) |

@@ -46,13 +46,18 @@ Required: init, format, validation, mocked Terraform tests, setup/doctor tests, 
 
 Add coverage for GCP selection/module/output/volume wiring, inactive-provider initialization, four-cloud input parity where shared inputs are forwarded, Claude installation/auth boundaries, Hermes configuration/readiness, and mode-aware strict doctor checks.
 
-Proposed container command:
+Implemented container command (requires Docker and exact pins):
 
 ```bash
-./scripts/test-containers.sh --profile showcase
+./scripts/test-containers.sh --profile showcase \
+  --codex-release <x.y.z> --claude-release <x.y.z> --platform linux/amd64
 ```
 
 Build rendered templates with fake inputs, verify CLI paths/versions under UID 1000, confirm SSH public-key access and persistent home ownership, and test missing-binary/failing-readiness cases. Check legacy Codex-only workspaces still start; container checks must not claim real model execution when using mocks.
+
+The implemented command covers workspace SSH, versions, persistent data/host keys, missing-binary/password failures and ownership-checked cleanup. Native agent image/readiness checks and real model execution remain in the live tier; no container run has passed on the current host because Docker is absent.
+
+Private input structure and approved limits can now be checked per provider with `python3 scripts/showcase_policy.py --config <mode-0600-inputs.json> --provider <provider>`. This retrieves no secret and performs no live preflight. The reservation and fresh-plan library is implemented; cloud execution and independent provider/tailnet cleanup adapters are still pending.
 
 ## Proposed live-run interface and resource ownership
 
@@ -89,19 +94,20 @@ L1/L2 satisfy the launch/SSH matrix column; R1/R2 satisfy the runtime columns; W
 
 ## Exact runtime checks to implement
 
-Proposed strict AgentStack checker:
+Implemented strict AgentStack checker:
 
 ```bash
 skills/agent-stack-doctor/scripts/check_remote_health.sh \
   --strict --json --services openclaw,hermes,workspace \
+  --require-claude --check-tailscale --tailscale-mode host \
   --ssh-wrapper <isolated-checkout>/bin/agent-stack-ssh
 ```
 
-Require explicit passing checks and nonzero status on failure, timeout or invalid JSON. Current collection-only behavior is not this interface.
+Require explicit passing checks and nonzero status on failure, timeout or invalid JSON. The human collection mode remains advisory.
 
 For a pinned OpenClaw version supporting current [doctor lint](https://docs.openclaw.ai/cli/doctor/lint), execute `openclaw doctor --lint --json --severity-min warning` and inspect findings/check coverage, plus `openclaw health --json`. Execute a bounded `openclaw agent --agent main --message <fresh-challenge> --json` through the running gateway, without delivery flags; confirm flags with the pinned version's help and [agent CLI documentation](https://docs.openclaw.ai/agent-send).
 
-For Hermes, query authenticated `/health/detailed` and inspect readiness fields, not just HTTP status; send a non-streaming `/v1/chat/completions` request through the running API with the generated bearer key supplied privately. Check correct-answer content and native doctor results if that pinned version provides doctor; otherwise implement the full AgentStack Hermes check set explicitly rather than inventing CLI flags. [Hermes API contract](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server).
+For Hermes, query authenticated `/health/detailed` and inspect readiness fields, not just HTTP status; send a non-streaming `/v1/chat/completions` request through the running API with the generated bearer key supplied privately. Its current native `hermes doctor` has no JSON flag: the implemented checker requires zero exit, expected checked sections and a complete passing summary, without `--fix` or optional `--live` probes. Unsupported pinned formats fail until inspected; native doctor API connectivity calls belong in the model allowance. [Hermes API contract](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server), [native doctor](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/doctor.py).
 
 The Hermes check set includes config/model/credential availability, state-directory ownership, running gateway, readiness, usable authenticated dashboard/API and a model turn. Auth rejection is expected only in a deliberate negative test; it cannot be used as service-readiness proof.
 

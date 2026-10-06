@@ -47,6 +47,11 @@ require_file workspace-para-memory-drive-skill.md
 require_file workspace-codex-update.sh
 require_file workspace-codex-control.py
 require_file workspace-cli-task.py
+require_file openclaw_config.py
+require_file openclaw-seed.json
+require_file hermes_config.py
+require_file hermes-seed.json
+require_file hermes_health.py
 require_file agent-stack-workspace-codex-update
 require_file agent-stack-workspace-codex-update.service
 require_file agent-stack-workspace-codex-update.timer
@@ -544,7 +549,7 @@ docker compose --env-file "$staging/.env" -f "$staging/docker-compose.yml" confi
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"
-for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
+for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
   [ -e "$app/$path" ] && cp -a "$app/$path" "$previous/" || true
 done
 backup_workspace_image
@@ -554,7 +559,16 @@ install -m 0600 "$staging/.env" "$app/.env"
 install -m 0600 "$staging/workspace.env" "$app/workspace.env"
 install -m 0644 "$staging/hermes_health.py" "$app/hermes_health.py"
 install -m 0644 "$staging/hermes_config.py" "$app/hermes_config.py"
+install -m 0644 "$staging/openclaw_config.py" "$app/openclaw_config.py"
 install -m 0755 "$staging/workspace-cli-task.py" "$app/workspace-cli-task.py"
+OPENCLAW_CONFIG="$app/data/openclaw/openclaw.json"
+PREEXISTING_OPENCLAW_CONFIG=0
+[ ! -f "$OPENCLAW_CONFIG" ] || PREEXISTING_OPENCLAW_CONFIG=1
+openclaw_seed_changed=0
+if [ "${openclaw_enabled}" = "true" ]; then
+  openclaw_seed_result="$(python3 "$app/openclaw_config.py" --data-dir "$app/data/openclaw" --seed "$staging/openclaw-seed.json")"
+  [ "$openclaw_seed_result" != "changed" ] || openclaw_seed_changed=1
+fi
 hermes_config_changed=0
 if [ "${hermes_enabled}" = "true" ]; then
   if [ -f "$app/data/hermes/config.yaml" ]; then
@@ -615,6 +629,7 @@ if [ "$restart_status" -ne 0 ]; then
 fi
 if ! wait_agent_stack_initial_restart; then
   echo "[runtime] restart did not recover; restoring previous runtime files" >&2
+  [ "$openclaw_seed_changed" != "1" ] || rm -f "$OPENCLAW_CONFIG"
   if [ "$hermes_config_changed" = "1" ]; then
     if [ -f "$previous/hermes-config.yaml" ]; then
       cp -a "$previous/hermes-config.yaml" "$app/data/hermes/config.yaml"
@@ -622,7 +637,7 @@ if ! wait_agent_stack_initial_restart; then
       rm -f "$app/data/hermes/config.yaml"
     fi
   fi
-  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
+  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
     rm -rf "$app/$path"
     if [ -e "$previous/$path" ]; then
       cp -a "$previous/$path" "$app/$path"
@@ -641,13 +656,8 @@ if ! configure_workspace_codex_auto_update; then
   fail "workspace Codex updater installation failed"
 fi
 
-OPENCLAW_CONFIG="$app/data/openclaw/openclaw.json"
 OPENCLAW_ENABLED="${openclaw_enabled}"
 OPENCLAW_CONFIG_MODE_INPUT="${openclaw_config_mode}"
-PREEXISTING_OPENCLAW_CONFIG=0
-if [ -f "$OPENCLAW_CONFIG" ]; then
-  PREEXISTING_OPENCLAW_CONFIG=1
-fi
 case "$OPENCLAW_CONFIG_MODE_INPUT" in
   manage|preserve)
     OPENCLAW_CONFIG_MODE_EFFECTIVE="$OPENCLAW_CONFIG_MODE_INPUT"
@@ -1152,7 +1162,7 @@ refresh_openclaw_gateway_config() {
   gateway_token="$(env_value OPENCLAW_GATEWAY_TOKEN)"
   local tmp_config
   tmp_config="$(mktemp)"
-  if jq --argjson origins "$origins_json" --arg gateway_token "$gateway_token" '.gateway = (.gateway // {}) | .gateway.auth = ((.gateway.auth // {}) + { mode: "token", token: $gateway_token }) | .gateway.controlUi = ((.gateway.controlUi // {}) + { allowedOrigins: $origins })' "$OPENCLAW_CONFIG" > "$tmp_config"; then
+  if jq --argjson origins "$origins_json" --arg gateway_token "$gateway_token" --arg bind "${openclaw_gateway_bind}" '.gateway = ((.gateway // {}) + {bind:$bind}) | .gateway.auth = ((.gateway.auth // {}) + { mode: "token", token: $gateway_token }) | .gateway.controlUi = ((.gateway.controlUi // {}) + { allowedOrigins: $origins })' "$OPENCLAW_CONFIG" > "$tmp_config"; then
     if ! cmp -s "$tmp_config" "$OPENCLAW_CONFIG"; then
       mv "$tmp_config" "$OPENCLAW_CONFIG"
       chown 1000:1000 "$OPENCLAW_CONFIG" || true

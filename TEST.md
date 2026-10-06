@@ -24,6 +24,7 @@ Default-suite commands:
 - `terraform test`
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s skills/agent-stack-setup/tests`
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s skills/agent-stack-doctor/tests`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests`
 - `bash -n` over runtime shell templates
 - before/after `git status --short --untracked-files=all` comparison
 
@@ -73,13 +74,42 @@ cannot inspect well:
 - cloud-init loader scope, runtime template contents, private staging permissions, layout migration, and Terraform runtime provisioning contracts
 - module input parity across AWS, DigitalOcean, and Hetzner shared runtime inputs
 - Hermes config preservation, authenticated detailed readiness, installer readiness and safe rollback contracts
+- OpenClaw first-start gateway auth, private file ownership, preservation and rollback
 - workspace coding-task verification and command-scoped secret handling, using fake CLI results only
 - observed tailnet DNS collection without fabricated URLs
 - strict doctor failure behavior for absent services, empty/malformed/incomplete reports, failed SSH, timeouts and invalid/private routes
 - doctor scripts and legacy compatibility checks
+- private input references, new-resource plan restrictions, concurrent spending reservations, retry limits and independent cleanup receipts
 
 Keep these tests local-only. They may create temporary files, but they must not
 read real Codex auth, Terraform state, provider tokens, or cloud resources.
+
+## Optional Container Suite
+
+With Docker, Terraform, SSH and exact CLI versions available:
+
+```bash
+./scripts/test-containers.sh --profile showcase \
+  --codex-release <x.y.z> --claude-release <x.y.z> --platform linux/amd64
+```
+
+This renders the actual workspace templates without providers, builds both legacy Codex-only and combined images, and verifies pinned CLI execution over SSH as UID 1000. It checks persistent home data and host keys across restart/recreation, deliberate missing CLI/password failures, and deletion of uniquely labeled test containers/images/volumes.
+
+It uses a fake test password and a generated test-only SSH key; it retrieves no model credentials and explicitly reports model execution as untested. Missing Docker or unsuccessful cleanup fails the command. Base images/build cache may remain; the command does not prune shared Docker resources.
+
+The unit tests for this command cover its failure and ownership rules. They do not substitute for an actual image build or container run.
+
+## Private Execution Inputs
+
+Use [the reference-only example](examples/showcase/execution-inputs.example.json) to prepare a mode-0600 file outside Git. Validate one ready provider without retrieving secrets or contacting cloud/model APIs:
+
+```bash
+python3 scripts/showcase_policy.py --config <private-inputs.json> --provider aws
+```
+
+`inputs_complete` means the required fields and approved limits are present. Identity, project isolation, permissions, prices, model availability, minimum VM memory and second-peer access still require live preflight; none is established by an input declaration.
+
+The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. A new config or ledger must not be used to restart the same batch's spending allowance. The opt-in cloud execution runner and provider cleanup adapters remain to be implemented.
 
 ## Optional Live Smoke Suite
 

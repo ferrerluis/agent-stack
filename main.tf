@@ -236,6 +236,7 @@ module "digitalocean" {
   project_name    = var.project_name
   admin_username  = var.admin_username
   do_region       = var.do_region
+  do_project_id   = var.do_project_id
   do_droplet_size = var.do_droplet_size
   do_disk_size_gb = var.do_disk_size_gb
 
@@ -445,6 +446,7 @@ locals {
     tailscale_auth_key                             = var.tailscale_auth_key
     openclaw_version                               = var.openclaw_version
     openclaw_image                                 = var.openclaw_image_digest != "" ? "ghcr.io/openclaw/openclaw@${var.openclaw_image_digest}" : "ghcr.io/openclaw/openclaw:${var.openclaw_version}"
+    openclaw_gateway_bind                          = local.tailscale_sidecar_enabled ? "loopback" : "lan"
     openclaw_node_options                          = var.openclaw_node_options
     openclaw_swap_size_mb                          = var.openclaw_swap_size_mb
     openclaw_health_start_period_seconds           = var.openclaw_health_start_period_seconds
@@ -513,6 +515,8 @@ locals {
   runtime_docker_compose          = templatefile("${path.module}/modules/common/templates/runtime/docker-compose.yml.tpl", local.runtime_template_vars)
   runtime_env                     = templatefile("${path.module}/modules/common/templates/runtime/env.tpl", local.runtime_template_vars)
   runtime_hermes_seed             = jsonencode({ model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model })
+  runtime_openclaw_seed           = jsonencode({ gateway_bind = local.runtime_template_vars.openclaw_gateway_bind, gateway_token = local.resolved_gateway_token })
+  runtime_openclaw_config         = file("${path.module}/modules/common/runtime/openclaw_config.py")
   runtime_workspace_cli_task      = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
   runtime_hermes_config           = file("${path.module}/modules/common/runtime/hermes_config.py")
   runtime_hermes_health           = file("${path.module}/modules/common/runtime/hermes_health.py")
@@ -551,6 +555,8 @@ locals {
     nonsensitive(local.runtime_docker_compose),
     nonsensitive(local.runtime_env),
     local.runtime_hermes_seed,
+    nonsensitive(local.runtime_openclaw_seed),
+    local.runtime_openclaw_config,
     local.runtime_workspace_cli_task,
     local.runtime_hermes_config,
     local.runtime_hermes_health,
@@ -639,6 +645,14 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_hermes_seed
     destination = "${local.runtime_staging_dir}/hermes-seed.json"
+  }
+  provisioner "file" {
+    content     = local.runtime_openclaw_seed
+    destination = "${local.runtime_staging_dir}/openclaw-seed.json"
+  }
+  provisioner "file" {
+    content     = local.runtime_openclaw_config
+    destination = "${local.runtime_staging_dir}/openclaw_config.py"
   }
   provisioner "file" {
     content     = local.runtime_hermes_config

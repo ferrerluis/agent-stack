@@ -1,8 +1,12 @@
 import importlib.util
+import contextlib
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -68,6 +72,53 @@ class StrictHealthTest(unittest.TestCase):
         self.assertFalse(doctor.doctor_healthy([]))
         self.assertFalse(doctor.doctor_healthy({"findings": []}))
 
+    def hermes_report(self):
+        return "\n".join("◆ " + section + "\n  ✓ fixture passed" for section in (
+            "Python Environment", "Required Packages", "Configuration Files", "Directory Structure", "API Connectivity"
+        )) + "\n  All checks passed! 🎉\n"
+
+    def test_native_hermes_requires_complete_green_summary(self):
+        good = self.hermes_report()
+        self.assertTrue(doctor.hermes_doctor_healthy(good))
+        self.assertTrue(doctor.hermes_doctor_healthy("\x1b[32m" + good + "\x1b[0m"))
+        for output in ("All checks passed!", good.replace("API Connectivity", "Missing"), good.replace("All checks passed!", "Found 1 issue(s) to address:"),
+                       good + "\n✗ broken config", good + "\nAuth provider status (could not check: private-error)", good + "\nTraceback (most recent call last)"):
+            self.assertFalse(doctor.hermes_doctor_healthy(output))
+
+    def test_native_hermes_error_exit_fails_even_when_output_claims_success(self):
+        def run(command, timeout=30):
+            if command[-1] == "doctor":
+                self.assertIn("--user", command)
+                self.assertIn("10000:10000", command)
+                self.assertNotIn("--fix", command)
+                self.assertNotIn("--live", command)
+                return 1, self.hermes_report()
+            if command[1] == "compose":
+                return 0, "container-fixture"
+            if command[1] == "inspect":
+                return 0, json.dumps([{"State": {"Running": True, "Health": {"Status": "healthy"}}}])
+            return 0, '{"ok":true,"status":"pass"}'
+        with patch.object(doctor, "run", side_effect=run):
+            report = doctor.remote_report(["hermes"], False, False, "host")
+        self.assertEqual(next(check["status"] for check in report["checks"] if check["name"] == "hermes.doctor"), "fail")
+        self.assertFalse(doctor.accepted(report, doctor.required_checks(["hermes"])))
+
+    def test_hermes_private_config_accepts_native_group_read_and_rejects_public_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "config.yaml"
+            env = Path(temp) / ".env"
+            config.write_text('{"model":{"default":"fixture","provider":"custom"}}')
+            env.write_text("# container-seeded fixture\n")
+            probe = doctor.HERMES_CONFIG_PROBE.replace("/opt/data/config.yaml", str(config))
+            for config_mode, env_mode, expected in ((0o600,0o600,True),(0o640,0o600,True),(0o644,0o600,False),(0o640,0o644,False)):
+                config.chmod(config_mode)
+                env.chmod(env_mode)
+                output = io.StringIO()
+                with patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=json.loads)}), patch.dict(os.environ, {"OPENAI_API_KEY":"private-fixture-key"}), contextlib.redirect_stdout(output):
+                    exec(probe, {})
+                self.assertEqual(json.loads(output.getvalue())["ok"], expected)
+                self.assertNotIn("private-fixture-key", output.getvalue())
+
     def test_routes_require_correct_dns_https_ports_backends_and_private_access(self):
         dns = "agent-stack.test.ts.net"
         serve = {"TCP": {"443": {"HTTPS": True}, "8443": {"HTTPS": True}}, "Web": {
@@ -79,6 +130,18 @@ class StrictHealthTest(unittest.TestCase):
         self.assertFalse(doctor.routes_healthy({**serve, "AllowFunnel": {dns + ":443": True}}, dns, ["openclaw", "hermes"]))
         serve["Web"][dns + ":8443"]["Handlers"]["/"]["Proxy"] = "http://127.0.0.1:18789"
         self.assertFalse(doctor.routes_healthy(serve, dns, ["openclaw", "hermes"]))
+
+    def test_malformed_remote_nested_state_cannot_crash_or_pass(self):
+        for state in ({"State": {"Running": True, "Health": None}}, {"State": []}):
+            def run(command, timeout=30):
+                if command[1] == "compose":
+                    return 0, "container-fixture"
+                if command[1] == "inspect":
+                    return 0, json.dumps([state])
+                return 0, '{"Self":null,"Web":null,"AllowFunnel":null}'
+            with patch.object(doctor, "run", side_effect=run):
+                report = doctor.remote_report(["openclaw"], False, True, "host")
+            self.assertFalse(doctor.accepted(report, doctor.required_checks(["openclaw"], False, True)))
 
     def test_remote_missing_container_cannot_be_green(self):
         with patch.object(doctor, "run", return_value=(0, "")):

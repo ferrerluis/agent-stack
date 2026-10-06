@@ -154,6 +154,7 @@ run "digitalocean_module_plans_with_mocked_provider" {
     do_disk_size_gb         = 20
     do_existing_volume_id   = "do-volume-existing-agentstacktest"
     do_existing_volume_name = "agent-stack-existing-data"
+    do_project_id           = "12345678-1234-1234-1234-123456789abc"
   }
 
   assert {
@@ -169,6 +170,31 @@ run "digitalocean_module_plans_with_mocked_provider" {
   assert {
     condition     = output.volume_name == "agent-stack-existing-data"
     error_message = "DigitalOcean module should preserve the existing volume name used for the device path."
+  }
+  assert {
+    condition     = digitalocean_project_resources.this[0].project == var.do_project_id && length(digitalocean_project_resources.this[0].resources) == 1
+    error_message = "Project assignment may include the new Droplet but must not move a reused operator disk."
+  }
+}
+
+run "digitalocean_assigns_new_droplet_and_disk_to_selected_project" {
+  command   = plan
+  state_key = "digitalocean-fresh-project"
+  module {
+    source = "./modules/digitalocean"
+  }
+  providers = {
+    digitalocean = digitalocean.fake
+  }
+  variables {
+    do_region       = "nyc3"
+    do_droplet_size = "s-4vcpu-8gb"
+    do_disk_size_gb = 20
+    do_project_id   = "12345678-1234-1234-1234-123456789abc"
+  }
+  assert {
+    condition     = digitalocean_project_resources.this[0].project == var.do_project_id && length(digitalocean_project_resources.this[0].resources) == 2
+    error_message = "Both new project-capable resources must join the isolated test project."
   }
 }
 

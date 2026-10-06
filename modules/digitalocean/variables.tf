@@ -1,6 +1,10 @@
 variable "project_name" { type = string }
 variable "admin_username" { type = string }
 variable "do_region" { type = string }
+variable "do_project_id" {
+  type    = string
+  default = ""
+}
 variable "do_droplet_size" { type = string }
 variable "do_disk_size_gb" { type = number }
 

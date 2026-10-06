@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Credential-free input, plan and reservation rules for the showcase runner.
+
+These checks authorize no cloud operation and establish no live matrix result.
+The runner must additionally verify identities, prices, permissions and deletion
+through provider APIs before using these rules to perform an attempt.
+"""
+import argparse
+from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import fcntl
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+import time
+from urllib.parse import urlparse
+
+PROVIDERS = ("aws", "digitalocean", "gcp", "hetzner")
+RESOURCE_TYPES = {
+    "aws": {"aws_vpc", "aws_subnet", "aws_internet_gateway", "aws_route_table", "aws_route_table_association", "aws_security_group", "aws_key_pair", "aws_ebs_volume", "aws_instance", "aws_volume_attachment"},
+    "digitalocean": {"digitalocean_ssh_key", "digitalocean_vpc", "digitalocean_volume", "digitalocean_droplet", "digitalocean_volume_attachment", "digitalocean_firewall", "digitalocean_project_resources"},
+    "gcp": {"google_compute_network", "google_compute_subnetwork", "google_compute_firewall", "google_compute_disk", "google_compute_instance"},
+    "hetzner": {"hcloud_ssh_key", "hcloud_volume", "hcloud_firewall", "hcloud_server", "hcloud_volume_attachment"},
+}
+ESSENTIAL_TYPES = {
+    "aws": {"aws_vpc", "aws_instance", "aws_ebs_volume"},
+    "digitalocean": {"digitalocean_droplet", "digitalocean_volume", "digitalocean_project_resources"},
+    "gcp": {"google_compute_network", "google_compute_disk", "google_compute_instance"},
+    "hetzner": {"hcloud_server", "hcloud_volume"},
+}
+PRICE_HOSTS = {"aws": ("aws.amazon.com",), "digitalocean": ("www.digitalocean.com", "api.digitalocean.com"),
+               "gcp": ("cloud.google.com", "cloudbilling.googleapis.com"), "hetzner": ("www.hetzner.com", "api.hetzner.cloud")}
+
+
+class PolicyError(Exception):
+    """Only stable error codes may reach CLI output."""
+
+
+def require(condition, code):
+    if not condition:
+        raise PolicyError(code)
+
+
+def object_fields(value, required, optional=()):
+    require(isinstance(value, dict) and set(required) <= value.keys() and not (value.keys() - set(required) - set(optional)), "invalid_fields")
+
+
+def money(value):
+    require(isinstance(value, (str, int)) and not isinstance(value, bool), "invalid_money")
+    try:
+        result = Decimal(value)
+    except InvalidOperation:
+        raise PolicyError("invalid_money") from None
+    require(result.is_finite() and result >= 0, "invalid_money")
+    return result
+
+
+def text(value):
+    return isinstance(value, str) and bool(value.strip()) and not re.search(r"[\x00-\x1f\x7f]", value)
+
+
+def secret_ref(value):
+    # Require field-level references; never accept values, CLI commands or
+    # item exports that could include unrelated secrets.
+    return isinstance(value, str) and bool(re.fullmatch(r"op://[^/\s]+/[^/\s]+/(?:[^/\s]+/)?[^/\s]+", value))
+
+
+def validate_inputs(config, provider):
+    require(provider in PROVIDERS, "invalid_provider")
+    object_fields(config, ("schema", "profile", "owner", "budget_usd", "attempt_seconds", "max_attempts", "runner", "pins", "models", "secret_refs", "tailnet", "providers"))
+    require(type(config["schema"]) is int and config["schema"] == 1 and config["profile"] == "showcase", "invalid_profile")
+    require(text(config["owner"]), "owner_required")
+    require(0 < money(config["budget_usd"]) <= 25, "budget_exceeds_approval")
+    require(type(config["attempt_seconds"]) is int and 900 < config["attempt_seconds"] <= 14400, "lifetime_exceeds_approval")
+    require(type(config["max_attempts"]) is int and 1 <= config["max_attempts"] <= 2, "retries_exceed_approval")
+    object_fields(config["runner"], ("ssh_cidr",))
+    try:
+        cidr = ipaddress.ip_network(config["runner"]["ssh_cidr"], strict=True)
+    except (ValueError, TypeError):
+        raise PolicyError("runner_ipv4_32_required") from None
+    require(cidr.version == 4 and cidr.prefixlen == 32 and not cidr.is_unspecified, "runner_ipv4_32_required")
+    pins = config["pins"]
+    object_fields(pins, ("openclaw_version", "openclaw_digest", "hermes_image", "codex_release", "claude_release"))
+    require(isinstance(pins["openclaw_version"], str) and bool(re.fullmatch(r"20[0-9]{2}\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", pins["openclaw_version"])), "immutable_pins_required")
+    require(isinstance(pins["openclaw_digest"], str) and bool(re.fullmatch(r"sha256:[a-f0-9]{64}", pins["openclaw_digest"])), "immutable_pins_required")
+    require(isinstance(pins["hermes_image"], str) and bool(re.fullmatch(r"(?:ghcr.io/)?nousresearch/hermes-agent@sha256:[a-f0-9]{64}", pins["hermes_image"])), "immutable_pins_required")
+    require(all(isinstance(pins[key], str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", pins[key]) for key in ("codex_release", "claude_release")), "immutable_pins_required")
+    models = config["models"]
+    object_fields(models, ("openclaw", "hermes", "codex", "claude"))
+    require(all(text(value) for value in models.values()) and all(re.fullmatch(r"(?:openai|anthropic)/[A-Za-z0-9_.:/-]+", models[key]) for key in ("openclaw", "hermes")), "model_ids_required")
+    refs = config["secret_refs"]
+    object_fields(refs, ("openai_api_key", "anthropic_api_key", "workspace_password"))
+    require(all(secret_ref(value) for value in refs.values()), "secret_reference_required")
+    tailnet = config["tailnet"]
+    object_fields(tailnet, ("name", "runner_dns", "auth_key_ref", "cleanup_key_ref"))
+    require(text(tailnet["name"]) and isinstance(tailnet["runner_dns"], str) and bool(re.fullmatch(r"[a-z0-9-]+\.[a-z0-9.-]+\.ts\.net", tailnet["runner_dns"])), "second_peer_required")
+    require(all(secret_ref(tailnet[key]) for key in ("auth_key_ref", "cleanup_key_ref")), "tailnet_credentials_required")
+    require(isinstance(config["providers"], dict) and not config["providers"].keys() - set(PROVIDERS), "invalid_provider")
+    cloud = config["providers"].get(provider)
+    required = {"account_id", "region", "size", "credential_refs"}
+    if provider != "aws":
+        required.update(("project_id", "isolated_project"))
+    if provider == "gcp":
+        required.add("zone")
+    object_fields(cloud, required)
+    require(all(text(cloud[key]) for key in ("account_id", "region", "size")), "cloud_identity_required")
+    if provider == "aws":
+        require(bool(re.fullmatch(r"[0-9]{12}", cloud["account_id"])), "cloud_identity_required")
+    else:
+        require(cloud["isolated_project"] is True and text(cloud["project_id"]), "isolated_project_required")
+        expression = {"digitalocean": r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", "gcp": r"[a-z][a-z0-9-]{4,28}[a-z0-9]", "hetzner": r"[0-9]+"}[provider]
+        require(bool(re.fullmatch(expression, cloud["project_id"])), "isolated_project_required")
+    if provider == "gcp":
+        require(text(cloud["zone"]) and cloud["zone"].startswith(cloud["region"] + "-"), "zone_region_mismatch")
+    credential_fields = {"aws": ("access_key", "secret_key"), "digitalocean": ("token",), "gcp": ("service_account_json",), "hetzner": ("token",)}[provider]
+    object_fields(cloud["credential_refs"], credential_fields, ("session_token",) if provider == "aws" else ())
+    require(all(secret_ref(value) for value in cloud["credential_refs"].values()), "secret_reference_required")
+    return {"provider": provider, "status": "inputs_complete", "identity_permissions_prices_models_tailnet": "not_verified", "live_matrix": "not_tested"}
+
+
+def validate_fresh_plan(plan, provider, resource_prefix, run_dir):
+    require(provider in PROVIDERS and bool(re.fullmatch(r"as7-[a-z0-9-]{8,30}", resource_prefix)), "invalid_resource_scope")
+    require(isinstance(plan, dict) and isinstance(plan.get("resource_changes"), list), "invalid_plan")
+    types = set()
+    addresses = set()
+    for resource in plan["resource_changes"]:
+        require(isinstance(resource, dict) and isinstance(resource.get("change"), dict), "invalid_plan")
+        if resource.get("mode") == "data":
+            require(resource["change"].get("actions") in (["read"], ["no-op"]), "invalid_data_action")
+            continue
+        change = resource["change"]
+        require(change.get("actions") == ["create"] and change.get("before") is None and not change.get("importing"), "fresh_creates_only")
+        address, kind, values = resource.get("address"), resource.get("type"), change.get("after")
+        require(isinstance(address, str) and address not in addresses and isinstance(values, dict), "invalid_plan")
+        addresses.add(address)
+        if kind in ("random_password", "terraform_data", "local_file"):
+            require(not address.startswith("module."), "unexpected_resource")
+            if kind == "local_file":
+                filename = values.get("filename")
+                require(text(filename), "private_output_required")
+                path = Path(filename)
+                path = path if path.is_absolute() else Path(run_dir) / path
+                require(path.resolve().is_relative_to(Path(run_dir).resolve()), "private_output_required")
+            continue
+        require(kind in RESOURCE_TYPES[provider] and address.startswith("module." + provider + "[0]."), "unexpected_resource")
+        # Every named resource must use this attempt's prefix. Unnamed
+        # associations may only refer to new IDs unknown until apply.
+        tags = values.get("tags")
+        name = values.get("name") or values.get("key_name") or (tags.get("Name") if isinstance(tags, dict) else None)
+        unnamed = {"aws_volume_attachment", "aws_route_table_association", "digitalocean_volume_attachment", "digitalocean_project_resources", "hcloud_volume_attachment"}
+        if kind not in unnamed:
+            require(isinstance(name, str) and name.startswith(resource_prefix), "foreign_resource_name")
+        relationships = {"aws_volume_attachment": ("volume_id", "instance_id"), "aws_route_table_association": ("subnet_id", "route_table_id"),
+                         "digitalocean_volume_attachment": ("volume_id", "droplet_id"), "hcloud_volume_attachment": ("volume_id", "server_id")}.get(kind, ())
+        if relationships:
+            unknown = change.get("after_unknown")
+            require(isinstance(unknown, dict) and all(unknown.get(key) is True and values.get(key) is None for key in relationships), "existing_resource_reference")
+        types.add(kind)
+    require(ESSENTIAL_TYPES[provider] <= types, "fresh_vm_and_disk_required")
+    return {"status": "fresh_plan_checked", "resource_count": len(addresses), "identity": "requires_live_preflight"}
+
+
+def reserve_amount(quote, provider, attempt_seconds, now):
+    require(provider in PROVIDERS and type(attempt_seconds) is int and 900 < attempt_seconds <= 14400, "invalid_price_scope")
+    object_fields(quote, ("provider", "currency", "verified_at", "source", "hourly_usd", "fixed_usd", "model_usd", "cleanup_usd"))
+    require(quote["provider"] == provider and quote["currency"] == "USD", "price_scope_mismatch")
+    source = urlparse(quote["source"]) if isinstance(quote["source"], str) else None
+    require(source is not None and source.scheme == "https" and source.hostname in PRICE_HOSTS[provider] and not source.username and not source.password, "official_price_source_required")
+    try:
+        quoted = datetime.fromisoformat(quote["verified_at"].replace("Z", "+00:00"))
+        require(quoted.tzinfo is not None and 0 <= now - quoted.timestamp() <= 86400, "stale_price")
+    except (ValueError, TypeError, AttributeError):
+        raise PolicyError("stale_price") from None
+    hourly, fixed, model, cleanup = (money(quote[key]) for key in ("hourly_usd", "fixed_usd", "model_usd", "cleanup_usd"))
+    require(hourly > 0 and model > 0 and cleanup > 0, "complete_price_required")
+    return (hourly * Decimal(attempt_seconds) / 3600 + fixed + model + cleanup).quantize(Decimal(".01"), rounding=ROUND_CEILING)
+
+
+class Reservations:
+    """One private batch ledger, exclusive per process and conservative on costs.
+
+    A completed attempt still consumes its full reservation. Never infer a
+    refund from elapsed time or delayed provider billing. A missing cleanup
+    receipt blocks every new launch but never blocks recovery/deletion.
+    """
+    def __init__(self, directory, config):
+        self.directory = Path(directory)
+        self.config = config
+        self.fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def operate(self, update):
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        require(not self.directory.is_symlink() and self.directory.stat().st_uid == os.geteuid() and stat.S_IMODE(self.directory.stat().st_mode) & 0o077 == 0, "private_ledger_required")
+        lock_fd = os.open(self.directory / "lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(lock_fd, "r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            path = self.directory / "reservations.json"
+            require(not path.is_symlink(), "private_ledger_required")
+            if path.exists():
+                require(not path.is_symlink() and path.stat().st_uid == os.geteuid() and stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, "private_ledger_required")
+                try:
+                    state = json.loads(path.read_text())
+                except (ValueError, OSError):
+                    raise PolicyError("ledger_unreadable") from None
+            else:
+                state = {"schema": 1, "config_fingerprint": self.fingerprint, "attempts": []}
+            require(isinstance(state, dict) and state.get("schema") == 1 and state.get("config_fingerprint") == self.fingerprint and isinstance(state.get("attempts"), list), "ledger_scope_mismatch")
+            for attempt in state["attempts"]:
+                object_fields(attempt, ("run_id", "provider", "reserved_usd", "started_at", "deadline", "work_deadline", "status"), ("cleanup_receipt",))
+                require(attempt["status"] in ("active", "cleaned") and attempt["provider"] in PROVIDERS, "ledger_unreadable")
+                money(attempt["reserved_usd"])
+            result = update(state)
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.directory, delete=False) as file:
+                temporary = Path(file.name)
+                try:
+                    json.dump(state, file, sort_keys=True)
+                    file.flush()
+                    os.fsync(file.fileno())
+                    temporary.chmod(0o600)
+                    temporary.replace(path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            return result
+
+    def reserve(self, provider, run_id, quote, now=None):
+        now = time.time() if now is None else now
+        validate_inputs(self.config, provider)
+        require(bool(re.fullmatch(r"as7-[a-z0-9-]{8,30}", run_id)), "invalid_run_id")
+        amount = reserve_amount(quote, provider, self.config["attempt_seconds"], now)
+        def update(state):
+            attempts = state["attempts"]
+            require(not any(item["status"] == "active" for item in attempts), "cleanup_required_before_launch")
+            require(not any(item["run_id"] == run_id for item in attempts), "run_id_already_used")
+            require(sum(item["provider"] == provider for item in attempts) < self.config["max_attempts"], "attempt_limit_reached")
+            require(sum((money(item["reserved_usd"]) for item in attempts), Decimal(0)) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
+            attempt = {"run_id": run_id, "provider": provider, "reserved_usd": str(amount), "started_at": now,
+                       "deadline": now + self.config["attempt_seconds"], "work_deadline": now + self.config["attempt_seconds"] - 900, "status": "active"}
+            attempts.append(attempt)
+            return dict(attempt)
+        return self.operate(update)
+
+    def confirm_cleanup(self, run_id, receipt):
+        object_fields(receipt, ("provider", "account_id", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"))
+        require(type(receipt["owned_ids_checked"]) is int and receipt["owned_ids_checked"] >= 0 and receipt["remaining_ids"] == []
+                and type(receipt["tailnet_nodes_checked"]) is int and receipt["tailnet_nodes_checked"] >= 0 and receipt["remaining_tailnet_nodes"] == []
+                and all(type(receipt[key]) is int and receipt[key] > 0 for key in ("cloud_queries_succeeded", "tailnet_queries_succeeded")), "cleanup_unverified")
+        def update(state):
+            matches = [item for item in state["attempts"] if item["run_id"] == run_id]
+            require(len(matches) == 1 and matches[0]["status"] == "active", "active_attempt_required")
+            attempt = matches[0]
+            require(receipt["provider"] == attempt["provider"] and receipt["account_id"] == self.config["providers"][attempt["provider"]]["account_id"], "cleanup_identity_mismatch")
+            require(type(receipt["verified_at"]) in (int, float) and receipt["verified_at"] >= attempt["started_at"], "cleanup_unverified")
+            attempt.update(status="cleaned", cleanup_receipt=receipt)
+            return {"run_id": run_id, "cleanup": "verified", "reserved_usd": attempt["reserved_usd"]}
+        return self.operate(update)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check showcase input structure without retrieving secrets or contacting providers.")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--provider", choices=PROVIDERS, required=True)
+    args = parser.parse_args()
+    try:
+        path = Path(args.config)
+        require(not path.is_symlink() and path.stat().st_uid == os.geteuid() and stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, "private_config_required")
+        report = validate_inputs(json.loads(path.read_text()), args.provider)
+    except PolicyError as error:
+        report = {"status": "fail", "reason": str(error), "live_matrix": "not_tested"}
+    except (OSError, ValueError, TypeError):
+        report = {"status": "fail", "reason": "config_unreadable", "live_matrix": "not_tested"}
+    print(json.dumps(report))
+    return 0 if report["status"] == "inputs_complete" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

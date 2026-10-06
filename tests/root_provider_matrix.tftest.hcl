@@ -60,6 +60,8 @@ variables {
   gemini_api_key                                 = "gemini-agent-stack-tests"
   gateway_token                                  = "gateway-token-agent-stack-tests"
   hermes_api_server_key                          = "hermes-key-agent-stack-tests"
+  hermes_dashboard_password                      = "hermes-password-agent-stack-tests"
+  hermes_dashboard_secret                        = "hermes-session-secret-agent-stack-tests"
   n8n_encryption_key                             = "n8n-key-agent-stack-tests"
   postgres_password                              = "postgres-password-agent-stack-tests"
   ui_auth_password                               = "ui-password-agent-stack-tests"
@@ -195,5 +197,35 @@ run "gcp_provider_matrix" {
   assert {
     condition     = strcontains(local.runtime_workspace_dockerfile, "ARG CLAUDE_RELEASE=2.1.211") && strcontains(local.runtime_workspace_dockerfile, "/usr/local/bin/claude")
     error_message = "The combined workspace must render a pinned, user-accessible Claude installation."
+  }
+}
+
+run "host_tailscale_gateway_reachable_through_private_publish" {
+  command   = plan
+  state_key = "host-tailscale-bind"
+  variables {
+    cloud_provider = "aws"
+    tailscale_mode = "host"
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=lan") && strcontains(local.runtime_docker_compose, "127.0.0.1:18789:18789")
+    error_message = "Host Tailscale must reach the container while Docker keeps the gateway published only on host loopback."
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(local.runtime_openclaw_seed)).gateway_bind == "lan"
+    error_message = "Fresh gateway configuration must agree with the host-mode listener."
+  }
+}
+
+run "sidecar_gateway_keeps_shared_namespace_loopback" {
+  command   = plan
+  state_key = "sidecar-tailscale-bind"
+  variables {
+    cloud_provider = "aws"
+    tailscale_mode = "sidecar"
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=loopback") && jsondecode(nonsensitive(local.runtime_openclaw_seed)).gateway_bind == "loopback"
+    error_message = "A sidecar sharing the OpenClaw namespace must use loopback in both environment and first-start configuration."
   }
 }

@@ -78,6 +78,7 @@ run_phase "terraform validate" terraform -chdir="$TEST_REPO" validate -no-color 
 run_phase "terraform test" terraform -chdir="$TEST_REPO" test -no-color || true
 run_phase "setup unit tests" python3 -m unittest discover -s "$TEST_REPO/skills/agent-stack-setup/tests" || true
 run_phase "doctor unit tests" python3 -m unittest discover -s "$TEST_REPO/skills/agent-stack-doctor/tests" || true
+run_phase "test runner unit tests" python3 -m unittest discover -s "$TEST_REPO/scripts/tests" || true
 run_phase "runtime shell syntax" bash -n \
   "$TEST_REPO/modules/common/templates/runtime/install-agent-stack.sh.tpl" \
   "$TEST_REPO/modules/common/templates/runtime/agent-stack-migrate-layout.sh.tpl" \

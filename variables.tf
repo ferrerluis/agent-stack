@@ -169,6 +169,17 @@ variable "do_region" {
   default     = "nyc3"
 }
 
+variable "do_project_id" {
+  description = "Optional existing DigitalOcean project ID for the newly created Droplet and data volume. Blank preserves the default-project behavior."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.do_project_id == "" || can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.do_project_id))
+    error_message = "do_project_id must be blank or a DigitalOcean project UUID."
+  }
+}
+
 variable "do_droplet_size" {
   description = "Droplet size slug. Default s-2vcpu-2gb (Basic 2 GB / 2 vCPU, 60 GB root disk). Use s-2vcpu-4gb for 4 GB RAM."
   type        = string

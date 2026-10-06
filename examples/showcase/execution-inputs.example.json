@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "profile": "showcase",
+  "owner": "agent-stack-todo-7",
+  "budget_usd": "25.00",
+  "attempt_seconds": 14400,
+  "max_attempts": 2,
+  "runner": {"ssh_cidr": "REPLACE_WITH_RUNNER_PUBLIC_IPV4/32"},
+  "pins": {
+    "openclaw_version": "REPLACE_WITH_EXACT_RELEASE",
+    "openclaw_digest": "REPLACE_WITH_VERIFIED_SHA256_DIGEST",
+    "hermes_image": "REPLACE_WITH_OFFICIAL_IMAGE_AT_SHA256_DIGEST",
+    "codex_release": "REPLACE_WITH_EXACT_X.Y.Z",
+    "claude_release": "REPLACE_WITH_EXACT_X.Y.Z"
+  },
+  "models": {
+    "openclaw": "REPLACE_WITH_PROVIDER/MODEL",
+    "hermes": "REPLACE_WITH_PROVIDER/MODEL",
+    "codex": "REPLACE_WITH_OPENAI_MODEL_ID",
+    "claude": "REPLACE_WITH_ANTHROPIC_MODEL_ID"
+  },
+  "secret_refs": {
+    "openai_api_key": "op://VAULT_ID/ITEM_ID/FIELD_ID",
+    "anthropic_api_key": "op://VAULT_ID/ITEM_ID/FIELD_ID",
+    "workspace_password": "op://VAULT_ID/ITEM_ID/FIELD_ID"
+  },
+  "tailnet": {
+    "name": "REPLACE_WITH_TAILNET_NAME",
+    "runner_dns": "REPLACE_WITH_AUTHORIZED_SECOND_PEER.ts.net",
+    "auth_key_ref": "op://VAULT_ID/ITEM_ID/FIELD_ID",
+    "cleanup_key_ref": "op://VAULT_ID/ITEM_ID/FIELD_ID"
+  },
+  "providers": {
+    "aws": {
+      "account_id": "REPLACE_WITH_12_DIGIT_ACCOUNT_ID",
+      "region": "REPLACE_WITH_REGION",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "credential_refs": {
+        "access_key": "op://VAULT_ID/ITEM_ID/FIELD_ID",
+        "secret_key": "op://VAULT_ID/ITEM_ID/FIELD_ID"
+      }
+    },
+    "digitalocean": {
+      "account_id": "REPLACE_WITH_ACCOUNT_OR_TEAM_ID",
+      "project_id": "REPLACE_WITH_DEDICATED_NEW_PROJECT_UUID",
+      "isolated_project": true,
+      "region": "REPLACE_WITH_REGION",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "credential_refs": {"token": "op://VAULT_ID/ITEM_ID/FIELD_ID"}
+    },
+    "gcp": {
+      "account_id": "REPLACE_WITH_SERVICE_ACCOUNT_EMAIL",
+      "project_id": "REPLACE_WITH_DEDICATED_NEW_PROJECT_ID",
+      "isolated_project": true,
+      "region": "REPLACE_WITH_REGION",
+      "zone": "REPLACE_WITH_ZONE_IN_REGION",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "credential_refs": {"service_account_json": "op://VAULT_ID/ITEM_ID/FIELD_ID"}
+    },
+    "hetzner": {
+      "account_id": "REPLACE_WITH_ACCOUNT_OR_ORGANIZATION_ID",
+      "project_id": "REPLACE_WITH_DEDICATED_NEW_NUMERIC_PROJECT_ID",
+      "isolated_project": true,
+      "region": "REPLACE_WITH_LOCATION",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "credential_refs": {"token": "op://VAULT_ID/ITEM_ID/FIELD_ID"}
+    }
+  }
+}

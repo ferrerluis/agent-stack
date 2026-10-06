@@ -3,12 +3,26 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
 
 SERVICES = {"openclaw", "hermes", "workspace"}
 COMPOSE = ["docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml"]
+HERMES_CONFIG_PROBE = """import json,os,stat,yaml
+from pathlib import Path
+p=Path('/opt/data/config.yaml')
+e=p.with_name('.env')
+c=yaml.safe_load(p.read_text())
+m=c.get('model',{})
+keys={'anthropic':'ANTHROPIC_API_KEY','custom':'OPENAI_API_KEY','openai':'OPENAI_API_KEY','gemini':'GEMINI_API_KEY','groq':'GROQ_API_KEY'}
+s=p.stat()
+config_private=s.st_uid==os.geteuid() and s.st_gid==os.getegid() and stat.S_IMODE(s.st_mode) in (0o600,0o640)
+t=e.stat()
+env_private=t.st_uid==os.geteuid() and stat.S_IMODE(t.st_mode)==0o600
+print(json.dumps({'ok':bool(m.get('default') and m.get('provider') and (os.environ.get(keys.get(m.get('provider'),'')) or m.get('api_key'))) and config_private and env_private}))
+"""
 
 
 def run(command, timeout=30):
@@ -31,7 +45,7 @@ def required_checks(services, require_claude=False, tailscale=False):
     if "openclaw" in services:
         required.add("openclaw.doctor")
     if "hermes" in services:
-        required.update(("hermes.config", "hermes.readiness"))
+        required.update(("hermes.config", "hermes.readiness", "hermes.doctor"))
     if "workspace" in services:
         required.update(("workspace.uid", "workspace.codex"))
         if require_claude:
@@ -73,6 +87,19 @@ def doctor_healthy(report):
     )
 
 
+def hermes_doctor_healthy(output):
+    # The native CLI has no JSON flag. Its return code plus the completed
+    # summary must establish that static checks ran and found no issues.
+    # Optional, unconfigured OAuth/tools may print advisory warnings; Hermes
+    # records required problems in the issue list and failing summary.
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output).replace("\r", "\n")
+    sections = ("Python Environment", "Required Packages", "Configuration Files", "Directory Structure", "API Connectivity")
+    return (all("◆ " + section in text for section in sections)
+            and text.count("✓") >= 5
+            and len(re.findall(r"All checks passed!", text)) == 1
+            and not re.search(r"Found [0-9]+ issue|require manual intervention|Traceback|✗|could not check|couldn't check", text, re.I))
+
+
 def routes_healthy(serve, dns_name, services):
     if not isinstance(serve, dict) or not dns_name:
         return False
@@ -86,11 +113,13 @@ def routes_healthy(serve, dns_name, services):
         site = web.get(dns_name.rstrip(".") + ":" + port)
         if not isinstance(listener, dict) or listener.get("HTTPS") is not True or not isinstance(site, dict):
             return False
-        handler = site.get("Handlers", {}).get("/")
+        handlers = site.get("Handlers")
+        handler = handlers.get("/") if isinstance(handlers, dict) else None
         if not isinstance(handler, dict) or handler.get("Proxy") != "http://127.0.0.1:" + backend:
             return False
     # Serve must remain private to the tailnet.
-    return not any(serve.get("AllowFunnel", {}).values())
+    funnel = serve.get("AllowFunnel", {})
+    return isinstance(funnel, dict) and not any(funnel.values())
 
 
 def remote_report(services, require_claude, check_tailscale, tailscale_mode):
@@ -106,20 +135,23 @@ def remote_report(services, require_claude, check_tailscale, tailscale_mode):
         inspection = parse_json(output)
         state = inspection[0].get("State", {}) if isinstance(inspection, list) and len(inspection) == 1 and isinstance(inspection[0], dict) else {}
         state = state if isinstance(state, dict) else {}
-        record("service." + service, code == 0 and state.get("Running") is True and state.get("Health", {}).get("Status") == "healthy")
+        health = state.get("Health")
+        record("service." + service, code == 0 and state.get("Running") is True and isinstance(health, dict) and health.get("Status") == "healthy")
         if service == "openclaw":
             code, output = run(["docker", "exec", container, "openclaw", "doctor", "--lint", "--json", "--severity-min", "warning"]) if container else (1, "")
             report = parse_json(output)
             record("openclaw.doctor", code == 0 and doctor_healthy(report))
         elif service == "hermes":
             python = "/opt/hermes/.venv/bin/python"
-            config_probe = "import json,os,stat,yaml; from pathlib import Path; p=Path('/opt/data/config.yaml'); c=yaml.safe_load(p.read_text()); m=c.get('model',{}); keys={'anthropic':'ANTHROPIC_API_KEY','custom':'OPENAI_API_KEY','openai':'OPENAI_API_KEY','gemini':'GEMINI_API_KEY','groq':'GROQ_API_KEY'}; print(json.dumps({'ok':bool(m.get('default') and m.get('provider') and (os.environ.get(keys.get(m.get('provider'),'')) or m.get('api_key'))) and p.stat().st_uid==os.geteuid() and stat.S_IMODE(p.stat().st_mode)&0o077==0}))"
-            code, output = run(["docker", "exec", "--user", "10000", container, python, "-c", config_probe]) if container else (1, "")
+            code, output = run(["docker", "exec", "--user", "10000:10000", container, python, "-c", HERMES_CONFIG_PROBE]) if container else (1, "")
             report = parse_json(output)
             record("hermes.config", code == 0 and isinstance(report, dict) and report.get("ok") is True)
-            code, output = run(["docker", "exec", "--user", "10000", container, python, "/usr/local/libexec/agent-stack-hermes-health.py"]) if container else (1, "")
+            code, output = run(["docker", "exec", "--user", "10000:10000", container, python, "/usr/local/libexec/agent-stack-hermes-health.py"]) if container else (1, "")
             report = parse_json(output)
             record("hermes.readiness", code == 0 and isinstance(report, dict) and report.get("status") == "pass")
+            code, output = run(["docker", "exec", "--user", "10000:10000", "-e", "NO_COLOR=1",
+                                container, "/opt/hermes/.venv/bin/hermes", "doctor"], timeout=90) if container else (1, "")
+            record("hermes.doctor", code == 0 and hermes_doctor_healthy(output))
         elif service == "workspace":
             prefix = ["docker", "exec", "--user", "1000", container]
             code, output = run(prefix + ["id", "-u"]) if container else (1, "")
@@ -144,11 +176,13 @@ def remote_report(services, require_claude, check_tailscale, tailscale_mode):
                 prefix = ["docker", "exec", output.strip(), "tailscale", "--socket=/tmp/tailscaled.sock"]
         code, output = run(prefix + ["status", "--json"]) if prefix else (1, "")
         status = parse_json(output)
-        record("tailscale.online", code == 0 and isinstance(status, dict) and status.get("Self", {}).get("Online") is True and bool(status.get("Self", {}).get("DNSName")) and not status.get("Health"))
+        self_status = status.get("Self") if isinstance(status, dict) else None
+        dns_name = self_status.get("DNSName", "") if isinstance(self_status, dict) else ""
+        record("tailscale.online", code == 0 and isinstance(self_status, dict) and self_status.get("Online") is True
+               and isinstance(dns_name, str) and bool(dns_name) and not status.get("Health"))
         code, output = run(prefix + ["serve", "status", "--json"]) if prefix else (1, "")
         serve = parse_json(output)
-        dns_name = status.get("Self", {}).get("DNSName", "") if isinstance(status, dict) else ""
-        record("tailscale.routes", code == 0 and routes_healthy(serve, dns_name, services))
+        record("tailscale.routes", code == 0 and isinstance(dns_name, str) and routes_healthy(serve, dns_name, services))
     return {"schema": 1, "checks": checks}
 
 

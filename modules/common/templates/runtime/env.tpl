@@ -13,13 +13,11 @@ N8N_ENABLED=${n8n_enabled}
 LOCAL_POSTGRES_ENABLED=${local_postgres_enabled}
 CADDY_ENABLED=${caddy_enabled}
 NODE_OPTIONS=${openclaw_node_options}
+OPENCLAW_GATEWAY_BIND=${openclaw_gateway_bind}
 %{ if tailscale_enabled }
-OPENCLAW_GATEWAY_BIND=loopback
 TAILSCALE_AUTH_KEY=${tailscale_auth_key}
 TAILSCALE_HOSTNAME=${project_name}
 TAILSCALE_MODE=${tailscale_mode}
-%{ else }
-OPENCLAW_GATEWAY_BIND=lan
 %{ endif }
 HERMES_DASHBOARD=${hermes_dashboard_enabled ? "1" : "0"}
 HERMES_DASHBOARD_HOST=0.0.0.0

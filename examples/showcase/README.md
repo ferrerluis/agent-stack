@@ -13,6 +13,12 @@ Use the shared [settings](terraform.tfvars.example) only in an isolated checkout
 
 AWS uses a new VPC in the existing account. DigitalOcean, GCP and Hetzner require dedicated new test projects; GCP also needs billing, Compute API, quota and compatible project policy. Run one deployment at a time, within $25 total spend, one fresh-deployment retry per provider and four hours per attempt; confirm deletion of all owned resources and tailnet nodes.
 
+Supply `do_project_id` for DigitalOcean so the new Droplet and disk join that project. Terraform does not create or delete the project, and project assignment leaves reused disks in their original project; the showcase requires a new disk.
+
+The [private input example](execution-inputs.example.json) records accounts/projects and 1Password field references. Copy it outside Git with mode 0600, replace placeholders, and run `python3 scripts/showcase_policy.py --config <private-inputs.json> --provider <provider>`. This checks field structure and limits; live permissions, prices and account/model/peer access remain separate checks.
+
+The [container command](../../TEST.md) now accepts exact Codex and Claude versions and checks both workspace variants without model credentials. The cloud execution runner remains in development.
+
 After apply, `openclaw_url` and `hermes_url` use the observed full tailnet DNS name on HTTPS ports 443 and 8443. Retrieve `dashboard_url_with_token_import` and `hermes_dashboard_password` privately with `terraform output -raw`; ordinary apply output hides these values.
 
 Run the strict checks from the isolated checkout:
@@ -22,6 +28,8 @@ Run the strict checks from the isolated checkout:
   --strict --json --services openclaw,hermes,workspace \
   --require-claude --check-tailscale --tailscale-mode host
 ```
+
+The strict result includes OpenClaw lint and Hermes's native doctor. Hermes must return zero with a complete passing summary; AgentStack also checks its private configuration and authenticated detailed readiness. Unsupported native-report formats fail pending validation of the pinned image.
 
 For a single authorized workspace model task, pipe the key from `op` through SSH into `docker compose exec -T --user 1000 workspace python3 /usr/local/libexec/agent-stack-workspace-cli-task --cli codex --model <model-id>` (or `--cli claude`). Supply the workspace `HOME` when using Docker exec; SSH already sets it. The helper emits sanitized status, token counts and the persisted fixture path; it never emits the key or raw CLI output.
 
