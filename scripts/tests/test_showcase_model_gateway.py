@@ -3,7 +3,9 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection, IncompleteRead
 import io
+import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import sys
@@ -124,6 +126,72 @@ class GatewayTest(unittest.TestCase):
             allow_finish.set(); self.assertEqual(result.read(), SSE_DONE)
         finally: allow_finish.set(); connection.close()
         self.assertTrue(response.closed); self.assertEqual(self.account()["model_requests"][0]["status"], "response_received")
+
+    def test_workspace_helper_and_real_fake_cli_children_use_gateway_holds_and_verify_fresh_files(self):
+        # Real helper/subprocess/local HTTP/ledger/file verification. Native
+        # CLI behavior and paid upstream requests deliberately remain fixtures.
+        spec = importlib.util.spec_from_file_location("workspace_gateway_task", Path(__file__).resolve().parents[2] /
+                                                     "modules/common/runtime/workspace_cli_task.py")
+        task = importlib.util.module_from_spec(spec); spec.loader.exec_module(task)
+        root = Path(self.temp.name); home = root / "workspace-home"; home.mkdir()
+        binaries = root / "bin"; binaries.mkdir()
+        fixture = '''#!/usr/bin/env python3
+import json, os, pathlib, sys, tomllib, urllib.request
+cli = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]; model = args[args.index("--model") + 1]
+challenge = pathlib.Path("input.json").read_text()
+if cli == "codex":
+    settings = {}
+    for i, arg in enumerate(args):
+        if arg == "-c": settings.update(tomllib.loads(args[i + 1]))
+    provider = settings["model_providers"][settings["model_provider"]]
+    endpoint = provider["base_url"] + "/responses"
+    credential = os.environ[provider["env_key"]]
+    body = {"model": model, "input": challenge, "max_output_tokens": 4096}
+else:
+    endpoint = os.environ["ANTHROPIC_BASE_URL"] + "/v1/messages"
+    credential = os.environ["ANTHROPIC_AUTH_TOKEN"]
+    body = {"model": model, "messages": [{"role": "user", "content": challenge}], "max_tokens": 4096}
+request = urllib.request.Request(endpoint, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "Authorization": "Bearer " + credential})
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with opener.open(request, timeout=5) as response: answer = json.loads(response.read())["answer"]
+pathlib.Path("result.json").write_text(json.dumps(answer))
+usage = {"input_tokens": 30, "output_tokens": 20}
+print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" else {"type": "result", "subtype": "success", "is_error": False, "usage": usage}))
+'''
+        for cli in ("codex", "claude"):
+            binary = binaries / cli; binary.write_text(fixture); binary.chmod(0o700)
+        def upstream(request, **kwargs):
+            payload = json.loads(request.data)
+            raw = payload["input"] if request.full_url.endswith("/responses") else payload["messages"][0]["content"]
+            challenge = json.loads(raw)
+            self.assertEqual(payload.get("max_output_tokens", payload.get("max_tokens")), 128)
+            return Response([json.dumps({"answer": {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}}).encode()])
+        self.opener.open.side_effect = upstream
+        original_stat = Path.stat
+        def stat(path, *args, **kwargs):
+            value = original_stat(path, *args, **kwargs)
+            if path == home:
+                items = list(value); items[4] = 1000; return os.stat_result(items)
+            return value
+        with patch.dict(os.environ, {"HOME": str(home), "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                                     "OPENAI_API_KEY": PRIVATE, "ANTHROPIC_API_KEY": PRIVATE, "https_proxy": PRIVATE}), \
+             patch.object(task.os, "geteuid", return_value=1000), patch.object(Path, "stat", stat):
+            for cli in ("codex", "claude"):
+                bundle = self.gateway.client(cli)
+                result = task.run_task(cli, self.config["models"][cli], json.dumps(bundle), 10, model_gateway=True)
+                self.assertEqual(result["status"], "pass", result)
+                self.assertTrue(result["verified"])
+                directory = home / result["fixture"]
+                self.assertEqual({p.name for p in directory.iterdir()}, {"input.json", "result.json"})
+                for private in (PRIVATE, bundle["credential"]):
+                    self.assertNotIn(private, json.dumps(result))
+                    self.assertNotIn(private, "".join(p.read_text() for p in directory.iterdir()))
+        holds = self.account()["model_requests"]
+        self.assertEqual({hold["role"] for hold in holds}, {"codex", "claude"})
+        self.assertEqual(len(holds), 2)
+        self.assertTrue(all(hold["status"] == "response_received" for hold in holds))
+        self.reader.assert_called_once()
 
     def test_replayed_tool_call_and_output_payloads_keep_matching_ids_without_resetting_budget(self):
         call = {"type": "function_call", "name": "write", "call_id": "fixture-call", "arguments": "{}"}

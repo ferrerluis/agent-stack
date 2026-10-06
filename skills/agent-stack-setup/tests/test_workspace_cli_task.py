@@ -1,10 +1,14 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
+import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location("workspace_cli_task", ROOT / "modules/common/runtime/workspace_cli_task.py")
@@ -12,7 +16,24 @@ task = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(task)
 
 
+@contextlib.contextmanager
+def owned_home(home):
+    original_stat = Path.stat
+    def stat(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        if path == Path(home):
+            values = list(result); values[4] = 1000
+            return os.stat_result(values)
+        return result
+    with patch.object(task.os, "geteuid", return_value=1000), patch.object(Path, "stat", stat):
+        yield
+
+
 class WorkspaceTaskTest(unittest.TestCase):
+    def bundle(self, cli="codex", host="127.0.0.1"):
+        return {"role": cli, "provider": "openai" if cli == "codex" else "anthropic",
+                "base_url": "http://" + host + ":12345/" + cli, "credential": "a" * 64}
+
     def good_output(self, cli):
         usage = {"input_tokens": 30, "output_tokens": 20}
         return json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" else {
@@ -96,3 +117,132 @@ class WorkspaceTaskTest(unittest.TestCase):
                 self.assertTrue(result["verified"])
                 self.assertNotIn("private-test-key", json.dumps(result))
                 self.assertNotIn("private-test-key", "".join(p.read_text() for p in home.rglob("*.json")))
+
+    def test_gateway_bundles_accept_only_same_role_and_private_local_route(self):
+        for cli in ("codex", "claude"):
+            for host in ("127.0.0.1", "host.docker.internal"):
+                bundle = self.bundle(cli, host)
+                self.assertEqual(task.gateway_client(json.dumps(bundle), cli), bundle)
+            for changed in ({"role": "hermes"}, {"provider": "anthropic" if cli == "codex" else "openai"},
+                            {"credential": "real-provider-key"}, {"credential": "A" * 64}, {"extra": "unknown"},
+                            {"base_url": "https://api.openai.com/v1"}, {"base_url": "http://localhost:12345/" + cli},
+                            {"base_url": "http://127.0.0.1:65536/" + cli}, {"base_url": "http://127.0.0.1:0/" + cli},
+                            {"base_url": "http://user@127.0.0.1:12345/" + cli},
+                            {"base_url": self.bundle(cli)["base_url"] + "?credential=private"},
+                            {"base_url": self.bundle(cli)["base_url"] + "/v1"}, {"base_url": 12}):
+                with self.subTest(cli=cli, fields=list(changed)), self.assertRaises(ValueError):
+                    task.gateway_client(json.dumps(self.bundle(cli) | changed), cli)
+
+    def test_ambiguous_oversized_or_wrong_input_never_starts_gateway_task(self):
+        original = json.dumps(self.bundle())
+        invalid = ["private-provider-key", "[]", "null", "{}", "[NaN]", " " * 4097,
+                   original[:-1] + ',"credential":"' + "b" * 64 + '"}',
+                   json.dumps(self.bundle() | {"credential": None}), "[" * 1000 + "]" * 1000]
+        with patch.object(task.os, "geteuid", return_value=1000), patch.object(task, "invoke") as invoke:
+            for raw in invalid:
+                self.assertEqual(task.run_task("codex", "test-model", raw, 180, model_gateway=True)["reason"], "invalid_model_gateway")
+            invoke.assert_not_called()
+
+    def test_gateway_commands_use_explicit_auth_route_without_keys_or_automatic_codex_retries(self):
+        bundle = self.bundle()
+        args = task.command("codex", "test-model", bundle)
+        settings = {}
+        for index, arg in enumerate(args):
+            if arg == "-c":
+                settings.update(tomllib.loads(args[index + 1]))
+        provider = settings["model_providers"][settings["model_provider"]]
+        self.assertEqual(provider["base_url"], bundle["base_url"] + "/v1")
+        self.assertEqual(provider["env_key"], "AGENT_STACK_MODEL_CREDENTIAL")
+        self.assertFalse(provider["requires_openai_auth"])
+        self.assertFalse(provider["supports_websockets"])
+        self.assertEqual((provider["request_max_retries"], provider["stream_max_retries"]), (0, 0))
+        self.assertEqual(settings["web_search"], "disabled")
+        self.assertNotIn(bundle["credential"], " ".join(args))
+        claude = task.command("claude", "test-model", self.bundle("claude"))
+        self.assertNotIn("--max-budget-usd", claude)
+        self.assertIn("--max-budget-usd", task.command("claude", "test-model"))
+        self.assertEqual(claude[claude.index("--setting-sources") + 1], "")
+        self.assertIn("--strict-mcp-config", claude)
+
+    def test_actual_fake_cli_processes_get_isolated_homes_and_no_inherited_auth_or_proxy(self):
+        # These executables are fixtures, not native compatibility proof. They
+        # run as real child processes and create independently checked files.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "home"; home.mkdir()
+            binaries = root / "bin"; binaries.mkdir()
+            fixture = '''#!/usr/bin/env python3
+import json, os, pathlib, sys, tomllib
+cli = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+assert "inherited-private" not in str(os.environ)
+assert "a" * 64 not in " ".join(args)
+assert pathlib.Path(os.environ["HOME"]).parent == pathlib.Path.cwd()
+assert not list(pathlib.Path(os.environ["HOME"]).iterdir())
+if cli == "codex":
+    settings = {}
+    for i, arg in enumerate(args):
+        if arg == "-c": settings.update(tomllib.loads(args[i + 1]))
+    provider = settings["model_providers"][settings["model_provider"]]
+    assert os.environ[provider["env_key"]] == "a" * 64
+    assert provider["base_url"] == "http://127.0.0.1:12345/codex/v1"
+    assert provider["requires_openai_auth"] is False
+    assert os.environ["CODEX_HOME"].startswith(os.environ["HOME"] + "/")
+else:
+    assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "a" * 64
+    assert os.environ["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:12345/claude"
+    assert os.environ["CLAUDE_CONFIG_DIR"].startswith(os.environ["HOME"] + "/")
+    assert os.environ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] == "1"
+    assert "--max-budget-usd" not in args
+challenge = json.loads(pathlib.Path("input.json").read_text())
+pathlib.Path("result.json").write_text(json.dumps({"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}))
+usage = {"input_tokens": 30, "output_tokens": 20}
+print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" else {"type": "result", "subtype": "success", "is_error": False, "usage": usage}))
+'''
+            for cli in ("codex", "claude"):
+                binary = binaries / cli; binary.write_text(fixture); binary.chmod(0o700)
+            old = {key: "inherited-private" for key in ("CODEX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                   "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS", "HTTP_PROXY", "https_proxy",
+                   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "OPENAI_BASE_URL", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+                   "NODE_OPTIONS", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS")}
+            old.update(HOME=str(home), PATH=str(binaries) + os.pathsep + os.environ["PATH"])
+            with patch.dict(os.environ, old), owned_home(home):
+                for cli in ("codex", "claude"):
+                    result = task.run_task(cli, "test-model", json.dumps(self.bundle(cli)), 10, model_gateway=True)
+                    self.assertEqual(result["status"], "pass", result)
+                    self.assertTrue(result["verified"])
+                    self.assertEqual(result["model_route"]["kind"], "budget_gateway")
+                    self.assertNotIn("a" * 64, json.dumps(result))
+                    directory = home / result["fixture"]
+                    self.assertEqual({p.name for p in directory.iterdir()}, {"input.json", "result.json"})
+                    self.assertNotIn("a" * 64, "".join(p.read_text() for p in directory.iterdir()))
+            self.assertNotEqual(*[p.name for p in (home / ".agent-stack/acceptance").iterdir()])
+
+    def test_gateway_client_home_is_removed_after_failure_timeout_or_exception(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), owned_home(home):
+            for outcome in ((1, ""), (124, ""), OSError("fixture failure")):
+                homes = []
+                def fake(args, directory, env, timeout):
+                    homes.append(Path(env["HOME"]))
+                    (homes[-1] / "native-cache").write_text("fixture private cache")
+                    if isinstance(outcome, Exception): raise outcome
+                    return outcome
+                with patch.object(task, "invoke", side_effect=fake):
+                    if isinstance(outcome, Exception):
+                        with self.assertRaises(OSError):
+                            task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True)
+                    else:
+                        result = task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True)
+                        self.assertEqual(result["status"], "fail")
+                self.assertEqual(len(homes), 1)
+                self.assertFalse(homes[0].exists())
+
+    def test_gateway_main_reads_private_bundle_from_stdin_and_rejects_raw_key(self):
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["task", "--cli", "codex", "--model", "test-model", "--model-gateway"]), \
+             patch.object(task.os, "geteuid", return_value=1000), \
+             patch.object(sys, "stdin", io.StringIO("fixture-private-provider-key")), contextlib.redirect_stdout(output):
+            status = task.main()
+        self.assertEqual(status, 1)
+        self.assertEqual(json.loads(output.getvalue())["reason"], "invalid_model_gateway")
+        self.assertNotIn("fixture-private-provider-key", output.getvalue())

@@ -190,6 +190,26 @@ class DriverTest(unittest.TestCase):
             self.client.apply(self.ledger, self.readiness())
         self.assertFalse(any(args[2] == "apply" for args, _, _ in self.commands))
 
+    def test_showcase_never_fetches_model_keys_for_terraform_plan_apply_or_cleanup(self):
+        # The selected model references are deliberately distinct from the
+        # Tailscale auth key. Metadata/price readers still own their reads.
+        self.config["secret_refs"]["openai_api_key"] = "op://fixture/model/openai"
+        self.config["secret_refs"]["anthropic_api_key"] = "op://fixture/model/anthropic"
+        # This private fixture has no plan yet; bind its selected inputs.
+        cleanup.private_write(self.run / "inputs.json", self.config)
+        self.client.prepared = runner.verify_prepared(self.run, self.config, "aws")
+        self.session.secret = Mock(return_value=SECRET)
+        self.applied()
+        self.client.cleanup(self.ledger)
+        model_refs = {self.config["secret_refs"][name] for name in ("openai_api_key", "anthropic_api_key")}
+        self.assertTrue(all(call.args[0] not in model_refs for call in self.session.secret.call_args_list))
+        runtime_environments = [env for _, env, _ in self.commands if "TF_VAR_tailscale_auth_key" in env]
+        self.assertTrue(runtime_environments)
+        for env in runtime_environments:
+            for name in ("openai_api_key", "anthropic_api_key"):
+                self.assertEqual(env["TF_VAR_" + name], "as7-model-gateway-not-active")
+                self.assertNotEqual(env["TF_VAR_" + name], SECRET)
+
     def test_changed_binary_plan_or_provider_lock_refuses_apply(self):
         self.client.plan()
         self.reserve()

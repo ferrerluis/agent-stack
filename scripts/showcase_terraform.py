@@ -267,10 +267,11 @@ class TerraformAttempt:
             require(isinstance(hashed, str) and re.fullmatch(HASH_PATTERN, hashed), "invalid_workspace_hash")
             env["TF_VAR_workspace_password_hash"] = hashed
             if not cleanup:
+                # This runner's paid model work must use the controller's
+                # budget gateway. Never put provider keys in a saved plan,
+                # cloud-init, Terraform state or the VM's runtime environment.
                 for name in ("openai_api_key", "anthropic_api_key"):
-                    key = self.session.secret(self.config["secret_refs"][name])
-                    require(text(key) and not any(char.isspace() for char in key) and len(key.encode()) <= 65536, "invalid_secret_field")
-                    env["TF_VAR_" + name] = key
+                    env["TF_VAR_" + name] = "as7-model-gateway-not-active"
                 auth_key = self.session.secret(self.config["tailnet"]["auth_key_ref"])
                 require(text(auth_key) and not any(char.isspace() for char in auth_key), "invalid_secret_field")
                 env["TF_VAR_tailscale_auth_key"] = auth_key
