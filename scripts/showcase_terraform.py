@@ -12,8 +12,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import time
+import types
 from urllib.request import Request
 from urllib.error import HTTPError, URLError
 
@@ -319,20 +321,54 @@ class TerraformAttempt:
             return dict(matches[0])
         return ledger.operate(select)
 
+    def container_module(self):
+        path = self.checkout / "scripts/showcase_container_probe.py"
+        require(path.is_file() and not path.is_symlink(), "checked_container_probe_required")
+        module = types.ModuleType("checked_container_probe")
+        module.__file__ = str(path)
+        exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+        return module
+
+    def launch_gates(self, readiness):
+        require(isinstance(readiness, dict) and readiness.get("source_revision") == self.prepared["source_revision"]
+                and readiness.get("scope") == scope(self.config, self.provider), "measured_launch_gates_required")
+        checks = readiness.get("checks")
+        if checks == {key: "pass" for key in LAUNCH_CHECKS}:
+            require("container_deferral" not in readiness, "container_deferral_invalid")
+            return "pass"
+        require(checks == {key: "deferred_owned_vm" if key == "container_tests" else "pass" for key in LAUNCH_CHECKS}
+                and set(readiness) == {"source_revision", "scope", "checks", "container_deferral"}, "measured_launch_gates_required")
+        proof = readiness["container_deferral"]
+        require(isinstance(proof, dict) and set(proof) == {"mode", "run_id", "source_revision", "bundle_sha256", "local_docker"}
+                and proof["mode"] == "first_owned_vm" and proof["run_id"] == self.prefix
+                and proof["source_revision"] == self.prepared["source_revision"] and proof["local_docker"] == "absent"
+                and shutil.which("docker") is None, "container_deferral_invalid")
+        bundle = private_read(self.run / "container-bundle.json")
+        module = self.container_module()
+        try:
+            sha = module.validate_bundle(bundle)
+        except Exception:
+            raise PolicyError("container_deferral_invalid") from None
+        require(sha == proof["bundle_sha256"] and bundle["source_revision"] == self.prepared["source_revision"]
+                and bundle["script"] == (self.checkout / "scripts/test_containers.py").read_text()
+                and all(bundle["pins"][name] == self.config["pins"][name] for name in ("codex_release", "claude_release")),
+                "container_deferral_invalid")
+        return "deferred_owned_vm"
+
     @exclusive
     def apply(self, ledger, readiness):
         # Not a user override or a file loaded by the public CLI. The complete
         # production controller must generate these measured gate results.
-        require(isinstance(readiness, dict) and readiness.get("source_revision") == self.prepared["source_revision"]
-                and readiness.get("scope") == scope(self.config, self.provider)
-                and readiness.get("checks") == {key: "pass" for key in LAUNCH_CHECKS}, "measured_launch_gates_required")
+        container_gate = self.launch_gates(readiness)
         active = self.active(ledger)
         record = self.record()
         require(record.get("stage") == "planned" and record.get("apply_invocations") == 0 and not self.state_path.exists(), "one_saved_plan_apply_required")
         require(identity(self.session.adapter, self.provider) == "verified", "account_project_mapping_unverified")
         require(self.session.preflight(self.prefix).get("status") == "read_checks_passed", "fresh_prefix_preflight_required")
         remaining_timeout(active, 1800, now=self.now())
-        record.update(stage="apply_started", apply_invocations=1, apply_started_at=self.now())
+        record.update(stage="apply_started", apply_invocations=1, apply_started_at=self.now(), container_tests_gate=container_gate)
+        if container_gate == "deferred_owned_vm":
+            record["container_bundle_sha256"] = readiness["container_deferral"]["bundle_sha256"]
         private_write(self.record_path, record)
         try:
             self.tf("apply", "-input=false", "-no-color", "-lock-timeout=30s", str(self.run / "deployment.tfplan"),

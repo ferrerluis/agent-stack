@@ -57,7 +57,7 @@ def isolated_env(directory):
     return env
 
 
-def render_workspace(directory, env, codex_release, claude_release):
+def render_workspace(directory, env, codex_release, claude_release, terraform="terraform"):
     values = {"workspace_username": "testuser", "workspace_codex_release": codex_release,
               "workspace_claude_enabled": bool(claude_release), "workspace_claude_release": claude_release or ""}
     templates = ROOT / "modules/common/templates/runtime"
@@ -72,7 +72,7 @@ def render_workspace(directory, env, codex_release, claude_release):
     # This isolated config has only locals; no provider, resource, state input,
     # credential, backend, or live apply is involved in template rendering.
     (render_dir / "main.tf").write_text("locals {\n bundle = {\n" + "\n".join(rows) + "\n }\n}\n")
-    result = execute(["terraform", "-chdir=" + str(render_dir), "console", "-no-color"], env, input="jsonencode(local.bundle)\n")
+    result = execute([terraform, "-chdir=" + str(render_dir), "console", "-no-color"], env, input="jsonencode(local.bundle)\n")
     try:
         bundle = json.loads(json.loads(result.stdout))
     except (TypeError, ValueError):
@@ -161,9 +161,9 @@ class ContainerChecks:
             time.sleep(2)
         raise CheckFailed("workspace_ssh_timeout")
 
-    def profile(self, directory, codex_release, claude_release, platform):
+    def profile(self, directory, codex_release, claude_release, platform, context=None):
         profile = "showcase" if claude_release else "legacy"
-        context = render_workspace(directory, self.env, codex_release, claude_release)
+        context = render_workspace(directory, self.env, codex_release, claude_release) if context is None else context
         image = self.remember("image", "agent-stack-container-test:" + self.token + "-" + profile)
         self.docker("build", "--platform", platform, "--label", LABEL + "=" + self.token, "-t", image, str(context), timeout=1800)
         home = self.remember("volume", "as-test-" + self.token + "-" + profile + "-home")

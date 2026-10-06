@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import showcase_remote as remote
+import showcase_controller as controller
 import showcase_terraform as terraform
 import showcase_cleanup as cleanup
 import test_showcase_attempt as preparation_fixtures
@@ -32,7 +33,8 @@ class RemoteChecksTest(unittest.TestCase):
         self.fixture = preparation_fixtures.PreparationTest("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        for name in ("bin/agent-stack-ssh", remote.DOCTOR_PATH, remote.AGENT_PATH, remote.BROWSER_PATH, remote.PEER_PATH):
+        for name in ("bin/agent-stack-ssh", remote.DOCTOR_PATH, remote.AGENT_PATH, remote.BROWSER_PATH, remote.PEER_PATH,
+                     *controller.SOURCES):
             target = self.fixture.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / name).read_bytes())
@@ -58,6 +60,7 @@ class RemoteChecksTest(unittest.TestCase):
         (self.run / "repo/.terraform.lock.hcl").write_text("fixture provider lock")
         cleanup.private_write(self.run / "terraform.json", {"schema": 1, "stage": "applied", "run_id": PREFIX,
             "scope": cleanup.scope(self.config, "aws"), "source_revision": self.prepared["source_revision"], "apply_invocations": 1,
+            "container_tests_gate": "pass",
             "plan_sha256": hashlib.sha256((self.run / "deployment.tfplan").read_bytes()).hexdigest(),
             "plan_json_sha256": hashlib.sha256((self.run / "deployment-plan.json").read_bytes()).hexdigest(),
             "provider_lock_sha256": hashlib.sha256((self.run / "repo/.terraform.lock.hcl").read_bytes()).hexdigest()})

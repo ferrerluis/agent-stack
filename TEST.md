@@ -99,6 +99,12 @@ It uses a fake plaintext password for the legacy workspace, a salted hash of a f
 
 The unit tests for this command cover its failure and ownership rules. They do not substitute for an actual image build or container run.
 
+The [owned-VM probe](scripts/showcase_container_probe.py) uses both workspace contexts rendered locally from the checked commit, so the VM needs no Terraform or cloud/model credentials for these tests. It builds and tests the same legacy/combined profiles with fake passwords and generated test keys, checks cleanup independently, and binds selected proof to the source, pins, request and boot.
+
+The VM probe requires a 3400-second controller window, bounds profile work to 2700 seconds and cleanup to 240 seconds, and arms a 3000-second systemd timer before Docker work. The timer targets only fresh expected resource names with the exact test label; name/unit collisions, failed listings, incomplete cleanup or unverified timer disarming cannot pass, and uncertain failure retains its cleanup program.
+
+An attempt permits one probe invocation, and shortened deadlines or a changed boot/bundle invalidate its result. Thirteen probe tests and twenty-five coordinator/integration tests include real local template rendering, while Docker, systemd, SSH, cloud and model operations use fixtures; no actual container build or VM timer has run.
+
 ## Private Execution Inputs
 
 Use [the reference-only example](examples/showcase/execution-inputs.example.json) to prepare a mode-0600 file outside Git. Validate one ready provider without retrieving secrets or contacting cloud/model APIs:
@@ -109,7 +115,9 @@ python3 scripts/showcase_policy.py --config <private-inputs.json> --provider aws
 
 `inputs_complete` means the required fields and approved limits are present. Identity, project isolation, permissions, prices, model availability, minimum VM memory and second-peer access still require live preflight; none is established by an input declaration.
 
-The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project/region/zone. A new config or ledger must not be used to restart the same batch's spending allowance. Ledger schema 3 requires this complete scope; an older ledger is refused and must be preserved, not replaced to reset the budget. Saved-plan execution and guarded deletion are implemented as library components; measured launch readiness and the complete paid test controller remain in development.
+The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project/region/zone.
+
+A new config or ledger must not restart the same batch's spending allowance, and schema 3 refuses older incomplete-scope ledgers without replacing them. Saved-plan execution, guarded deletion and the internal acceptance coordinator are implemented; production launch-gate measurements and the paid CLI phase remain in development.
 
 ## Private Attempt Preparation
 
@@ -140,7 +148,9 @@ AGENT_STACK_LIVE_TESTS=1 ./scripts/test-live.sh --phase plan \
 
 Planning prepares and verifies exact committed source, initializes isolated Terraform data, runs read preflight, injects selected secrets in memory and saves a private binary plan plus checked JSON. It creates no VM, makes no model call and reserves no spend. Plans/state contain sensitive values; keep the entire batch outside Git with mode 0700. `planned` still reports `launch_ready: false`.
 
-The library applies only that saved plan after measured readiness and an active reservation in the original ledger. Source, settings, key, plan and provider-lock hashes are checked again; a durable record permits one apply invocation. Deadlines and timeouts bound child processes, interrupted creation remains uncertain, and GCP tokens refresh before commands only when they cover the full bounded command duration. The public CLI exposes no launch phase or readiness override; price/model/permission/container/peer measurements and complete test orchestration remain pending.
+The library applies only that saved plan after measured readiness and an active reservation in the original ledger, rechecking source/settings/key/plan/provider-lock hashes and allowing one apply invocation. Deadlines bound child processes, interrupted creation remains uncertain, and GCP tokens refresh only when they cover the whole command.
+
+When local Docker is absent, the approved first-owned-VM path can record `container_tests: deferred_owned_vm` with a source/pin-bound rendered bundle; every other launch gate must still pass. Deferred container checks remain pending and block native doctors, model tasks, peer checks and reboot until the owned VM produces verified container proof; the public CLI still exposes no launch phase or readiness override.
 
 Recover a recorded active attempt in that same private batch:
 
@@ -158,6 +168,12 @@ Cleanup accepts repaired credential references while preserving the original sou
 
 ## Remote Acceptance Component
 
+The [internal coordinator](scripts/showcase_controller.py) sequences one reserved saved-plan apply, bootstrap, required container checks, strict doctors, both runtime turns, both coding tasks, peer access, reboot and fresh peer access. Loaded controller sources must match the prepared commit, and a durable per-run record prevents replay after interruption.
+
+Cleanup runs after success, partial apply, test failure and ordinary interruption; no cell is published as passing unless acceptance and independent cleanup both succeed. The existing `--phase cleanup` command also recovers coordinator records, restoring completed acceptance only when its saved evidence and every step receipt remain unchanged, without repeating paid work.
+
+Production price/model/permission/quota/peer/cleanup measurements, a paid public run phase, Hetzner mapping proof and orphan recovery remain unfinished. The coordinator has fixture integration coverage only; every real matrix cell remains unverified.
+
 `scripts/showcase_remote.py` implements controller checks for an active, applied, exact-source attempt in the original spending ledger. It reuses the private key/known-hosts file and repo SSH wrapper, matches owned state to recorded inventory, then re-queries the selected VM's public address through the cloud API before SSH. A changed address, foreign state, incomplete apply, expired work deadline or unverified identity refuses remote work. SSH children receive no cloud credentials.
 
 Bootstrap checks require completed cloud-init, the selected-provider loader marker, active service, the installed artifact checksum from Terraform state, the expected mounted data disk and observed tailnet DNS. AWS matches the NVMe serial to the owned volume ID; the other clouds use their stable device paths. The strict doctor runs from the checked source through stdin and requires every applicable service/native doctor/config/CLI/route check to pass. Rechecks replace stale green evidence on failure; loading the source creates no unrecorded Python cache in the private checkout.
@@ -168,7 +184,7 @@ Each coding task runs as UID 1000 with explicit workspace HOME/PATH and its API 
 
 Before a turn, the VM arms a transient systemd timer to stop the captured container ID after 210 seconds, covering loss of SSH or the probe process. A verified completed turn disarms the timer; failure attempts to stop and inspect that exact container, retaining the timer when direct containment is uncertain. Uncertain tasks clear prior service/doctor evidence, block repeat paid work, and require cleanup or the approved fresh retry. Commands bound output and elapsed time; task dispatch requires the full 300-second verification/containment window. These behaviors follow the [OpenClaw gateway contract](https://github.com/openclaw/openclaw/blob/main/src/cli/gateway-cli/register.ts), [Hermes Runs API](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server), [systemd timer interface](https://github.com/systemd/systemd/blob/v249/man/systemd-run.xml) and [Docker stop behavior](https://docs.docker.com/reference/cli/docker/container/stop/); actual pinned-container compatibility remains unverified.
 
-Reboot requires both successful runtime turns, both verified coding fixtures, a bootstrap baseline and passing second-peer access before reboot. It refuses an uncertain runtime turn instead of restarting possible unfinished paid work. Acceptance needs a new boot ID, the same disk/volume/checksum/DNS, fresh passing doctors and unchanged verified workspace files. Starting reboot clears the current peer-access pass; `network_checks("after_reboot")` must prove SSH and both browser sessions on the new boot. An interrupted reboot can resume verification without issuing another reboot or coding task; missing proof remains uncertain. These methods remain library components, not a public launch command or a complete matrix verdict. Container integration, real second-peer authenticated browser access and full controller/gate integration remain pending.
+Reboot requires both successful runtime turns, both verified coding fixtures, a bootstrap baseline and passing second-peer access before reboot. It refuses an uncertain runtime turn instead of restarting possible unfinished paid work. Acceptance needs a new boot ID, the same disk/volume/checksum/DNS, fresh passing doctors and unchanged verified workspace files. Starting reboot clears the current peer-access pass; `network_checks("after_reboot")` must prove SSH and both browser sessions on the new boot. An interrupted reboot can resume verification without issuing another reboot or coding task; missing proof remains uncertain. These methods remain library components, not a public launch command or a complete matrix verdict. Real container/peer/browser compatibility and production launch-gate measurements remain pending.
 
 Local tests run the actual independent file verifier as UID 1000 against temporary files and replace all cloud/SSH/model/container/systemd operations with fixtures. They cover address drift, changed source/foreign state, failed/repeated checks, invalid usage/CLI/path/hash/UID, new-boot enforcement, changed disks and interrupted reboot recovery. Agent tests reject stale/echoed/fenced answers, invalid/nonfinite/duplicate JSON, wrong serving models, incomplete/aborted/refused turns, missing usage, unsupported gateway flags, failed containment and unverified timer disarming. The actual bounded subprocess runner is exercised for excessive stdout/stderr, timeout and secret-safe failures; the Hermes request source is exercised with a fake authenticated API. The actual Terraform builtin provider also confirmed the wrapped runtime checksum state shape using only a disposable local fixture. None of this establishes real SSH, model execution, reboot, browser access or cloud support.
 
@@ -188,7 +204,7 @@ From that peer, direct key-based SSH must reach the target's Tailscale IP on hos
 
 `showcase_remote.network_checks("before_reboot"|"after_reboot")` requires strict doctors, the correct boot stage and a full 750-second work window before starting. It invalidates the previous pass before live collection, rechecks the VM boot afterward and marks failures uncertain; stale request IDs and changed boots cannot retain green evidence. Reboot clears the current access pass, requiring a new request and boot-bound proof afterward. Fourteen peer tests and nine added controller tests cover transport, binding, deadlines, revoked access and secret handling. Actual `ssh-keygen` parsed a generated test key through a sealed memory file, and the inline checked-source loader ran locally; every network/SSH/browser/container operation used a fixture.
 
-Pinned browser/UI/protocol/container compatibility and complete paid controller integration remain pending. These components do not establish N1, P1 or a real matrix cell; the temporary-peer alternative is not implemented or authorized.
+Pinned browser/UI/protocol/container compatibility and production launch-gate measurements remain pending; the internal coordinator now sequences these components. No N1, P1 or real matrix cell has passed, and the temporary-peer alternative is not implemented or authorized.
 
 ## Read-only Cloud Preflight
 
@@ -232,7 +248,7 @@ Directories must have mode 0700, input/state/inventory files mode 0600. Capture 
 
 Verification requires an empty private local Terraform state plus successful independent cloud and tailnet queries. Only documented AWS resource-not-found errors count as absence; permission errors, timeouts, incomplete inventories or malformed responses fail. A terminated AWS instance is a retained tombstone, with its disks checked separately. A successful receipt is saved privately and marks the original attempt cleaned without refunding its spending reservation. Missing state after a pre-create failure needs controller proof; this standalone command does not assume that missing state means no resources were created.
 
-Hetzner capture is implemented, but a verified receipt still requires separate account/project-token mapping evidence: its API does not return those IDs. The complete launch/test controller, that proof path and real cleanup remain pending. The separate saved-plan driver implements guarded destruction; this standalone inventory command remains read-only. Tests use provider fixtures and offline SDK responses, including the full capture/verify/ledger flow; they cannot establish live deletion.
+Hetzner capture is implemented, but a verified receipt still requires separate account/project-token mapping evidence: its API does not return those IDs. Production launch gates, the paid public run phase, that proof path and real cleanup remain pending. The separate saved-plan driver implements guarded destruction; this standalone inventory command remains read-only. Tests use provider fixtures and offline SDK responses, including the full capture/verify/ledger flow; they cannot establish live deletion.
 
 ## Optional Live Smoke Suite
 

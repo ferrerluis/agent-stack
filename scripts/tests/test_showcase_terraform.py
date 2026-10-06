@@ -96,6 +96,14 @@ class DriverTest(unittest.TestCase):
         self.fixture = preparation_fixtures.PreparationTest("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
+        for name in getattr(self, "fixture_sources", ()):
+            target = self.fixture.repo / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((Path(runner.__file__).parents[1] / name).read_bytes())
+        if getattr(self, "fixture_sources", ()):
+            self.fixture.git("add", ".")
+            self.fixture.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "controller source fixture")
+            self.fixture.revision = self.fixture.git("rev-parse", "HEAD").strip()
         self.fixture.prepare()
         self.config = config()
         self.run = self.fixture.batch / "attempts" / PREFIX

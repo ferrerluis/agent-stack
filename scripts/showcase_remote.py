@@ -170,6 +170,13 @@ class RemoteChecks:
         require(isinstance(result["network"], dict), "remote_evidence_scope_mismatch")
         return result
 
+    def require_container_gate(self, evidence):
+        record = self.attempt.record()
+        require(record.get("container_tests_gate") in ("pass", "deferred_owned_vm"), "container_proof_required")
+        if record["container_tests_gate"] == "deferred_owned_vm":
+            require(evidence["checks"].get("container_tests") == "pass" and evidence.get("containers", {}).get("status") == "pass"
+                    and evidence["containers"].get("bundle_sha256") == record.get("container_bundle_sha256"), "container_proof_required")
+
     def bind(self):
         self.ensure()
         inventory_path = self.run / "inventory.json"
@@ -254,6 +261,7 @@ class RemoteChecks:
     @exclusive
     def doctors(self):
         evidence = self.evidence()
+        self.require_container_gate(evidence)
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         evidence["checks"].update({key: "started" for key in required})
         private_write(self.path, evidence)
@@ -266,6 +274,47 @@ class RemoteChecks:
         evidence["checks"].update(checks)
         private_write(self.path, evidence)
         return checks
+
+    @exclusive
+    def container_tests(self):
+        evidence = self.evidence()
+        require(evidence["checks"].get("launch_ssh") == "pass" and isinstance(evidence["baseline"], dict), "bootstrap_proof_required")
+        require("containers" not in evidence, "container_tests_already_invoked")
+        bundle = private_read(self.run / "container-bundle.json")
+        module = self.attempt.container_module()
+        try:
+            sha = module.validate_bundle(bundle)
+        except Exception:
+            raise PolicyError("container_bundle_invalid") from None
+        require(bundle["source_revision"] == self.attempt.prepared["source_revision"]
+                and bundle["script"] == (self.attempt.checkout / "scripts/test_containers.py").read_text()
+                and all(bundle["pins"][name] == self.config["pins"][name] for name in ("codex_release", "claude_release")), "container_bundle_invalid")
+        record = self.attempt.record()
+        require(record.get("container_tests_gate", "pass") != "deferred_owned_vm" or record.get("container_bundle_sha256") == sha,
+                "container_bundle_changed")
+        _, active = self.ensure()
+        require(remaining_timeout(active, 3400, now=self.now()) == 3400, "container_check_time_required")
+        evidence["containers"] = {"status": "started", "request_id": bundle["request_id"], "bundle_sha256": sha}
+        evidence["checks"]["container_tests"] = "started"
+        private_write(self.path, evidence)
+        try:
+            target = self.bind()
+            require(self.probe(target) == evidence["baseline"], "container_boot_baseline_changed")
+            source = (self.attempt.checkout / "scripts/showcase_container_probe.py").read_text()
+            require(remaining_timeout(self.ensure()[1], 3100, now=self.now()) == 3100, "container_check_time_required")
+            report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-I", "-c", source],
+                                      input=json.dumps(bundle).encode(), timeout=3100))
+            proof = module.validate_proof(report, bundle, evidence["baseline"]["boot_id"])
+            require(self.probe(target) == evidence["baseline"], "container_boot_baseline_changed")
+            evidence["containers"].update(proof)
+            evidence["checks"]["container_tests"] = "pass"
+        except BaseException:
+            evidence["containers"]["status"] = "uncertain"
+            evidence["checks"]["container_tests"] = "uncertain"
+            private_write(self.path, evidence)
+            raise PolicyError("container_acceptance_failed") from None
+        private_write(self.path, evidence)
+        return proof
 
     def verify_files(self, target, task):
         report = decoded(self.ssh(target, WORKSPACE + ["python3", "-c", VERIFY_FILES, task["fixture"], task["input_sha256"]]))
@@ -302,6 +351,7 @@ class RemoteChecks:
     def network_checks(self, stage, peer_execute=None):
         require(stage in ("before_reboot", "after_reboot"), "invalid_network_stage")
         evidence = self.evidence()
+        self.require_container_gate(evidence)
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         require(evidence["checks"].get("launch_ssh") == "pass" and
                 all(evidence["checks"].get(key) == "pass" for key in required), "runtime_doctor_proof_required")
@@ -363,6 +413,7 @@ class RemoteChecks:
     def runtime_task(self, runtime):
         require(runtime in ("openclaw", "hermes"), "invalid_runtime")
         evidence = self.evidence()
+        self.require_container_gate(evidence)
         require(evidence["checks"].get("launch_ssh") == "pass", "bootstrap_proof_required")
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         require(all(evidence["checks"].get(key) == "pass" for key in required), "runtime_doctor_proof_required")
@@ -400,6 +451,7 @@ class RemoteChecks:
     def workspace_task(self, cli):
         require(cli in ("codex", "claude"), "invalid_workspace_cli")
         evidence = self.evidence()
+        self.require_container_gate(evidence)
         require(evidence["checks"].get("launch_ssh") == "pass", "bootstrap_proof_required")
         require(cli not in evidence["tasks"], "workspace_task_already_invoked")
         target = self.bind()
@@ -437,6 +489,7 @@ class RemoteChecks:
     @exclusive
     def reboot(self, resume=False):
         evidence = self.evidence()
+        self.require_container_gate(evidence)
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         baseline = evidence["baseline"]
         require(isinstance(baseline, dict) and all(cli in evidence["tasks"] and evidence["tasks"][cli].get("status") == "pass"

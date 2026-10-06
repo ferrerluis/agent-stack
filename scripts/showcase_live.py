@@ -17,6 +17,7 @@ import sys
 
 from showcase_attempt import prepare, private_directory, verify_prepared
 from showcase_cleanup import private_read, scope
+from showcase_controller import RunController
 from showcase_policy import PROVIDERS, PolicyError, Reservations, require, secret_ref, validate_inputs
 from showcase_preflight import PreflightError
 from showcase_terraform import CloudSession, TerraformAttempt
@@ -64,6 +65,7 @@ def main():
         current = private_read(args.config)
         batch = Path(args.batch).absolute()
         run = batch / "attempts" / args.run_id
+        flow = None
         if args.phase == "plan":
             validate_inputs(current, args.provider)
             if not run.exists() and not run.is_symlink():
@@ -77,14 +79,21 @@ def main():
             private_directory(run)
             original = private_read(run / "inputs.json")
             validate_inputs(original, args.provider)
-            verify_prepared(run, original, args.provider)
+            prepared = verify_prepared(run, original, args.provider)
             credentials = recovery_inputs(original, current, args.provider)
+            if (run / "showcase-run.json").exists():
+                flow = private_read(run / "showcase-run.json")
+                require(flow.get("schema") == 1 and flow.get("run_id") == args.run_id and flow.get("provider") == args.provider
+                        and flow.get("scope") == scope(original, args.provider)
+                        and flow.get("source_revision") == prepared["source_revision"], "showcase_recovery_scope_changed")
             # Reject unreserved/unapplied recovery before touching op/API auth.
             record = private_read(run / "terraform.json")
-            require(record.get("stage") in ("planned", "apply_started", "apply_uncertain", "applied", "destroy_started", "cleanup_failed"), "applied_attempt_required")
+            stages = ("planned", "apply_started", "apply_uncertain", "applied", "destroy_started", "cleanup_failed") + (("cleaned",) if flow is not None else ())
+            require(record.get("stage") in stages, "applied_attempt_required")
             ledger = Reservations(batch, original)
             def active(state):
-                require(any(row["run_id"] == args.run_id and row["provider"] == args.provider and row["status"] == "active"
+                require(any(row["run_id"] == args.run_id and row["provider"] == args.provider and row["status"] in
+                            (("active", "cleaned") if flow is not None else ("active",))
                             for row in state["attempts"]), "active_attempt_scope_required")
             ledger.operate(active)
         session = CloudSession(credentials, args.provider)
@@ -92,7 +101,13 @@ def main():
         if args.phase == "plan":
             report = {**attempt.plan(), "status": "planned", "spend_reserved": False}
         else:
-            report = {**attempt.cleanup(Reservations(batch, original)), "status": "cleanup_verified"}
+            ledger = Reservations(batch, original)
+            if flow is None:
+                report = {**attempt.cleanup(ledger), "status": "cleanup_verified"}
+            else:
+                result = RunController(attempt, ledger).recover()
+                report = {**result, "acceptance": result["status"],
+                          "status": "cleanup_verified" if result["cleanup"] == "verified" else "fail"}
     except (PolicyError, PreflightError) as error:
         report = {"status": "fail", "reason": str(error), "launch_ready": False, "live_matrix": "not_tested"}
         if args.phase == "cleanup":
