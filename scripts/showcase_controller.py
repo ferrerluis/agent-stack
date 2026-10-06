@@ -23,7 +23,7 @@ from showcase_remote import RemoteChecks
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
 SOURCES = tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
-    "showcase_preflight", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
+    "showcase_preflight", "showcase_models", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
 def proof_hash(value):

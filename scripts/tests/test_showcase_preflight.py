@@ -8,12 +8,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import showcase_preflight as preflight
 from test_showcase_policy import config
+from test_showcase_models import FakeModels
 
 PREFIX = "as7-fixture01"
 SECRET = "private-fixture-token-must-not-reach-report"
@@ -356,6 +357,13 @@ class AWSTest(unittest.TestCase):
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_invalid_model_route_rejected_before_cloud_secret_or_request(self):
+        value = config(); value["models"]["openclaw"] = "openai/../../private"
+        reader, http = Mock(), FakeHTTP({})
+        with self.assertRaisesRegex(preflight.PolicyError, "model_id_unsupported"):
+            preflight.preflight(value, "digitalocean", PREFIX, reader, http)
+        reader.assert_not_called(); self.assertEqual(http.calls, [])
+
     def test_only_selected_cloud_and_second_peer_fields_are_read_once(self):
         value = config()
         routes = do_routes()
@@ -364,13 +372,16 @@ class OrchestrationTest(unittest.TestCase):
         def reader(reference):
             reads.append(reference)
             return SECRET
-        result = preflight.preflight(value, "digitalocean", PREFIX, reader, FakeHTTP(routes))
+        model_http = FakeModels()
+        result = preflight.preflight(value, "digitalocean", PREFIX, reader, FakeHTTP(routes), model_http=model_http)
         self.assertEqual(len(reads), 1)  # fixture references are identical
         self.assertEqual(result["status"], "read_checks_passed")
         self.assertFalse(result["launch_ready"])
         self.assertEqual(result["live_matrix"], "not_tested")
         self.assertNotIn(SECRET, json.dumps(result))
         self.assertIn("node_delete_permission", result["tailnet"]["not_verified"])
+        self.assertEqual(len(model_http.calls), 2)
+        self.assertEqual(result["models"]["launch_gate"], "unverified")
 
     def test_unauthorized_or_wrong_peer_is_not_accepted(self):
         value = config()["tailnet"]

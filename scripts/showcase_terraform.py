@@ -85,6 +85,10 @@ class CloudSession:
         return {"schema": 1, "provider": self.provider, "status": "read_checks_passed", "cloud": cloud, "tailnet": tailnet,
                 "launch_ready": False, "live_matrix": "not_tested"}
 
+    def model_metadata(self, http=None):
+        from showcase_models import check_models
+        return check_models(self.config, self.secret, http=http)
+
     def environment(self, run, min_lifetime=0):
         env = isolated_environment(run)
         if self.provider == "aws":

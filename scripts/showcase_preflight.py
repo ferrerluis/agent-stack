@@ -446,8 +446,10 @@ def check_dependencies(provider, aws_factory=None):
             raise PreflightError("cryptography_dependency_required") from None
 
 
-def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aws_factory=None):
+def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aws_factory=None, model_http=None):
     validate_inputs(config, provider)
+    from showcase_models import check_models, selected_models
+    selected_models(config["models"])
     require(isinstance(prefix, str) and bool(re.fullmatch(r"as7-[a-z0-9-]{8,30}", prefix)), "invalid_resource_scope")
     check_dependencies(provider, aws_factory)
     http = JsonHTTP() if http is None else http
@@ -467,9 +469,10 @@ def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aw
         adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[provider](cloud, credentials["token"], http)
     report = adapter.preflight(prefix)
     tailnet = check_tailnet(config["tailnet"], secret(config["tailnet"]["cleanup_key_ref"]), http, prefix)
-    return {"schema": 1, "provider": provider, "status": "read_checks_passed", "cloud": report, "tailnet": tailnet,
-            "successful_read_queries": http.queries + getattr(adapter, "queries", 0), "launch_ready": False,
-            "live_matrix": "not_tested", "prices_and_model_access": "not_verified"}
+    models = check_models(config, secret, http=model_http)
+    return {"schema": 1, "provider": provider, "status": "read_checks_passed", "cloud": report, "tailnet": tailnet, "models": models,
+            "successful_read_queries": http.queries + getattr(adapter, "queries", 0) + models["successful_read_queries"], "launch_ready": False,
+            "live_matrix": "not_tested", "prices_and_model_access": "metadata_only_remaining_checks_unverified"}
 
 
 def main():
