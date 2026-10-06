@@ -9,7 +9,7 @@ Use the shared [settings](terraform.tfvars.example) only in an isolated checkout
 - Provider, approved account/project, region/zone, unique resource name, runner SSH `/32`, and a verified x86_64 VM with at least 8 GiB RAM.
 - Exact OpenClaw release plus `openclaw_image_digest`, Hermes image with `@sha256:…`, and `workspace_codex_release` / `workspace_claude_release`. No `latest` tags or CLI updates during acceptance.
 - Supported `default_model` and optional `hermes_model`, OpenAI and Anthropic secret references, Tailscale enrollment and deletion authority, and a second authorized tailnet peer.
-- A workspace password supplied privately through `op` and test-only public SSH keys. Coding-tool model keys go through the task helper's stdin; they are separate from Terraform runtime credentials.
+- A workspace password supplied privately through `op`, hashed in memory before Terraform receives `workspace_password_hash`, and test-only public SSH keys. Coding-tool model keys go through the task helper's stdin; they are separate from Terraform runtime credentials.
 
 AWS uses a new VPC in the existing account. DigitalOcean, GCP and Hetzner require dedicated new test projects; GCP also needs billing, Compute API, quota and compatible project policy. Run one deployment at a time, within $25 total spend, one fresh-deployment retry per provider and four hours per attempt; confirm deletion of all owned resources and tailnet nodes.
 
@@ -24,6 +24,8 @@ AWS and DigitalOcean account identities are checked through their APIs. GCP uses
 The [read-only inventory and cleanup verifier](../../TEST.md#read-only-cleanup-verification) now records implicit boot disks, VPC children, IPs and tailnet nodes, preserves them through partial cleanup and requires both empty Terraform state and independent API absence checks. It creates or deletes nothing; Hetzner receipts still need separate scope-mapping proof.
 
 The deployment, test and deletion controller remains in development. Adding another cloud's inputs or repairing pins preserves the batch ledger's spending/retry history; retries and cleanup stay tied to the originally recorded account/project/region/zone.
+
+The [private preparation command](../../TEST.md#private-attempt-preparation) exports an exact commit, creates a new test SSH key and saves non-secret profile settings without retrieving credentials or making cloud/model requests. It refuses operator state/auth, changed source/settings/keys and added overrides. Preparation does not reserve spend or establish deployment readiness.
 
 After apply, `openclaw_url` and `hermes_url` use the observed full tailnet DNS name on HTTPS ports 443 and 8443. Retrieve `dashboard_url_with_token_import` and `hermes_dashboard_password` privately with `terraform output -raw`; ordinary apply output hides these values.
 

@@ -86,7 +86,7 @@ read real Codex auth, Terraform state, provider tokens, or cloud resources.
 
 ## Optional Container Suite
 
-With Docker, Terraform, SSH and exact CLI versions available:
+With Docker, Terraform, SSH, OpenSSL and exact CLI versions available:
 
 ```bash
 ./scripts/test-containers.sh --profile showcase \
@@ -95,7 +95,7 @@ With Docker, Terraform, SSH and exact CLI versions available:
 
 This renders the actual workspace templates without providers, builds both legacy Codex-only and combined images, and verifies pinned CLI execution over SSH as UID 1000. It checks persistent home data and host keys across restart/recreation, deliberate missing CLI/password failures, and deletion of uniquely labeled test containers/images/volumes.
 
-It uses a fake test password and a generated test-only SSH key; it retrieves no model credentials and explicitly reports model execution as untested. Missing Docker or unsuccessful cleanup fails the command. Base images/build cache may remain; the command does not prune shared Docker resources.
+It uses a fake plaintext password for the legacy workspace, a salted hash of a fake password for the combined workspace, and a generated test-only SSH key. It retrieves no model credentials and explicitly reports model execution as untested. Missing Docker or unsuccessful cleanup fails the command. Base images/build cache may remain; the command does not prune shared Docker resources.
 
 The unit tests for this command cover its failure and ownership rules. They do not substitute for an actual image build or container run.
 
@@ -110,6 +110,22 @@ python3 scripts/showcase_policy.py --config <private-inputs.json> --provider aws
 `inputs_complete` means the required fields and approved limits are present. Identity, project isolation, permissions, prices, model availability, minimum VM memory and second-peer access still require live preflight; none is established by an input declaration.
 
 The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project/region/zone. A new config or ledger must not be used to restart the same batch's spending allowance. Ledger schema 3 requires this complete scope; an older ledger is refused and must be preserved, not replaced to reset the budget. Deployment/test execution and resource/node deletion remain to be implemented.
+
+## Private Attempt Preparation
+
+With Git and `ssh-keygen` available, prepare one exact committed revision without secrets, live API requests or spending reservations:
+
+```bash
+python3 scripts/showcase_attempt.py --config <mode-0600-private-inputs.json> \
+  --provider aws --run-id <as7-unique-id> \
+  --batch <mode-0700-private-batch-directory> --revision <full-commit-sha>
+```
+
+This exports committed source into `<batch>/attempts/<run-id>/repo`, creates a fresh test SSH key, saves non-secret showcase settings and records source/settings/key hashes. It never copies the operator's uncommitted changes, tfvars, state, keys or auth. Tracked state/auth files, links, changed showcase access settings and an existing run directory are refused. Partial preparation retains its private record for recovery; `prepared` always reports `launch_ready: false`.
+
+The preparation library verifies the selected revision/files, settings, provider binding and generated key before later commands. Added overrides, changed source/settings or swapped keys fail. Its child environment discards inherited credentials, proxies, SSH agents and Terraform command overrides; bounded subprocesses kill child processes on timeout. Expiry prevents new work but never prevents bounded cleanup recovery.
+
+For workspace password authentication, the controller must let the library's stdin-only hash helper perform the single authorized `op` read immediately before hashing, then pass only `TF_VAR_workspace_password_hash` in memory. Supply no plaintext `workspace_password` to Terraform in the showcase. The hash remains sensitive in state/runtime files; the workspace accepts either the legacy password or the hash, rejects both together, and removes the password/hash environment before starting SSH. This helper has been tested with fake passwords only; the deployment controller and real secret injection are still pending.
 
 ## Read-only Cloud Preflight
 

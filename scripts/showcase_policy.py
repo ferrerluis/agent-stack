@@ -156,7 +156,7 @@ def validate_fresh_plan(plan, provider, resource_prefix, run_dir):
         name = values.get("name") or values.get("key_name") or (tags.get("Name") if isinstance(tags, dict) else None)
         unnamed = {"aws_volume_attachment", "aws_route_table_association", "digitalocean_volume_attachment", "digitalocean_project_resources", "hcloud_volume_attachment"}
         if kind not in unnamed:
-            require(isinstance(name, str) and name.startswith(resource_prefix), "foreign_resource_name")
+            require(isinstance(name, str) and (name == resource_prefix or name.startswith(resource_prefix + "-")), "foreign_resource_name")
         relationships = {"aws_volume_attachment": ("volume_id", "instance_id"), "aws_route_table_association": ("subnet_id", "route_table_id"),
                          "digitalocean_volume_attachment": ("volume_id", "droplet_id"), "hcloud_volume_attachment": ("volume_id", "server_id")}.get(kind, ())
         if relationships:

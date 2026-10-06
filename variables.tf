@@ -597,7 +597,7 @@ variable "workspace_username" {
 }
 
 variable "workspace_password" {
-  description = "Password for SSH access to the optional workspace container. Required when enabled_services includes workspace."
+  description = "Password for SSH access to the optional workspace container. Required with workspace unless workspace_password_hash is supplied. Prefer the hash for automated runs."
   type        = string
   default     = ""
   sensitive   = true
@@ -605,9 +605,27 @@ variable "workspace_password" {
   validation {
     condition = (
       !contains(var.enabled_services, "workspace") ||
-      trimspace(var.workspace_password) != ""
+      trimspace(var.workspace_password) != "" ||
+      var.workspace_password_hash != ""
     )
-    error_message = "workspace_password must be set when enabled_services includes workspace."
+    error_message = "workspace_password or workspace_password_hash must be set when enabled_services includes workspace."
+  }
+
+  validation {
+    condition     = var.workspace_password == "" || var.workspace_password_hash == ""
+    error_message = "Supply only one of workspace_password and workspace_password_hash."
+  }
+}
+
+variable "workspace_password_hash" {
+  description = "Optional salted SHA-512 crypt password hash for workspace SSH. The plaintext password is never needed by Terraform when this is set. The hash remains sensitive and is saved in private state/runtime files."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.workspace_password_hash == "" || can(regex("^\\$6\\$(rounds=[1-9][0-9]{3,8}\\$)?[./A-Za-z0-9]{8,16}\\$[./A-Za-z0-9]{86}$", var.workspace_password_hash))
+    error_message = "workspace_password_hash must be blank or a salted SHA-512 crypt hash."
   }
 }
 

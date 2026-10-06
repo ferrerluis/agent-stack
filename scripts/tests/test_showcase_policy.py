@@ -221,6 +221,12 @@ class FreshPlanTest(unittest.TestCase):
     def test_only_owned_new_vm_network_and_disk_pass(self):
         self.assertEqual(policy.validate_fresh_plan(self.plan(), "aws", "as7-fixture01", "/tmp/private-run")["status"], "fresh_plan_checked")
 
+    def test_similar_prefix_is_not_owned_by_the_attempt(self):
+        plan = self.plan()
+        plan["resource_changes"][0]["change"]["after"]["tags"]["Name"] = "as7-fixture01someone-else"
+        with self.assertRaisesRegex(policy.PolicyError, "foreign_resource_name"):
+            policy.validate_fresh_plan(plan, "aws", "as7-fixture01", "/tmp/private-run")
+
     def test_reuse_import_update_delete_replace_foreign_name_and_other_cloud_fail(self):
         mutations = (
             lambda p: p["resource_changes"][0]["change"].update(actions=["update"]),

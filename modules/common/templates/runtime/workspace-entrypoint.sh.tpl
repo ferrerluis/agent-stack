@@ -3,14 +3,21 @@ set -euo pipefail
 
 username="$${WORKSPACE_USERNAME:-user}"
 password="$${WORKSPACE_PASSWORD:-}"
+password_hash="$${WORKSPACE_PASSWORD_HASH:-}"
 
 fail() {
   echo "[workspace] ERROR: $*" >&2
   exit 1
 }
 
-if [ -z "$password" ]; then
-  fail "WORKSPACE_PASSWORD is required"
+if [ -z "$password" ] && [ -z "$password_hash" ]; then
+  fail "WORKSPACE_PASSWORD is required unless WORKSPACE_PASSWORD_HASH is set"
+fi
+if [ -n "$password" ] && [ -n "$password_hash" ]; then
+  fail "supply only WORKSPACE_PASSWORD or WORKSPACE_PASSWORD_HASH"
+fi
+if [ -n "$password_hash" ] && ! printf '%s' "$password_hash" | grep -Eq '^\$6\$(rounds=[1-9][0-9]{3,8}\$)?[./A-Za-z0-9]{8,16}\$[./A-Za-z0-9]{86}$'; then
+  fail "invalid WORKSPACE_PASSWORD_HASH"
 fi
 
 if ! printf '%s' "$username" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$'; then
@@ -33,7 +40,12 @@ chmod 0700 "$home_dir"
 install -d -m 0700 -o "$username" -g "$username" "$home_dir/.ssh"
 install -d -m 0700 -o "$username" -g "$username" "$home_dir/.codex"
 
-printf '%s:%s\n' "$username" "$password" | chpasswd
+if [ -n "$password_hash" ]; then
+  printf '%s:%s\n' "$username" "$password_hash" | chpasswd --encrypted
+else
+  printf '%s:%s\n' "$username" "$password" | chpasswd
+fi
+unset password password_hash WORKSPACE_PASSWORD WORKSPACE_PASSWORD_HASH
 
 authorized_keys_b64="$${WORKSPACE_AUTHORIZED_KEYS_BASE64:-}"
 authorized_keys_file="$home_dir/.ssh/authorized_keys"

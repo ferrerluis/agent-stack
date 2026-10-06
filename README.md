@@ -452,7 +452,8 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 | `workspace_codex_auto_update_time` | `"04:00"` | Daily local maintenance time in 24-hour `HH:MM` format |
 | `workspace_codex_auto_recover_interrupted_turns` | `false` | Enable only with a second approved apply after the desktop E2E probe; send one constrained new turn for proven interrupted work |
 | `workspace_username` | `"user"` | User created inside the optional workspace container |
-| `workspace_password` | `""` | Sensitive password for workspace SSH; required when `workspace` is enabled |
+| `workspace_password` | `""` | Sensitive password for workspace SSH; supply this or `workspace_password_hash` when `workspace` is enabled |
+| `workspace_password_hash` | `""` | Optional salted SHA-512 crypt hash instead of the plaintext password; keep state and runtime files private |
 | `workspace_ssh_host_port` | `2222` | Host port mapped to workspace SSH; do not open in provider firewalls |
 | `workspace_ssh_public_keys` | `[]` | OpenSSH public keys authorized for the workspace user |
 | `vpn_enabled` | `false` | Install and start host OpenVPN before the Docker stack |

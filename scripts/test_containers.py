@@ -174,12 +174,17 @@ class ContainerChecks:
         key_dir.mkdir(mode=0o700)
         key = key_dir / "ssh-test-key"
         execute(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], self.env)
-        run_env = dict(self.env, WORKSPACE_PASSWORD="fake-container-test-password", WORKSPACE_USERNAME="testuser",
+        run_env = dict(self.env, WORKSPACE_PASSWORD="fake-container-test-password", WORKSPACE_PASSWORD_HASH="", WORKSPACE_USERNAME="testuser",
                        WORKSPACE_AUTHORIZED_KEYS_BASE64=base64.b64encode(key.with_suffix(".pub").read_bytes()).decode())
+        if claude_release:
+            hashed = execute(["openssl", "passwd", "-6", "-stdin"], self.env, input="fake-container-test-password\n").stdout.strip()
+            if not re.fullmatch(r"\$6\$[./A-Za-z0-9]{8,16}\$[./A-Za-z0-9]{86}", hashed):
+                raise CheckFailed("fixture_password_hash_failed")
+            run_env.update(WORKSPACE_PASSWORD="", WORKSPACE_PASSWORD_HASH=hashed)
         container = self.remember("container", "as-test-" + self.token + "-" + profile)
         execute(["docker", "run", "-d", "--platform", platform, "--name", container, "--label", LABEL + "=" + self.token,
                  "-p", "127.0.0.1::22", "-v", home + ":/home/testuser", "-v", keys + ":/var/lib/agent-stack-workspace/ssh-host-keys",
-                 "-e", "WORKSPACE_PASSWORD", "-e", "WORKSPACE_USERNAME", "-e", "WORKSPACE_AUTHORIZED_KEYS_BASE64", image], run_env)
+                 "-e", "WORKSPACE_PASSWORD", "-e", "WORKSPACE_PASSWORD_HASH", "-e", "WORKSPACE_USERNAME", "-e", "WORKSPACE_AUTHORIZED_KEYS_BASE64", image], run_env)
         binding = self.docker("port", container, "22/tcp").stdout.strip()
         if not re.fullmatch(r"127\.0\.0\.1:[0-9]+", binding):
             raise CheckFailed("workspace_port_not_loopback")
@@ -206,7 +211,7 @@ class ContainerChecks:
         self.docker("container", "rm", "-f", container)
         execute(["docker", "run", "-d", "--platform", platform, "--name", container, "--label", LABEL + "=" + self.token,
                  "-p", "127.0.0.1::22", "-v", home + ":/home/testuser", "-v", keys + ":/var/lib/agent-stack-workspace/ssh-host-keys",
-                 "-e", "WORKSPACE_PASSWORD", "-e", "WORKSPACE_USERNAME", "-e", "WORKSPACE_AUTHORIZED_KEYS_BASE64", image], run_env)
+                 "-e", "WORKSPACE_PASSWORD", "-e", "WORKSPACE_PASSWORD_HASH", "-e", "WORKSPACE_USERNAME", "-e", "WORKSPACE_AUTHORIZED_KEYS_BASE64", image], run_env)
         binding = self.docker("port", container, "22/tcp").stdout.strip()
         if not re.fullmatch(r"127\.0\.0\.1:[0-9]+", binding):
             raise CheckFailed("workspace_port_not_loopback")
@@ -246,8 +251,8 @@ def main():
     args = parser.parse_args()
     if not all(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", release) for release in (args.codex_release, args.claude_release)):
         parser.error("supply exact numeric CLI versions")
-    if any(shutil.which(tool) is None for tool in ("docker", "terraform", "ssh", "ssh-keygen")):
-        print(json.dumps({"status": "fail", "reason": "docker_terraform_ssh_required", "model_execution": "not_tested"}))
+    if any(shutil.which(tool) is None for tool in ("docker", "terraform", "ssh", "ssh-keygen", "openssl")):
+        print(json.dumps({"status": "fail", "reason": "docker_terraform_ssh_openssl_required", "model_execution": "not_tested"}))
         return 1
     def interrupted(signum, frame):
         raise CheckFailed("interrupted")

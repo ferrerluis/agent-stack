@@ -391,6 +391,42 @@ run "rejects_workspace_private_key_path_in_public_keys" {
   ]
 }
 
+run "accepts_workspace_password_hash_without_plaintext" {
+  command = plan
+
+  variables {
+    enabled_services        = ["openclaw", "workspace"]
+    workspace_password      = ""
+    workspace_password_hash = "$6$fixturesalt12345$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+
+  assert {
+    condition     = strcontains(local.runtime_workspace_env, "WORKSPACE_PASSWORD_HASH='$6$fixturesalt12345$") && strcontains(local.runtime_workspace_env, "WORKSPACE_PASSWORD=\n")
+    error_message = "The hash must retain literal dollar signs and the plaintext workspace password must be empty."
+  }
+}
+
+run "rejects_workspace_password_and_hash_together" {
+  command = plan
+
+  variables {
+    workspace_password      = "tests-only-password"
+    workspace_password_hash = "$6$fixturesalt12345$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+
+  expect_failures = [var.workspace_password]
+}
+
+run "rejects_plaintext_in_workspace_password_hash" {
+  command = plan
+
+  variables {
+    workspace_password_hash = "tests-only-plaintext"
+  }
+
+  expect_failures = [var.workspace_password_hash]
+}
+
 run "rejects_workspace_codex_auto_update_without_workspace_service" {
   command = plan
 

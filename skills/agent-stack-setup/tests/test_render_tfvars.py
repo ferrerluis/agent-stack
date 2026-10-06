@@ -208,6 +208,20 @@ class RenderTfvarsTest(unittest.TestCase):
         self.assertIn("tailscale_enabled = false", rendered)
         self.assertIn('openai_auth_mode = "api_key"', rendered)
 
+    def test_workspace_hash_render_and_conflicting_or_plaintext_inputs(self) -> None:
+        hashed = "$6$fixturesalt12345$" + "a" * 86
+        inputs = {"cloud_provider": "digitalocean", "do_token": "do-test-token", "openai_api_key": "test-openai-key",
+                  "model_providers_enabled": ["openai"], "default_model": "openai/test-model", "fallback_models": [],
+                  "tailscale_enabled": False, "enabled_services": ["workspace"], "workspace_password_hash": hashed}
+        _, rendered = run_render(inputs)
+        self.assertIn('workspace_password_hash = "' + hashed + '"', rendered)
+        self.assertIn('workspace_password = ""', rendered)
+        result, _ = run_render({**inputs, "workspace_password": "test-password"}, expect_success=False)
+        self.assertIn("Supply only one", result.stderr)
+        result, _ = run_render({**inputs, "workspace_password_hash": "test-plaintext-value"}, expect_success=False)
+        self.assertIn("salted SHA-512", result.stderr)
+        self.assertNotIn("test-plaintext-value", result.stderr)
+
     def test_renders_openai_codex_auth_mode_with_canonical_models(self) -> None:
         _, rendered = run_render(
             {

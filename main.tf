@@ -497,6 +497,7 @@ locals {
     workspace_codex_auto_recover_interrupted_turns = var.workspace_codex_auto_recover_interrupted_turns
     workspace_username                             = var.workspace_username
     workspace_password                             = var.workspace_password
+    workspace_password_hash                        = var.workspace_password_hash
     workspace_ssh_host_port                        = var.workspace_ssh_host_port
     workspace_ssh_host                             = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : var.project_name
     workspace_ssh_public_keys_base64               = base64encode(join("\n", [for key in var.workspace_ssh_public_keys : trimspace(key)]))

@@ -283,6 +283,11 @@ def validate_value(spec: VariableSpec, value: Any) -> None:
     if spec.name == "model_providers_enabled" and not value:
         fail("model_providers_enabled must include at least one provider")
 
+    if spec.name == "workspace_password_hash" and value and not re.fullmatch(
+        r"\$6\$(?:rounds=[1-9][0-9]{3,8}\$)?[./A-Za-z0-9]{8,16}\$[./A-Za-z0-9]{86}", value
+    ):
+        fail("workspace_password_hash must be blank or a salted SHA-512 crypt hash")
+
 
 def model_refs(values: dict[str, Any]) -> list[str]:
     refs = [str(values["default_model"])]
@@ -364,6 +369,13 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
         fail("workspace_codex_auto_recover_interrupted_turns requires workspace_codex_auto_update_enabled")
     if workspace_recovery and "workspace" not in workspace_services:
         fail("workspace_codex_auto_recover_interrupted_turns requires enabled_services to include workspace")
+
+    if resolved["workspace_password"] and resolved["workspace_password_hash"]:
+        fail("Supply only one of workspace_password and workspace_password_hash")
+    if "workspace" in workspace_services and not (
+        str(resolved["workspace_password"]).strip() or resolved["workspace_password_hash"]
+    ):
+        fail("workspace_password or workspace_password_hash is required when workspace is enabled")
 
     if resolved["vpn_enabled"]:
         if resolved["vpn_provider"] == "nordvpn_openvpn":
