@@ -140,6 +140,13 @@ variable "aws_ami_id" {
   default     = ""
 }
 
+variable "aws_showcase_cost_controls" {
+  description = "For showcase tests, explicitly select Unlimited burstable CPU mode and the included gp3 disk performance so they can be priced before launch."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
 variable "aws_disk_size_gb" {
   description = "Size in GB for the EBS data volume (separate from the 20 GB OS root disk)."
   type        = number

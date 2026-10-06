@@ -37,6 +37,7 @@ PROFILE = {
     "hermes_api_server_enabled": True, "workspace_claude_enabled": True, "workspace_codex_auto_update_enabled": False,
     "tailscale_enabled": True, "tailscale_mode": "host", "public_domain_enabled": False,
     "vpn_enabled": False, "host_codex_cli_enabled": False, "generate_repo_ssh_config": True, "gcp_pin_boot_image": True,
+    "aws_showcase_cost_controls": True,
 }
 
 

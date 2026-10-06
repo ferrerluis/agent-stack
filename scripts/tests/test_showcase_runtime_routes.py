@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -32,6 +33,12 @@ def route(role="openclaw", provider="openai"):
     return {"role": role, "provider": provider, "model": "fixture-model", "credential": CAPABILITY,
             "base_url": "http://172.17.0.1:23456/" + role, "bridge_ipv4": "172.17.0.1",
             "context_tokens": 1050000, "output_tokens": 128}
+
+
+def changed_access_time(info, count):
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")
+    return SimpleNamespace(**{name: getattr(info, name) for name in fields},
+                           st_atime=info.st_atime + count, st_atime_ns=info.st_atime_ns + count)
 
 
 class CompileTest(unittest.TestCase):
@@ -157,6 +164,41 @@ class TransactionTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(self.target(role).stat().st_mode), 0o640)
             self.assertFalse(self.journal(role).exists())
         self.assertFalse(list(self.root.rglob(".as7-route-*")))
+
+    def test_config_reads_may_change_access_time_without_becoming_operator_edits(self):
+        checked = routes.checked_path
+        for role in routes.OWNERS:
+            calls = []
+            def reading(path, **kwargs):
+                info = checked(path, **kwargs)
+                if Path(path) == self.target(role):
+                    calls.append(path); return changed_access_time(info, len(calls))
+                return info
+            with patch.object(routes, "checked_path", side_effect=reading):
+                result = self.transaction.install(binding(), route(role))
+            self.assertEqual(result["status"], "runtime_config_installed")
+            self.assertGreaterEqual(len(calls), 2)
+            self.transaction.restore(binding(), role)
+            self.assertEqual(self.target(role).read_bytes(), self.before[role])
+
+    def test_same_config_bytes_with_changed_permissions_or_file_identity_refuse_install(self):
+        atomic = routes.atomic_write
+        for role, kind in (("openclaw", "permissions"), ("hermes", "replacement")):
+            original_inode = self.target(role).stat().st_ino
+            def edit(path, *args, **kwargs):
+                result = atomic(path, *args, **kwargs)
+                if path == self.journal(role):
+                    if kind == "permissions": self.target(role).chmod(0o600)
+                    else:
+                        replacement = self.root / "same-bytes-replacement"
+                        replacement.write_bytes(self.before[role]); replacement.chmod(0o640)
+                        replacement.replace(self.target(role))
+                return result
+            with patch.object(routes, "atomic_write", side_effect=edit), self.assertRaises(ValueError):
+                self.transaction.install(binding(), route(role))
+            self.assertEqual(self.target(role).read_bytes(), self.before[role]); self.assertTrue(self.journal(role).exists())
+            if kind == "permissions": self.assertEqual(stat.S_IMODE(self.target(role).stat().st_mode), 0o600)
+            else: self.assertNotEqual(self.target(role).stat().st_ino, original_inode)
 
     def test_install_is_single_use_and_unknown_changed_file_is_never_overwritten(self):
         self.transaction.install(binding(), route())

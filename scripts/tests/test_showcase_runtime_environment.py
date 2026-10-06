@@ -70,6 +70,38 @@ class EnvironmentTest(unittest.TestCase):
         self.assertEqual(self.tx.target.read_bytes(), before); self.assertEqual(stat.S_IMODE(self.tx.target.stat().st_mode), 0o640)
         self.assertFalse(self.tx.record.exists())
 
+    def test_environment_reads_may_change_access_time_without_becoming_operator_edits(self):
+        self.make(); checked = routes.checked_path; calls = []
+        def reading(path, **kwargs):
+            info = checked(path, **kwargs)
+            if Path(path) == self.tx.target:
+                calls.append(path); return fixtures.changed_access_time(info, len(calls))
+            return info
+        with patch.object(routes, "checked_path", side_effect=reading):
+            installed = self.tx.install(fixtures.binding(), fixtures.route("hermes"))
+        self.assertEqual(installed, routes.sha(self.tx.target.read_bytes())); self.assertGreaterEqual(len(calls), 2)
+        self.tx.restore(fixtures.binding()); self.assertEqual(self.tx.target.read_bytes(), ORIGINAL)
+
+    def test_same_environment_bytes_with_changed_permissions_identity_or_write_times_refuse(self):
+        for kind in ("permissions", "replacement", "rewrite"):
+            self.make(); atomic = routes.atomic_write; info = self.tx.target.stat()
+            def edit(path, *args, **kwargs):
+                result = atomic(path, *args, **kwargs)
+                if path == self.tx.record:
+                    if kind == "permissions": self.tx.target.chmod(0o600)
+                    elif kind == "rewrite": self.tx.target.write_bytes(ORIGINAL)
+                    else:
+                        replacement = self.files.root / "same-bytes-replacement"
+                        replacement.write_bytes(ORIGINAL); replacement.chmod(0o640)
+                        replacement.replace(self.tx.target)
+                return result
+            with patch.object(routes, "atomic_write", side_effect=edit), self.assertRaises(ValueError):
+                self.tx.install(fixtures.binding(), fixtures.route("hermes"))
+            self.assertEqual(self.tx.target.read_bytes(), ORIGINAL); self.assertTrue(self.tx.record.exists())
+            if kind == "permissions": self.assertEqual(stat.S_IMODE(self.tx.target.stat().st_mode), 0o600)
+            elif kind == "replacement": self.assertNotEqual(self.tx.target.stat().st_ino, info.st_ino)
+            else: self.assertNotEqual(self.tx.target.stat().st_mtime_ns, info.st_mtime_ns)
+
     def test_install_failure_after_journal_is_recoverable_and_cannot_replay(self):
         self.make(); atomic = routes.atomic_write
         def crash(path, *args, **kwargs):

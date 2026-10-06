@@ -121,6 +121,11 @@ run "aws_module_plans_with_mocked_provider" {
   }
 
   assert {
+    condition     = length(aws_instance.this.credit_specification) == 0
+    error_message = "Ordinary deployments must retain the implicit CPU credit mode."
+  }
+
+  assert {
     condition     = output.instance_public_ip == "203.0.113.10"
     error_message = "AWS module should use the mocked instance public IP."
   }
@@ -133,6 +138,43 @@ run "aws_module_plans_with_mocked_provider" {
   assert {
     condition     = output.ssh_command == "ssh admin@203.0.113.10"
     error_message = "AWS module SSH handoff should use the admin user and mocked public IP."
+  }
+}
+
+run "aws_showcase_cpu_and_disk_costs" {
+  command = plan
+  module { source = "./modules/aws" }
+  providers = { aws = aws.fake }
+  variables {
+    project_name               = "as7-fixture01"
+    aws_region                 = "us-east-1"
+    aws_instance_type          = "t3.large"
+    aws_ami_id                 = "ami-0123456789abcdef0"
+    aws_disk_size_gb           = 50
+    aws_existing_volume_id     = ""
+    aws_showcase_cost_controls = true
+  }
+  assert {
+    condition     = aws_instance.this.credit_specification[0].cpu_credits == "unlimited" && aws_instance.this.root_block_device[0].iops == 3000 && aws_instance.this.root_block_device[0].throughput == 125 && aws_ebs_volume.this[0].iops == 3000 && aws_ebs_volume.this[0].throughput == 125
+    error_message = "The showcase must price the selected CPU mode and included performance of both disks explicitly."
+  }
+}
+
+run "aws_showcase_nonburstable_cpu" {
+  command = plan
+  module { source = "./modules/aws" }
+  providers = { aws = aws.fake }
+  variables {
+    aws_region                 = "us-east-1"
+    aws_instance_type          = "m5.large"
+    aws_ami_id                 = "ami-0123456789abcdef0"
+    aws_disk_size_gb           = 50
+    aws_existing_volume_id     = ""
+    aws_showcase_cost_controls = true
+  }
+  assert {
+    condition     = length(aws_instance.this.credit_specification) == 0 && aws_instance.this.root_block_device[0].iops == 3000 && aws_ebs_volume.this[0].throughput == 125
+    error_message = "Nonburstable instances must retain no CPU-credit block while pricing the disks."
   }
 }
 

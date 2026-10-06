@@ -340,7 +340,7 @@ class TerraformAttempt:
         return module
 
     @exclusive
-    def resource_unit_prices(self, public=None, aws_query=None, gcp_catalog=None, hetzner_public=None):
+    def resource_unit_prices(self, public=None, aws_query=None, gcp_catalog=None, hetzner_public=None, aws_public=None):
         from showcase_prices import digitalocean_rates
         verify_prepared(self.run, self.config, self.provider)
         record = self.record()
@@ -360,7 +360,7 @@ class TerraformAttempt:
         common = (private_read(self.run / "deployment-plan.json"), self.config["providers"][self.provider], self.prefix, self.checkout, self.session.adapter)
         if self.provider == "aws":
             from showcase_aws_prices import aws_rates
-            result = aws_rates(*common, self.session.credentials, self.prepared["source_revision"], record["plan_sha256"], query=aws_query, now=self.now)
+            result = aws_rates(*common, self.session.credentials, self.prepared["source_revision"], record["plan_sha256"], query=aws_query, now=self.now, public=aws_public)
         elif self.provider == "gcp":
             from showcase_gcp_prices import gcp_rates
             result = gcp_rates(*common, self.prepared["source_revision"], record["plan_sha256"], catalog=gcp_catalog, now=self.now)

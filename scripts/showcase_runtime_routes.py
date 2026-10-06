@@ -134,6 +134,12 @@ def checked_path(path, owner=None, directory=False):
     return info
 
 
+def file_version(info):
+    """Reads may update access time; identity and edits must still agree."""
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid, info.st_gid,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def fsync_dir(path):
     fd = os.open(path, os.O_DIRECTORY | os.O_NOFOLLOW)
     try: os.fsync(fd)
@@ -196,7 +202,7 @@ class ConfigurationTransaction:
         atomic_write(record, packet, 0, 0, 0o600, exclusive=True)
         # A crash here retains restoration authority, whether the original or
         # installed file is observed. No operation silently repeats install.
-        need(checked_path(target, owner=OWNERS[role]) == info and target.read_bytes() == before)
+        need(file_version(checked_path(target, owner=OWNERS[role])) == file_version(info) and target.read_bytes() == before)
         atomic_write(target, after, info.st_uid, info.st_gid, 0o600)
         need(target.read_bytes() == after)
         return {"schema": 1, "status": "runtime_config_installed", "role": role, "binding": binding,

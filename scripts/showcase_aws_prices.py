@@ -6,13 +6,82 @@ import json
 import math
 import re
 import time
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, build_opener, ProxyHandler
 
 from showcase_policy import PolicyError, RESOURCE_TYPES, require, text, validate_fresh_plan
-from showcase_prices import Decimal, decimal_price, dollars
+from showcase_prices import Decimal, MAX_RESPONSE, NoRedirect, PriceHTML, decimal_price, dollars
 
 ENDPOINT = "https://api.pricing.us-east-1.amazonaws.com"
 MAX_PAGES = 10
 MAX_BYTES = 4 * 1024 * 1024
+SOURCES = {"gp3": "https://docs.aws.amazon.com/ebs/latest/userguide/general-purpose.html",
+           "cpu": "https://aws.amazon.com/ec2/pricing/on-demand/"}
+BURST_FAMILIES = {"t2", "t3", "t3a", "t8i"}
+
+
+class AWSTerms:
+    """Anonymous fixed-source reads; no account credentials or redirects."""
+    def __init__(self): self.opener = build_opener(ProxyHandler({}), NoRedirect())
+
+    def fetch(self, name):
+        require(name in SOURCES, "price_source_refused")
+        try:
+            request = Request(SOURCES[name], method="GET", headers={"Accept": "text/html", "User-Agent": "AgentStack-public-pricing-check/1"})
+            with self.opener.open(request, timeout=20) as response:
+                require(response.status == 200, "price_request_failed")
+                raw = response.read(MAX_RESPONSE + 1)
+            require(0 < len(raw) <= MAX_RESPONSE, "price_response_too_large")
+            document = raw.decode("utf-8")
+        except HTTPError as error:
+            error.close(); raise PolicyError("price_request_failed") from None
+        except (URLError, OSError, ValueError, UnicodeError):
+            raise PolicyError("price_request_failed") from None
+        return {"source": SOURCES[name], "body_sha256": hashlib.sha256(raw).hexdigest(), "document": document}
+
+
+def public_terms(public, name):
+    value = public.fetch(name)
+    require(isinstance(value, dict) and value.get("source") == SOURCES[name] and isinstance(value.get("document"), str)
+            and value.get("body_sha256") == hashlib.sha256(value["document"].encode()).hexdigest(), "price_source_changed")
+    parsed = PriceHTML.parse(value["document"])
+    return " ".join(" ".join(parsed.text).split()), {key: value[key] for key in ("source", "body_sha256")}
+
+
+def included_gp3(document):
+    iops = re.findall(r"baseline IOPS performance of ([0-9,]+) IOPS, which is included with the price of storage\.", document)
+    throughput = re.findall(r"baseline throughput performance of ([0-9]+) MiB/s, which is included with the price of storage\.", document)
+    require(iops == ["3,000"] and throughput == ["125"], "aws_gp3_included_performance_changed")
+
+
+def cpu_unit_rate(document, family):
+    require(family in BURST_FAMILIES, "aws_cpu_credit_family_unsupported")
+    # AWS's pricing section groups T3a with T3; require that scope explicitly.
+    if family == "t3a":
+        require(document.count("T8i/T4g/T3/T3a/T2 Unlimited Mode Pricing") == 1, "aws_cpu_credit_terms_changed")
+    label = "T8i" if family == "t8i" else "T2 and T3"
+    matches = re.findall(r"For " + label + r" instances in Unlimited mode, CPU Credits are charged at: \$([0-9]+(?:\.[0-9]+)?) per vCPU-Hour for Linux, RHEL and SLES, and", document)
+    require(len(matches) == 1 and document.count("The CPU Credit pricing is the same for all instance sizes, for On-Demand, Spot, and Reserved Instances, and across all regions.") == 1,
+            "aws_cpu_credit_terms_changed")
+    return decimal_price(matches[0])
+
+
+def machine_selection(adapter, cloud, credit_mode):
+    value = adapter.call(adapter.ec2, "describe_instance_types", InstanceTypes=[cloud["size"]])
+    rows = value.get("InstanceTypes") if isinstance(value, dict) else None
+    require(isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict), "aws_price_machine_required")
+    machine = rows[0]
+    require(isinstance(machine.get("VCpuInfo"), dict), "aws_price_machine_required")
+    cpu = machine["VCpuInfo"].get("DefaultVCpus")
+    require(machine.get("InstanceType") == cloud["size"] and type(cpu) is int and 1 <= cpu <= 256
+            and isinstance(machine.get("MemoryInfo"), dict) and type(machine["MemoryInfo"].get("SizeInMiB")) is int
+            and machine["MemoryInfo"]["SizeInMiB"] >= 8192 and isinstance(machine.get("ProcessorInfo"), dict)
+            and machine["ProcessorInfo"].get("SupportedArchitectures") == ["x86_64"]
+            and type(machine.get("BurstablePerformanceSupported")) is bool, "aws_price_machine_required")
+    burst = machine["BurstablePerformanceSupported"]; family = cloud["size"].split(".", 1)[0]
+    require((burst and family in BURST_FAMILIES and credit_mode in ("standard", "unlimited"))
+            or (not burst and family not in BURST_FAMILIES and credit_mode == "not_applicable"), "aws_price_cpu_scope_changed")
+    return cpu, machine
 
 
 def price_json(raw):
@@ -160,15 +229,30 @@ def aws_plan(plan, cloud, prefix, run):
             and type(volume.get("size")) is int and 1 <= volume["size"] <= 16384 and volume.get("availability_zone") == zone,
             "aws_price_plan_disk_scope_changed")
     for disk in (root, volume):
-        require(disk.get("iops") in (None, 3000) and disk.get("throughput") in (None, 125), "aws_price_extra_disk_performance_unpriced")
+        require(type(disk.get("iops")) is int and disk["iops"] == 3000
+                and type(disk.get("throughput")) is int and disk["throughput"] == 125, "aws_price_extra_disk_performance_unpriced")
     root_unknown = unknowns["aws_instance"].get("root_block_device", [])
     require(root_unknown == [] or isinstance(root_unknown, list) and len(root_unknown) == 1 and isinstance(root_unknown[0], dict)
-            and not any(root_unknown[0].get(key) for key in ("volume_type", "volume_size", "delete_on_termination")),
+            and not any(root_unknown[0].get(key) for key in ("volume_type", "volume_size", "delete_on_termination", "iops", "throughput")),
             "aws_price_plan_values_unknown")
-    return {"ami": ami, "availability_zone": zone, "root_volume_gib": root["volume_size"], "data_volume_gib": volume["size"]}
+    require(not any(unknowns["aws_ebs_volume"].get(key) for key in ("iops", "throughput")), "aws_price_plan_values_unknown")
+    credits = vm.get("credit_specification")
+    credit_unknown = unknowns["aws_instance"].get("credit_specification", [])
+    known = isinstance(credit_unknown, list) and (credit_unknown == [] or len(credit_unknown) == 1
+        and isinstance(credit_unknown[0], dict) and set(credit_unknown[0]) <= {"cpu_credits"}
+        and all(type(value) is bool and value is False for value in credit_unknown[0].values()))
+    require(isinstance(credits, list) and known, "aws_price_cpu_mode_required")
+    if cloud["size"].split(".", 1)[0] in BURST_FAMILIES:
+        require(len(credits) == 1 and isinstance(credits[0], dict) and set(credits[0]) == {"cpu_credits"}
+                and credits[0]["cpu_credits"] in ("standard", "unlimited"), "aws_price_cpu_mode_required")
+        mode = credits[0]["cpu_credits"]
+    else:
+        require(credits == [], "aws_price_cpu_mode_required"); mode = "not_applicable"
+    return {"ami": ami, "availability_zone": zone, "root_volume_gib": root["volume_size"], "data_volume_gib": volume["size"],
+            "cpu_credit_mode": mode, "gp3_iops": 3000, "gp3_throughput_mib_s": 125}
 
 
-def aws_rates(plan, cloud, prefix, run, adapter, credentials, source_revision, plan_sha256, query=None, now=time.time):
+def aws_rates(plan, cloud, prefix, run, adapter, credentials, source_revision, plan_sha256, query=None, now=time.time, public=None):
     selection = aws_plan(plan, cloud, prefix, run)
     require(adapter.cloud == cloud and isinstance(source_revision, str) and re.fullmatch(r"[a-f0-9]{40}", source_revision)
             and isinstance(plan_sha256, str) and re.fullmatch(r"[a-f0-9]{64}", plan_sha256), "price_measurement_scope_changed")
@@ -184,6 +268,14 @@ def aws_rates(plan, cloud, prefix, run, adapter, credentials, source_revision, p
             and isinstance(image.get("Name"), str)
             and re.fullmatch(r"ubuntu/images/hvm-ssd/ubuntu-jammy-22\.04-amd64-server-[0-9.]+", image["Name"]),
             "aws_price_ubuntu_image_required")
+    vcpus, machine = machine_selection(adapter, cloud, selection["cpu_credit_mode"])
+    public = AWSTerms() if public is None else public
+    performance, performance_source = public_terms(public, "gp3"); included_gp3(performance)
+    cpu_rate, cpu_source = Decimal(0), None
+    if selection["cpu_credit_mode"] == "unlimited":
+        terms, cpu_source = public_terms(public, "cpu")
+        cpu_rate = cpu_unit_rate(terms, cloud["size"].split(".", 1)[0])
+    cpu_hourly = cpu_rate * vcpus
     query = AWSPriceQuery(credentials) if query is None else query
     region = cloud["region"]
     requested = {
@@ -199,15 +291,17 @@ def aws_rates(plan, cloud, prefix, run, adapter, credentials, source_revision, p
     require(type(finished) in (int, float) and math.isfinite(finished) and began <= finished <= began + 300, "price_measurement_expired")
     disk_hourly = rates["gp3"] / 672
     pending = ["model_execution_cost_bound", "egress_unit_price_and_volume_bound", "cleanup_deadline_enforcement",
-               "tax_and_account_adjustments", "disk_performance_defaults", "remaining_resource_charges"]
-    if re.match(r"t[0-9][a-z]*\.", cloud["size"]):
-        pending.append("cpu_credit_cost_bound")
+               "tax_and_account_adjustments", "remaining_resource_charges"]
     return {"schema": 1, "provider": "aws", "status": "resource_unit_prices_measured", "currency": "USD", "run_id": prefix,
         "source_revision": source_revision, "plan_sha256": plan_sha256,
         "verified_at": datetime.fromtimestamp(finished, timezone.utc).isoformat(),
-        "selection": {"account_id": cloud["account_id"], "region": region, "size": cloud["size"], **selection},
+        "selection": {"account_id": cloud["account_id"], "region": region, "size": cloud["size"], "vcpus": vcpus, **selection},
         "vm_hourly_usd": dollars(rates["vm"]), "gp3_gib_monthly_usd": dollars(rates["gp3"]),
         "gp3_gib_hourly_usd_upper_bound": dollars(disk_hourly), "public_ipv4_count": 1,
         "public_ipv4_hourly_usd": dollars(rates["ipv4"]),
-        "vm_disks_ipv4_hourly_usd_upper_bound": dollars(rates["vm"] + (selection["root_volume_gib"] + selection["data_volume_gib"]) * disk_hourly + rates["ipv4"]),
-        "sources": {"endpoint": ENDPOINT, "products": sources}, "launch_gate": "unverified", "complete_quote": False, "not_verified": pending}
+        "cpu_credit_vcpu_hourly_usd": dollars(cpu_rate), "cpu_credit_hourly_usd_upper_bound": dollars(cpu_hourly),
+        "cpu_credit_bound_policy": "full_vcpu_utilization_no_earned_credit_allowance",
+        "vm_cpu_disks_ipv4_hourly_usd_upper_bound": dollars(rates["vm"] + cpu_hourly + (selection["root_volume_gib"] + selection["data_volume_gib"]) * disk_hourly + rates["ipv4"]),
+        "sources": {"endpoint": ENDPOINT, "products": sources, "machine_sha256": hashlib.sha256(json.dumps(machine, sort_keys=True, allow_nan=False).encode()).hexdigest(),
+                    "gp3_terms": performance_source, **({"cpu_terms": cpu_source} if cpu_source else {})},
+        "launch_gate": "unverified", "complete_quote": False, "not_verified": pending}

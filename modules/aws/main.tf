@@ -228,6 +228,8 @@ resource "aws_ebs_volume" "this" {
   availability_zone = local.az
   size              = var.aws_disk_size_gb
   type              = "gp3"
+  iops              = var.aws_showcase_cost_controls ? 3000 : null
+  throughput        = var.aws_showcase_cost_controls ? 125 : null
   encrypted         = true
 
   tags = {
@@ -255,8 +257,15 @@ resource "aws_instance" "this" {
 
   user_data = local.cloud_init
 
+  dynamic "credit_specification" {
+    for_each = var.aws_showcase_cost_controls && contains(["t2", "t3", "t3a", "t4g", "t8i"], split(".", var.aws_instance_type)[0]) ? [1] : []
+    content { cpu_credits = "unlimited" }
+  }
+
   root_block_device {
     volume_type           = "gp3"
+    iops                  = var.aws_showcase_cost_controls ? 3000 : null
+    throughput            = var.aws_showcase_cost_controls ? 125 : null
     volume_size           = 20
     delete_on_termination = true
     encrypted             = true

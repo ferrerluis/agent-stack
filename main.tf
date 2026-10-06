@@ -159,13 +159,14 @@ module "aws" {
   count  = var.cloud_provider == "aws" ? 1 : 0
   source = "./modules/aws"
 
-  project_name           = var.project_name
-  admin_username         = var.admin_username
-  aws_region             = var.aws_region
-  aws_instance_type      = var.aws_instance_type
-  aws_ami_id             = var.aws_ami_id
-  aws_disk_size_gb       = var.aws_disk_size_gb
-  aws_existing_volume_id = var.aws_existing_volume_id
+  project_name               = var.project_name
+  admin_username             = var.admin_username
+  aws_region                 = var.aws_region
+  aws_instance_type          = var.aws_instance_type
+  aws_showcase_cost_controls = var.aws_showcase_cost_controls
+  aws_ami_id                 = var.aws_ami_id
+  aws_disk_size_gb           = var.aws_disk_size_gb
+  aws_existing_volume_id     = var.aws_existing_volume_id
 
   ssh_public_key   = local.resolved_ssh_public_key
   allowed_ssh_cidr = var.allowed_ssh_cidr

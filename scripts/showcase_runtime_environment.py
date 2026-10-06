@@ -89,7 +89,8 @@ class EnvironmentTransaction:
             "installed_sha256": routes.sha(after), "uid": info.st_uid, "gid": info.st_gid, "mode": stat.S_IMODE(info.st_mode)}
         packet = routes.encoded(snapshot); need(len(packet) <= routes.LIMIT)
         routes.atomic_write(self.record, packet, 0, 0, 0o600, exclusive=True)
-        need(routes.checked_path(self.target, owner=routes.OWNERS["hermes"]) == info and self.target.read_bytes() == before)
+        need(routes.file_version(routes.checked_path(self.target, owner=routes.OWNERS["hermes"])) == routes.file_version(info)
+             and self.target.read_bytes() == before)
         routes.atomic_write(self.target, after, info.st_uid, info.st_gid, 0o600)
         need(self.target.read_bytes() == after)
         return routes.sha(after)
