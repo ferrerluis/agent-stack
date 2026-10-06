@@ -21,10 +21,11 @@ from showcase_policy import PolicyError, require
 from showcase_preflight import PreflightError
 from showcase_remote import RemoteChecks
 import showcase_task_evidence as task_evidence
+import showcase_runtime_evidence as runtime_evidence
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
 SOURCES = ("modules/common/runtime/hermes_health.py",) + tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
-    "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_task", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
+    "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_task", "showcase_runtime_evidence", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
 def proof_hash(value):
@@ -131,6 +132,8 @@ class RunController:
             binding = {"run_id": self.run.name, "source_revision": evidence["source_revision"],
                        "boot_id": baseline["boot_id"], "checksum": baseline["checksum"]}
             stage_proof = evidence.get("doctor_stages", {}).get(stage, {})
+            require(set(channel.get("runtime_tasks", {})) == ({"openclaw", "hermes"} if stage == "before_reboot" else set()),
+                    "runtime_task_proof_changed")
             require(stage_proof == observed[receipt_name] and set(stage_proof) == {"schema", "status", "run_id", "source_revision",
                     "boot_id", "checksum", "checks", "runtime_reports_sha256", "runtime_routes_sha256"}
                     and type(stage_proof.get("schema")) is int and stage_proof["schema"] == 1 and stage_proof["status"] == "verified"
@@ -168,6 +171,15 @@ class RunController:
                 from showcase_runtime_probe import native_proof_valid
                 try: native_proof_valid(public_route, doctor["native_route"])
                 except (ValueError, TypeError, KeyError): raise PolicyError("runtime_doctor_proof_changed") from None
+                if stage == "before_reboot":
+                    row = evidence["agents"][role]; task = channel["runtime_tasks"][role]
+                    try:
+                        checked = runtime_evidence.validate(task, route, doctor, public_route, binding, image,
+                            row["challenge"], row["request_id"], stored=True)
+                        require(checked == task and proof_hash(task) == row.get("runtime_task_sha256") == observed[role].get("runtime_task_sha256")
+                                and all(row.get(k) == v for k, v in checked["turn"].items()), "runtime_task_proof_changed")
+                    except (ValueError, TypeError, KeyError, runtime_evidence.agents.ProbeError):
+                        raise PolicyError("runtime_task_proof_changed") from None
                 container = route.get("container_probe", {})
                 require(container.get("status") == "runtime_container_route_verified" and type(container.get("schema")) is int and container["schema"] == 1
                         and container.get("role") == role and container.get("provider") == terms["provider"] and type(container.get("uid")) is int

@@ -25,7 +25,7 @@ class FixtureGateway:
         self.diagnostic_roles = set()
     def gate_task_starts(self): self.started_roles = set()
     def authorize_role(self, role):
-        require(self.alive and role not in self.started_roles, "model_role_already_used")
+        require(self.alive and role not in self.started_roles and role not in self.sealed, "model_role_already_used")
         require(role not in self.diagnostic_roles, "model_diagnostic_in_progress")
         self.started_roles.add(role)
     @contextmanager
@@ -73,6 +73,7 @@ class FixtureSession(session.ModelSession):
         policy["source_revision"] = checks.attempt.prepared["source_revision"]
         super().__init__(checks, policy, gateway_factory=FixtureGateway, transport_factory=FixtureTransport)
         self.lifecycle_calls = []
+        self.agent_mutation = self.runtime_task_mutation = None
 
     def runtime_lifecycle_command(self, target, packet, timeout):
         # Native VM/Docker/doctor/readiness replies only; the production
@@ -80,7 +81,7 @@ class FixtureSession(session.ModelSession):
         self.lifecycle_calls.append(copy.deepcopy(packet))
         role = packet.get("role") or packet["route"]["role"]
         if packet["action"] == "restore":
-            require(not self.gateway.alive and not self.transport.alive, "fixture_restore_before_revoke")
+            require(not self.gateway.healthy() and not self.transport.healthy(), "fixture_restore_before_revoke")
             return {"schema": 1, "status": "runtime_config_restored", "role": role,
                     "binding": packet["binding"], "original_sha256": "c" * 64}
         route = packet["route"]; config = routes.compile_config({}, route)
@@ -96,7 +97,21 @@ class FixtureSession(session.ModelSession):
             "image_ref": "ghcr.io/openclaw/openclaw@" + self.checks.config["pins"]["openclaw_digest"] if role == "openclaw" else self.checks.config["pins"]["hermes_image"],
             "image_id": "sha256:" + "d" * 64, "config_sha256": "b" * 64, "native_route": native, "watchdog": "armed"}
         if role == "hermes": value["environment_sha256"] = "e" * 64
-        if packet["action"] == "doctor":
+        if packet["action"] == "task":
+            require(timeout == 300 and role in self.gateway.started_roles and self.gateway.client(role), "fixture_task_not_authorized")
+            challenge = packet["challenge"]
+            answer = {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}
+            usage = {"input_tokens": 30, "output_tokens": 25, "cache_read_tokens": 0, "cache_write_tokens": 0}
+            self.fake_response(role, json.dumps(challenge).encode(), answer, usage)
+            turn = {"schema": 1, "status": "pass", "runtime": role, "served_model": route["provider"] + "/" + route["model"],
+                "request_id": packet["request_id"], "watchdog": "disarmed", "duration_seconds": 1.25,
+                "transport": "gateway_rpc" if role == "openclaw" else "api_runs", "answer": answer, "model_usage": usage}
+            if self.agent_mutation: self.agent_mutation(turn)
+            value.update(status="runtime_task_verified", uid=1000 if role == "openclaw" else 10000,
+                health="healthy", watchdog="disarmed", doctor_sha256="f" * 64, request_id=packet["request_id"],
+                challenge_sha256=routes.sha(routes.encoded(challenge)), turn=turn)
+            if self.runtime_task_mutation: self.runtime_task_mutation(value)
+        elif packet["action"] == "doctor":
             require(role in self.gateway.diagnostic_roles and role not in self.gateway.started_roles, "fixture_doctor_not_isolated")
             checks = {"service." + role: "pass", role + ".doctor": "pass"}
             if role == "hermes": checks.update({"hermes.config": "pass", "hermes.readiness": "pass"}); value["readiness_sha256"] = "a" * 64
@@ -117,8 +132,7 @@ class FixtureSession(session.ModelSession):
 
     def runtime_client(self, role):
         self.fixture_start()
-        self.active()
-        return self.transport.client(role)
+        return super().runtime_client(role)
 
     def workspace_client(self, role):
         self.fixture_start()

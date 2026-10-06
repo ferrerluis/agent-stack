@@ -509,7 +509,7 @@ class RemoteChecks:
         require(all(evidence["checks"].get(key) == "pass" for key in required), "runtime_doctor_proof_required")
         require(runtime not in evidence["agents"], "runtime_task_already_invoked")
         require(self.models is not None, "model_session_required")
-        target, module = self.bind(), self.agent_module()
+        self.bind(); module = self.agent_module()
         model = self.config["models"][runtime]
         require(isinstance(model, str) and re.fullmatch(module.MODEL, model), "model_ids_required")
         challenge = {"lhs": secrets.randbelow(1000000), "rhs": secrets.randbelow(1000000), "nonce": secrets.token_hex(16)}
@@ -521,12 +521,12 @@ class RemoteChecks:
         try:
             self.models.runtime_client(runtime)
             start = self.models.begin_task(runtime)
-            report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", runtime, model, request_id, json.dumps(challenge)],
-                input=(self.attempt.checkout / AGENT_PATH).read_bytes(), timeout=300))
+            report = self.models.run_runtime_task(runtime, challenge, request_id, start)
             try:
-                proof = module.validate_proof(report, runtime, model, challenge, request_id)
+                proof = module.validate_proof(report["turn"], runtime, model, challenge, request_id)
             except module.ProbeError:
                 raise PolicyError("runtime_task_failed") from None
+            proof["runtime_task_sha256"] = report["proof_sha256"]
             proof["gateway_receipt"] = self.models.task_receipt(runtime, start)
             proof["provider_task"] = self.correlate_task(runtime, challenge, proof["model_usage"], proof["gateway_receipt"])
             evidence = self.evidence()

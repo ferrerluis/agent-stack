@@ -101,6 +101,61 @@ class ContainerRouteTest(unittest.TestCase):
 
 
 class OriginalAccountSessionTest(unittest.TestCase):
+    def test_runtime_coordinator_uses_actual_gateway_nonce_grants_completion_ledger_and_role_revocation(self):
+        fixture = self.make(real_gateway=True)
+        fixture.models.lifecycle_calls = []; fixture.models.agent_mutation = fixture.models.runtime_task_mutation = None
+        owner = self
+        def post(role, path, value):
+            bundle = fixture.models.gateway.client(role)
+            connection = HTTPConnection("127.0.0.1", fixture.models.gateway.server.server_port, timeout=3)
+            try:
+                connection.request("POST", "/" + role + path, json.dumps(value, separators=(",", ":")),
+                    {"Content-Type": "application/json", "Authorization": "Bearer " + bundle["credential"]})
+                response = connection.getresponse(); raw = response.read()
+                return response.status, raw
+            finally: connection.close()
+        class Observed:
+            def add(self, pair):
+                role, nonce = pair; status, _ = post(role, "/_transport", {"nonce": nonce})
+                owner.assertEqual(status, 200)
+        fixture.models.gateway.observed = Observed()  # Simulated VM reaches the real controller gateway.
+        def response(role, raw, answer, usage):
+            terms = fixture.models.policy["roles"][role]
+            api = "messages" if terms["provider"] == "anthropic" else "chat"
+            path = "/v1/messages" if api == "messages" else "/v1/chat/completions"
+            prompt = json.loads(raw)
+            content = session.runtime_evidence.agents.prompt(prompt)
+            request = {"model": terms["model"], "stream": False, "messages": [{"role": "user", "content": content}],
+                       "max_tokens": terms["output_tokens_upper_bound"]}
+            def upstream(request, **kwargs):
+                owner.assertEqual(json.loads(request.data)["messages"][0]["content"], content)
+                value = completions.response(api, text=json.dumps(answer), response_id="fixture_" + hashlib.sha256(request.data).hexdigest())
+                value["model"] = terms["model"]
+                if api == "messages": value["usage"] = {"input_tokens": 30, "output_tokens": 25, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+                else: value["usage"] = {"prompt_tokens": 30, "completion_tokens": 25, "total_tokens": 55,
+                    "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}}
+                return Response([completions.encoded(value)], "application/json")
+            fixture.opener.open.side_effect = upstream
+            owner.assertEqual(post(role, path, request)[0], 200)
+        fixture.models.fake_response = response
+        fixture.models.runtime_lifecycle_command = lambda *args: FixtureSession.runtime_lifecycle_command(fixture.models, *args)
+        path = "/v1/messages" if fixture.models.policy["roles"]["hermes"]["provider"] == "anthropic" else "/v1/chat/completions"
+        self.assertEqual(post("hermes", path, {"model": fixture.models.policy["roles"]["hermes"]["model"],
+            "messages": [{"role": "user", "content": "not granted"}], "stream": False, "max_tokens": 16})[0], 403)
+        for role in ("openclaw", "hermes"): fixture.models.activate_runtime(role)
+        fixture.checks.doctors()
+        fixture.reader.assert_not_called(); fixture.opener.open.assert_not_called()
+        for role in ("openclaw", "hermes"):
+            proof = fixture.checks.runtime_task(role)
+            self.assertEqual(proof["provider_task"]["status"], "task_provider_correlated")
+            self.assertEqual(len(proof["runtime_task_sha256"]), 64)
+            with self.assertRaises(PolicyError): fixture.models.gateway.client(role)
+        self.assertEqual(fixture.opener.open.call_count, 2)
+        account = self.account(fixture); self.assertEqual(len(account["model_requests"]), 2)
+        saved = cleanup.private_read(fixture.checks.path)["model_channels"]["before_reboot"]["runtime_tasks"]
+        self.assertEqual(set(saved), {"openclaw", "hermes"})
+        self.assertNotIn(PRIVATE, json.dumps(saved)); self.assertTrue(all("answer" not in p["turn"] for p in saved.values()))
+
     def test_measured_terms_conversion_keeps_the_original_plan_source_full_context_and_explicit_limits(self):
         terms = price_fixtures.TermsTest("runTest"); terms.setUp()
         receipt = terms.measure(); limits = terms.limits()

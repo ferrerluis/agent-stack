@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import os
@@ -18,7 +19,7 @@ import test_showcase_terraform as terraform_fixtures
 from test_showcase_policy import config, quote, NOW
 from unittest.mock import Mock
 import test_showcase_peer as peer_fixtures
-from showcase_model_session_fixtures import FixtureSession, PRIVATE_ROUTE
+from showcase_model_session_fixtures import FixtureSession, PRIVATE_ROUTE, CAPABILITY
 
 ROOT = Path(__file__).resolve().parents[2]
 PREFIX = terraform_fixtures.PREFIX
@@ -132,6 +133,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.peer_calls = []
         self.checks = remote.RemoteChecks(self.attempt, self.ledger, execute=self.execute, now=lambda: self.clock, sleep=self.sleep)
         self.models = FixtureSession(self.checks)
+        self.models.agent_mutation = lambda report: self.agent_mutation(report) if self.agent_mutation else None
         self.checks.models = self.models  # Test-only lazy fixture channel.
 
     def sleep(self, amount):
@@ -164,18 +166,7 @@ class RemoteChecksTest(unittest.TestCase):
                 report["checks"][0]["status"] = "fail"
             return json.dumps(report).encode()
         if input == (ROOT / remote.AGENT_PATH).read_bytes():
-            _, _, _, _, runtime, model, request_id, challenge_json = words
-            challenge = json.loads(challenge_json)
-            answer = {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}
-            usage = {"input_tokens": 30, "output_tokens": 25, "cache_read_tokens": 0, "cache_write_tokens": 0}
-            self.models.fake_response(runtime, challenge_json.encode(), answer, usage)
-            report = {"schema": 1, "status": "pass", "runtime": runtime, "served_model": model,
-                "request_id": request_id, "watchdog": "disarmed", "duration_seconds": 1.25,
-                "transport": "gateway_rpc" if runtime == "openclaw" else "api_runs",
-                "answer": answer, "model_usage": usage}
-            if self.agent_mutation:
-                self.agent_mutation(report)
-            return json.dumps(report).encode()
+            raise AssertionError("legacy direct runtime task must not dispatch")
         if "--cli" in words:
             cli = words[words.index("--cli") + 1]
             bundle = json.loads(input)
@@ -275,8 +266,10 @@ class RemoteChecksTest(unittest.TestCase):
             with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_already_invoked"):
                 self.checks.runtime_task(runtime)
         agent_calls = [call for call in self.calls if call["input"] == (ROOT / remote.AGENT_PATH).read_bytes()]
-        self.assertEqual(len(agent_calls), 2)
-        self.assertTrue(all(call["timeout"] == 300 for call in agent_calls))
+        self.assertEqual(agent_calls, [])
+        task_calls = [packet for packet in self.models.lifecycle_calls if packet["action"] == "task"]
+        self.assertEqual(len(task_calls), 2)
+        self.assertEqual({packet["route"]["role"] for packet in task_calls}, {"openclaw", "hermes"})
 
     def test_bad_runtime_answer_invalidates_health_evidence_and_blocks_repeat(self):
         self.ready()
@@ -300,6 +293,78 @@ class RemoteChecksTest(unittest.TestCase):
             self.checks.doctors()
         with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
             self.checks.runtime_task("hermes")
+
+    def test_direct_runtime_start_requires_complete_doctors_and_original_capability(self):
+        for changed in ("missing", "uid", "probe", "hash", "check", "capability"):
+            fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups)
+            fresh.ready(); evidence = cleanup.private_read(fresh.checks.path)
+            row = evidence["model_channels"]["before_reboot"]
+            if changed == "missing": evidence["doctor_stages"].clear()
+            elif changed == "uid": row["runtime_doctors"]["hermes"]["uid"] = 0
+            elif changed == "probe": row["runtime_routes"]["hermes"]["container_probe"]["uid"] = 0
+            elif changed == "hash": row["runtime_doctors"]["hermes"]["doctor_sha256"] = "invalid"
+            elif changed == "check": evidence["checks"]["workspace.codex"] = "uncertain"
+            else: fresh.models.runtime_configs["hermes"]["route"]["credential"] = "a" * 64
+            if changed in ("uid", "probe", "hash"):
+                proof = evidence["doctor_stages"]["before_reboot"]
+                proof["runtime_reports_sha256"]["hermes"] = controller.proof_hash(row["runtime_doctors"]["hermes"])
+                proof["runtime_routes_sha256"]["hermes"] = controller.proof_hash(row["runtime_routes"]["hermes"])
+            cleanup.private_write(fresh.checks.path, evidence)
+            with self.assertRaisesRegex(terraform.PolicyError, "runtime_model_route_required"): fresh.models.begin_task("hermes")
+            self.assertEqual(fresh.models.gateway.started_roles, set())
+            self.assertEqual(fresh.ledger.operate(fresh.models.spend.account)["model_requests"], [])
+            self.assertFalse(any(p["action"] == "task" for p in fresh.models.lifecycle_calls))
+
+    def test_runtime_dispatch_without_controller_start_cannot_create_task_or_hold(self):
+        self.ready(); before = len(self.models.lifecycle_calls)
+        with self.assertRaisesRegex(terraform.PolicyError, "model_task_receipt_unverified"):
+            self.models.run_runtime_task("hermes", {"lhs": 1, "rhs": 2, "nonce": "a" * 32},
+                "12345678-1234-4234-8234-123456789abc", {})
+        self.assertEqual(len(self.models.lifecycle_calls), before)
+        self.assertEqual(self.models.gateway.started_roles, set())
+
+    def test_changed_native_task_identity_boot_doctor_hash_or_extra_data_revokes_without_replay(self):
+        for field, value in (("uid", 0), ("image_id", "sha256:" + "a" * 64), ("doctor_sha256", "a" * 64),
+                             ("challenge_sha256", "a" * 64), ("schema", True), ("watchdog", "armed"),
+                             ("health", "stopped"), ("credential", CAPABILITY)):
+            fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups); fresh.ready()
+            fresh.models.runtime_task_mutation = lambda report: report.update({field: value})
+            with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_failed"): fresh.checks.runtime_task("hermes")
+            evidence = cleanup.private_read(fresh.checks.path)
+            self.assertEqual(evidence["model_channels"]["before_reboot"]["runtime_tasks"]["hermes"]["status"], "uncertain")
+            self.assertEqual(evidence["agents"]["hermes"]["status"], "uncertain")
+            self.assertEqual(fresh.models.state, "closed"); self.assertIn("hermes", fresh.models.gateway.sealed)
+            self.assertEqual(len(fresh.ledger.operate(fresh.models.spend.account)["model_requests"]), 1)
+            count = len(fresh.models.lifecycle_calls)
+            with self.assertRaises(terraform.PolicyError): fresh.checks.runtime_task("hermes")
+            self.assertEqual(len(fresh.models.lifecycle_calls), count)
+
+    def test_native_runtime_success_without_provider_request_cannot_supply_completion_proof(self):
+        self.ready(); self.models.fake_response = lambda *args: None
+        with self.assertRaisesRegex(terraform.PolicyError, "model_task_receipt_unverified"): self.checks.runtime_task("hermes")
+        self.assertEqual(self.models.state, "closed"); self.assertIn("hermes", self.models.gateway.sealed)
+        self.assertEqual(self.ledger.operate(self.models.spend.account)["model_requests"], [])
+
+    def test_runtime_task_post_reply_boot_or_doctor_change_cannot_keep_current_success(self):
+        for changed in ("boot", "doctor"):
+            fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups); fresh.ready()
+            def mutate(report):
+                if changed == "boot": fresh.boot = NEW_BOOT
+                else:
+                    evidence = cleanup.private_read(fresh.checks.path)
+                    evidence["model_channels"]["before_reboot"]["runtime_doctors"]["hermes"]["doctor_sha256"] = "a" * 64
+                    cleanup.private_write(fresh.checks.path, evidence)
+            fresh.models.runtime_task_mutation = mutate
+            with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_failed"): fresh.checks.runtime_task("hermes")
+            self.assertEqual(fresh.models.state, "closed")
+
+    def test_after_reboot_native_doctors_cannot_allow_new_runtime_task_or_allocation(self):
+        self.baseline(); self.reboot_verified()
+        original = copy.deepcopy(self.ledger.operate(self.models.spend.account)["model_requests"])
+        calls = len(self.models.lifecycle_calls)
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_model_route_required"): self.models.begin_task("hermes")
+        self.assertEqual(self.ledger.operate(self.models.spend.account)["model_requests"], original)
+        self.assertEqual(len(self.models.lifecycle_calls), calls)
 
     def test_runtime_task_needs_doctors_and_full_containment_time_before_dispatch(self):
         self.checks.bootstrap()

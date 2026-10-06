@@ -179,6 +179,46 @@ class RemoteContainerTest(unittest.TestCase):
 
 
 class FullRunTest(unittest.TestCase):
+    def test_matching_task_hashes_cannot_replace_captured_container_doctor_or_fresh_challenge(self):
+        value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
+        original = cleanup.private_read(value.checks.path)
+        saved = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
+        for role in ("openclaw", "hermes"):
+            for field, changed in (("uid", 0), ("image_id", "sha256:" + "a" * 64), ("doctor_sha256", "a" * 64),
+                                   ("challenge_sha256", "a" * 64), ("schema", True), ("watchdog", "armed"),
+                                   ("container_id", "a" * 64), ("request_id", "87654321-1234-4234-9234-123456789abc")):
+                evidence, observed = copy.deepcopy(original), copy.deepcopy(saved)
+                task = evidence["model_channels"]["before_reboot"]["runtime_tasks"][role]; task[field] = changed
+                sha = controller.proof_hash(task)
+                evidence["agents"][role]["runtime_task_sha256"] = observed[role]["runtime_task_sha256"] = sha
+                with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_proof_changed"):
+                    value.controller.verdict(observed, evidence)
+
+    def test_missing_original_or_added_post_reboot_task_proof_cannot_pass_or_replay(self):
+        value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
+        original = cleanup.private_read(value.checks.path)
+        observed = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
+        for stage in ("before_reboot", "after_reboot"):
+            evidence = copy.deepcopy(original)
+            if stage == "before_reboot": evidence["model_channels"][stage]["runtime_tasks"].pop("hermes")
+            else: evidence["model_channels"][stage]["runtime_tasks"] = original["model_channels"]["before_reboot"]["runtime_tasks"]
+            with self.assertRaisesRegex(terraform.PolicyError, "runtime_task_proof_changed"): value.controller.verdict(observed, evidence)
+
+    def test_failed_native_task_reply_cleans_both_routes_and_retains_holds_without_paid_replay(self):
+        for role, count in (("openclaw", 1), ("hermes", 2)):
+            value = self.make()
+            value.models.runtime_task_mutation = lambda report: report.update(uid=0) if report["role"] == role else None
+            report = value.controller.run_attempt(value.readiness, quote())
+            self.assertEqual(report["status"], "fail"); self.assertEqual(report["failed_step"], role)
+            self.assertEqual(report["cleanup"], "verified"); self.assertEqual(set(report["cells"].values()), {"unverified"})
+            account = cleanup.private_read(value.ledger.directory / "reservations.json")["attempts"][0]
+            self.assertEqual(len(account["model_requests"]), count)
+            channel = cleanup.private_read(value.checks.path)["model_channels"]["before_reboot"]
+            self.assertEqual(channel["shutdown"], "verified"); self.assertEqual(set(channel["runtime_config_restores"]), {"openclaw", "hermes"})
+            calls = len(value.models.lifecycle_calls)
+            self.assertEqual(value.controller.recover()["status"], "fail")
+            self.assertEqual(len(value.models.lifecycle_calls), calls)
+
     def test_matching_client_and_saved_token_or_answer_claims_cannot_replace_original_provider_evidence(self):
         value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
         original = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
@@ -191,6 +231,10 @@ class FullRunTest(unittest.TestCase):
                     row["model_usage"]["output_tokens"] += 1
                     row["provider_task"]["model_usage"]["output_tokens"] += 1
                 else: row["provider_task"]["requests_sha256"] = "0" * 64
+                if role in ("openclaw", "hermes"):
+                    task = evidence["model_channels"]["before_reboot"]["runtime_tasks"][role]
+                    task["turn"]["model_usage"] = copy.deepcopy(row["model_usage"])
+                    row["runtime_task_sha256"] = controller.proof_hash(task)
                 for key in observed[role]: observed[role][key] = copy.deepcopy(row[key])
                 with self.assertRaisesRegex(terraform.PolicyError, "model_task_provider_mismatch"):
                     value.controller.verdict(observed, evidence)

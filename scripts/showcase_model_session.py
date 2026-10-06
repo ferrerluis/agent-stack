@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Internal original-budget model channel and independently checked coding routes.
 
-Production still needs runtime adapters and measured launch wiring. No public
+Production still needs pinned verification and measured launch wiring. No public
 paid command, price override, provider selection or readiness bypass is added.
 """
 import copy
@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import secrets
+import showcase_runtime_evidence as runtime_evidence
 
 from showcase_attempt import verify_prepared
 from showcase_cleanup import private_write
@@ -134,6 +135,7 @@ class ModelSession:
     def begin_task(self, role):
         self.active()
         require(role in ROLES and role not in self.tasks, "model_role_already_used")
+        if role in ("openclaw", "hermes"): self.runtime_client(role)
         def verify(state):
             row = self.spend.account(state)
             require(not any(hold["role"] == role for hold in row["model_requests"]), "model_role_already_used")
@@ -144,13 +146,82 @@ class ModelSession:
         self.gateway.authorize_role(role)
         return copy.deepcopy(start)
 
-    def runtime_client(self, role):
+    def runtime_ready(self, role):
         require(role in ("openclaw", "hermes"), "invalid_runtime")
-        self.active()
-        # A staged file does not prove the running process selected its route.
-        # Native route/doctor/generation checks are still required before paid
-        # work, including when stage_runtime_config() has succeeded.
-        raise PolicyError("runtime_model_route_required")
+        evidence = self.active(); config = self.runtime_configs.get(role)
+        require(self.stage == "before_reboot" and isinstance(config, dict) and config.get("lifecycle") is True,
+                "runtime_model_route_required")
+        require(isinstance(config.get("route"), dict), "runtime_model_route_required")
+        channel = evidence["model_channels"][self.stage]
+        ready, doctor = channel.get("runtime_routes", {}).get(role), channel.get("runtime_doctors", {}).get(role)
+        binding = {"run_id": self.checks.run.name, "source_revision": self.revision,
+                   "boot_id": self.transport.proof["boot_id"], "checksum": self.transport.proof["checksum"]}
+        image = ("ghcr.io/openclaw/openclaw@" + self.checks.config["pins"]["openclaw_digest"] if role == "openclaw"
+                 else self.checks.config["pins"]["hermes_image"])
+        terms = self.policy["roles"][role]
+        require(config.get("binding") == binding and config["route"]["role"] == role
+                and config["route"].get("bridge_ipv4") == self.transport.ready["bridge_ipv4"]
+                and config["route"].get("base_url") == "http://" + self.transport.ready["bridge_ipv4"] + ":" + str(self.transport.ready["bridge_port"]) + "/" + role
+                and all(config["route"].get(k) == terms[v] for k, v in (("provider", "provider"), ("model", "model"),
+                    ("context_tokens", "context_tokens_upper_bound"), ("output_tokens", "output_tokens_upper_bound"))), "runtime_model_route_required")
+        try:
+            runtime_evidence.identity(ready, doctor, config["route"], binding, image)
+            require(self.gateway.probe_observed(role, ready["container_probe"]["nonce"]), "runtime_model_route_required")
+            self.checks.doctor_receipt()  # Complete diagnostics on this boot.
+        except (ValueError, TypeError, KeyError, PolicyError):
+            raise PolicyError("runtime_model_route_required") from None
+        return copy.deepcopy((config, ready, doctor, image))
+
+    def runtime_client(self, role):
+        config, _, _, _ = self.runtime_ready(role)
+        require(role not in self.tasks and role not in self.checks.evidence()["model_channels"][self.stage].get("runtime_tasks", {}),
+                "model_role_already_used")
+        require(config["route"].get("credential") == self.transport.client(role).get("credential"), "runtime_model_route_required")
+        return copy.deepcopy(config["route"])
+
+    def run_runtime_task(self, role, challenge, request_id, start):
+        """Dispatch once through checked captured-container code; no paid replay."""
+        config, ready, doctor, image = self.runtime_ready(role)
+        require(isinstance(start, dict) and set(start) == {"role", "started_at", "boot_id", "policy_sha256"}
+                and start == self.tasks.get(role) and start.get("role") == role
+                and start.get("boot_id") == self.transport.proof["boot_id"] and start.get("policy_sha256") == digest(self.policy),
+                "model_task_receipt_unverified")
+        require(config["route"].get("credential") == self.transport.client(role).get("credential"), "runtime_model_route_required")
+        from showcase_agents import challenge_valid, REQUEST
+        import re
+        challenge_valid(challenge)
+        require(isinstance(request_id, str) and re.fullmatch(REQUEST, request_id), "runtime_task_failed")
+        from showcase_attempt import remaining_timeout
+        require(remaining_timeout(self.checks.ensure()[1], 300, now=self.checks.now()) == 300, "agent_task_time_required")
+        evidence = self.active(); row = evidence["model_channels"][self.stage]
+        require(role not in row.get("runtime_tasks", {}), "model_role_already_used")
+        baseline = evidence["baseline"]
+        require(self.checks.probe(config["target"]) == baseline, "model_session_boot_changed")
+        row.setdefault("runtime_tasks", {})[role] = {"status": "started", "request_id": request_id}
+        private_write(self.checks.path, evidence)
+        try:
+            try:
+                report = self.runtime_lifecycle_command(config["target"], {"action": "task", "binding": config["binding"],
+                    "route": config["route"], "challenge": challenge, "request_id": request_id}, 300)
+            finally: self.gateway.seal_role(role)
+            checked = runtime_evidence.validate(report, ready, doctor, config["route"], config["binding"], image, challenge, request_id)
+            require(self.checks.probe(config["target"]) == baseline, "model_session_boot_changed")
+            require(self.runtime_ready(role) == (config, ready, doctor, image), "runtime_task_failed")
+            evidence = self.checks.evidence()
+            evidence["model_channels"][self.stage]["runtime_tasks"][role] = checked
+            private_write(self.checks.path, evidence)
+            from showcase_task_evidence import hashed
+            return {"turn": copy.deepcopy(report["turn"]), "proof_sha256": hashed(checked)}
+        except BaseException:
+            from showcase_cleanup import private_read
+            try:
+                evidence = private_read(self.checks.path)
+                require(evidence.get("run_id") == self.checks.run.name and evidence.get("source_revision") == self.revision,
+                        "model_session_scope_changed")
+                evidence["model_channels"][self.stage]["runtime_tasks"][role]["status"] = "uncertain"
+                private_write(self.checks.path, evidence)
+            finally: self.close()
+            raise PolicyError("runtime_task_failed") from None
 
     def runtime_config_command(self, target, packet):
         source = self.checks.attempt.checkout / RUNTIME_CONFIG
