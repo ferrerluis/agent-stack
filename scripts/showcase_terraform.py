@@ -90,6 +90,10 @@ class CloudSession:
         from showcase_models import check_models
         return check_models(self.config, self.secret, http=http)
 
+    def model_terms(self, revision, plan_sha256, http=None, public=None, now=time.time):
+        from showcase_model_prices import measure_model_terms
+        return measure_model_terms(self.config, self.provider, revision, plan_sha256, self.secret, http, public, now)
+
     def environment(self, run, min_lifetime=0):
         env = isolated_environment(run)
         if self.provider == "aws":
@@ -365,6 +369,21 @@ class TerraformAttempt:
         else:
             result = digitalocean_rates(*common, self.prepared["source_revision"], record["plan_sha256"], public=public, now=self.now)
         private_write(self.run / "resource-prices.json", result)
+        return result
+
+    @exclusive
+    def model_unit_prices(self, http=None, public=None):
+        verify_prepared(self.run, self.config, self.provider)
+        record = self.record()
+        require(record.get("stage") == "planned", "planned_price_attempt_required")
+        require(self.session.provider == self.provider and self.session.config == self.config, "model_terms_scope_changed")
+        root = Path(__file__).resolve().parents[1]
+        for name in ("showcase_model_prices", "showcase_model_spend", "showcase_models", "showcase_prices", "showcase_cleanup", "showcase_policy", "showcase_terraform", "showcase_preflight", "showcase_attempt"):
+            relative = "scripts/" + name + ".py"
+            require((self.checkout / relative).is_file() and (self.checkout / relative).read_bytes() == (root / relative).read_bytes(),
+                    "price_controller_source_changed")
+        result = self.session.model_terms(self.prepared["source_revision"], record["plan_sha256"], http, public, self.now)
+        private_write(self.run / "model-prices.json", result)
         return result
 
     def launch_gates(self, readiness):
