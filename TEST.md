@@ -109,7 +109,7 @@ python3 scripts/showcase_policy.py --config <private-inputs.json> --provider aws
 
 `inputs_complete` means the required fields and approved limits are present. Identity, project isolation, permissions, prices, model availability, minimum VM memory and second-peer access still require live preflight; none is established by an input declaration.
 
-The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project/region/zone. A new config or ledger must not be used to restart the same batch's spending allowance. Ledger schema 3 requires this complete scope; an older ledger is refused and must be preserved, not replaced to reset the budget. Deployment/test execution and resource/node deletion remain to be implemented.
+The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project/region/zone. A new config or ledger must not be used to restart the same batch's spending allowance. Ledger schema 3 requires this complete scope; an older ledger is refused and must be preserved, not replaced to reset the budget. Saved-plan execution and guarded deletion are implemented as library components; measured launch readiness and the complete paid test controller remain in development.
 
 ## Private Attempt Preparation
 
@@ -125,7 +125,36 @@ This exports committed source into `<batch>/attempts/<run-id>/repo`, creates a f
 
 The preparation library verifies the selected revision/files, settings, provider binding and generated key before later commands. Added overrides, changed source/settings or swapped keys fail. Its child environment discards inherited credentials, proxies, SSH agents and Terraform command overrides; bounded subprocesses kill child processes on timeout. Expiry prevents new work but never prevents bounded cleanup recovery.
 
-For workspace password authentication, the controller must let the library's stdin-only hash helper perform the single authorized `op` read immediately before hashing, then pass only `TF_VAR_workspace_password_hash` in memory. Supply no plaintext `workspace_password` to Terraform in the showcase. The hash remains sensitive in state/runtime files; the workspace accepts either the legacy password or the hash, rejects both together, and removes the password/hash environment before starting SSH. This helper has been tested with fake passwords only; the deployment controller and real secret injection are still pending.
+For workspace password authentication, the saved-plan driver uses the stdin-only hash helper for the single authorized `op` read immediately before hashing, then passes only `TF_VAR_workspace_password_hash` in memory. Supply no plaintext `workspace_password` to Terraform in the showcase. The hash remains sensitive in state/runtime files; the workspace accepts either the legacy password or the hash, rejects both together, and removes the password/hash environment before starting SSH. Cleanup reuses the private hash without retrieving the original password or model/enrollment keys. This path has been tested with fake secrets only.
+
+## Saved Plans And Guarded Recovery
+
+With the selected provider inputs, task-local live dependencies and an authorized `op` session available:
+
+```bash
+AGENT_STACK_LIVE_TESTS=1 ./scripts/test-live.sh --phase plan \
+  --provider aws --profile showcase --run-id <as7-unique-id> \
+  --config <mode-0600-private-inputs.json> --batch <private-batch-directory> \
+  --revision <full-commit-sha>
+```
+
+Planning prepares and verifies exact committed source, initializes isolated Terraform data, runs read preflight, injects selected secrets in memory and saves a private binary plan plus checked JSON. It creates no VM, makes no model call and reserves no spend. Plans/state contain sensitive values; keep the entire batch outside Git with mode 0700. `planned` still reports `launch_ready: false`.
+
+The library applies only that saved plan after measured readiness and an active reservation in the original ledger. Source, settings, key, plan and provider-lock hashes are checked again; a durable record permits one apply invocation. Deadlines and timeouts bound child processes, interrupted creation remains uncertain, and GCP tokens refresh before commands only when they cover the full bounded command duration. The public CLI exposes no launch phase or readiness override; price/model/permission/container/peer measurements and complete test orchestration remain pending.
+
+Recover a recorded active attempt in that same private batch:
+
+```bash
+AGENT_STACK_LIVE_TESTS=1 ./scripts/test-live.sh --phase cleanup \
+  --provider aws --profile showcase --run-id <original-as7-id> \
+  --config <mode-0600-private-inputs.json> --batch <original-private-batch-directory>
+```
+
+Before destruction, the driver captures cloud/node IDs, matches state resources and attachments to the original plan and observed inventory, and checks a saved destroy plan permits deletion only. It then applies that exact destroy plan, requires empty state, removes only previously captured owned node IDs using the [Tailscale device API](https://tailscale.com/docs/features/access-control/device-management/how-to/remove), and independently checks cloud/node absence. The runner peer is preserved. Failed queries, unplanned resources, foreign attachments, changed plans or leftover resources keep cleanup unverified and block another launch.
+
+An expired reservation whose durable controller record proves apply was never invoked can be closed only after two independent absence inventories and confirmation that no state appeared; it receives `never_applied_verified_absent` proof without inventing an empty state file. Applied attempts with missing state retain captured IDs and require recovery. Destroyed attempts use `destroyed_empty_local_state` proof. Both retain their full spending reservation and attempt count.
+
+Cleanup accepts repaired credential references while preserving the original source/pins, accounts/projects/regions/zones, tailnet and limits. Hetzner still needs separate verified account/project-token mapping; its apply and cleanup paths refuse declared-only identity. Orphan deletion outside Terraform state is not implemented. Tests exercise the entrypoint and plan/apply/destroy/receipt flow with fake commands/provider responses only; no real launch or deletion has been verified.
 
 ## Read-only Cloud Preflight
 
@@ -169,16 +198,11 @@ Directories must have mode 0700, input/state/inventory files mode 0600. Capture 
 
 Verification requires an empty private local Terraform state plus successful independent cloud and tailnet queries. Only documented AWS resource-not-found errors count as absence; permission errors, timeouts, incomplete inventories or malformed responses fail. A terminated AWS instance is a retained tombstone, with its disks checked separately. A successful receipt is saved privately and marks the original attempt cleaned without refunding its spending reservation. Missing state after a pre-create failure needs controller proof; this standalone command does not assume that missing state means no resources were created.
 
-Hetzner capture is implemented, but a verified receipt still requires separate account/project-token mapping evidence: its API does not return those IDs. The live deployment/deletion controller, that proof path and real cleanup remain pending. Tests use provider fixtures and offline SDK responses, including the full capture/verify/ledger flow; they cannot establish live deletion.
+Hetzner capture is implemented, but a verified receipt still requires separate account/project-token mapping evidence: its API does not return those IDs. The complete launch/test controller, that proof path and real cleanup remain pending. The separate saved-plan driver implements guarded destruction; this standalone inventory command remains read-only. Tests use provider fixtures and offline SDK responses, including the full capture/verify/ledger flow; they cannot establish live deletion.
 
 ## Optional Live Smoke Suite
 
-The four-cloud TODO #7 live runner is still being implemented; no live result is claimed. Live smoke testing is intentionally not part of the default runner. If it
-is added later, gate it behind an explicit opt-in such as:
-
-```bash
-AGENT_STACK_LIVE_TESTS=1 ./scripts/test-live.sh
-```
+The full four-cloud TODO #7 live runner is still being implemented; no live result is claimed. The available `--phase plan` and `--phase cleanup` commands require the explicit opt-in shown above. Paid test orchestration is not yet exposed, and live testing is intentionally outside the default runner.
 
 Live tests must:
 

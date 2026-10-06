@@ -234,6 +234,11 @@ class Reservations:
                     os.fsync(file.fileno())
                     temporary.chmod(0o600)
                     temporary.replace(path)
+                    directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
                 finally:
                     temporary.unlink(missing_ok=True)
             return result
@@ -261,7 +266,8 @@ class Reservations:
         return self.operate(update)
 
     def confirm_cleanup(self, run_id, receipt):
-        object_fields(receipt, ("provider", "account_id", "project_id", "region", "zone", "terraform_state_verified_empty", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"))
+        object_fields(receipt, ("provider", "account_id", "project_id", "region", "zone", "terraform_state_verified_empty", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"), ("terraform_state_proof",))
+        require(receipt.get("terraform_state_proof", "destroyed_empty_local_state") in ("destroyed_empty_local_state", "never_applied_verified_absent"), "invalid_state_proof")
         require(receipt["terraform_state_verified_empty"] is True, "terraform_state_removal_unverified")
         require(type(receipt["owned_ids_checked"]) is int and receipt["owned_ids_checked"] >= 0 and receipt["remaining_ids"] == []
                 and type(receipt["tailnet_nodes_checked"]) is int and receipt["tailnet_nodes_checked"] >= 0 and receipt["remaining_tailnet_nodes"] == []

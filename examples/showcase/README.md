@@ -23,7 +23,7 @@ AWS and DigitalOcean account identities are checked through their APIs. GCP uses
 
 The [read-only inventory and cleanup verifier](../../TEST.md#read-only-cleanup-verification) now records implicit boot disks, VPC children, IPs and tailnet nodes, preserves them through partial cleanup and requires both empty Terraform state and independent API absence checks. It creates or deletes nothing; Hetzner receipts still need separate scope-mapping proof.
 
-The deployment, test and deletion controller remains in development. Adding another cloud's inputs or repairing pins preserves the batch ledger's spending/retry history; retries and cleanup stay tied to the originally recorded account/project/region/zone.
+The [saved-plan driver and recovery command](../../TEST.md#saved-plans-and-guarded-recovery) now prepare checked private plans and support ownership-checked destruction of recorded active attempts. Planning reserves no spend; the public command still has no paid launch phase or readiness override. Complete test orchestration, Hetzner identity proof and all real acceptance checks remain pending. Adding another cloud's inputs or repairing pins preserves the batch ledger's spending/retry history; retries and cleanup stay tied to the originally recorded account/project/region/zone.
 
 The [private preparation command](../../TEST.md#private-attempt-preparation) exports an exact commit, creates a new test SSH key and saves non-secret profile settings without retrieving credentials or making cloud/model requests. It refuses operator state/auth, changed source/settings/keys and added overrides. Preparation does not reserve spend or establish deployment readiness.
 

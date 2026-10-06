@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Opt-in live planning and recovery for isolated showcase attempts.
+
+Paid launch/test orchestration and measured readiness remain in development.
+This CLI never accepts a self-declared readiness file or launches a new VM.
+Cleanup can delete only a recorded, reserved, ownership-checked applied attempt.
+"""
+import argparse
+import copy
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import sys
+
+from showcase_attempt import prepare, private_directory, verify_prepared
+from showcase_cleanup import private_read, scope
+from showcase_policy import PROVIDERS, PolicyError, Reservations, require, secret_ref, validate_inputs
+from showcase_preflight import PreflightError
+from showcase_terraform import CloudSession, TerraformAttempt
+
+
+def recovery_inputs(original, current, provider):
+    # Repaired pins and late inputs for other clouds cannot change the source
+    # or scope of cleanup. Permit only explicitly supplied credential-reference
+    # repairs; keep the original attempt settings and spending limits.
+    require(current.get("owner") == original["owner"] and scope(current, provider) == scope(original, provider)
+            and current.get("tailnet", {}).get("name") == original["tailnet"]["name"]
+            and current["tailnet"].get("runner_dns") == original["tailnet"]["runner_dns"], "cleanup_input_scope_changed")
+    refs = current["providers"][provider]["credential_refs"]
+    original_refs = original["providers"][provider]["credential_refs"]
+    require(isinstance(refs, dict) and set(refs) == set(original_refs) and all(secret_ref(value) for value in refs.values()), "secret_reference_required")
+    cleanup_ref = current["tailnet"].get("cleanup_key_ref")
+    require(secret_ref(cleanup_ref), "secret_reference_required")
+    value = copy.deepcopy(original)
+    value["providers"][provider]["credential_refs"] = refs
+    value["tailnet"]["cleanup_key_ref"] = cleanup_ref
+    return value
+
+
+def interrupted(signum, frame):
+    raise PolicyError("command_interrupted")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--provider", choices=PROVIDERS, required=True)
+    parser.add_argument("--profile", choices=("showcase",), default="showcase")
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--batch", required=True)
+    parser.add_argument("--revision", default="HEAD")
+    parser.add_argument("--terraform", default="terraform")
+    parser.add_argument("--phase", choices=("plan", "cleanup"), required=True)
+    args = parser.parse_args()
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        require(os.environ.get("AGENT_STACK_LIVE_TESTS") == "1", "live_opt_in_required")
+        require(re.fullmatch(r"as7-[a-z0-9-]{8,30}", args.run_id) is not None, "invalid_run_id")
+        require(all(shutil.which(tool) for tool in (args.terraform, "ssh-keygen", "ssh", "openssl")), "terraform_ssh_openssl_required")
+        current = private_read(args.config)
+        batch = Path(args.batch).absolute()
+        run = batch / "attempts" / args.run_id
+        if args.phase == "plan":
+            validate_inputs(current, args.provider)
+            if not run.exists() and not run.is_symlink():
+                prepare(current, args.provider, args.run_id, batch, args.revision)
+            verify_prepared(run, current, args.provider)
+            original = current
+            credentials = current
+            require(not (run / "terraform.json").exists() and not (run / "repo/terraform.tfstate").exists(), "fresh_attempt_required")
+        else:
+            private_directory(batch)
+            private_directory(run)
+            original = private_read(run / "inputs.json")
+            validate_inputs(original, args.provider)
+            verify_prepared(run, original, args.provider)
+            credentials = recovery_inputs(original, current, args.provider)
+            # Reject unreserved/unapplied recovery before touching op/API auth.
+            record = private_read(run / "terraform.json")
+            require(record.get("stage") in ("planned", "apply_started", "apply_uncertain", "applied", "destroy_started", "cleanup_failed"), "applied_attempt_required")
+            ledger = Reservations(batch, original)
+            def active(state):
+                require(any(row["run_id"] == args.run_id and row["provider"] == args.provider and row["status"] == "active"
+                            for row in state["attempts"]), "active_attempt_scope_required")
+            ledger.operate(active)
+        session = CloudSession(credentials, args.provider)
+        attempt = TerraformAttempt(run, original, args.provider, session, terraform=args.terraform)
+        if args.phase == "plan":
+            report = {**attempt.plan(), "status": "planned", "spend_reserved": False}
+        else:
+            report = {**attempt.cleanup(Reservations(batch, original)), "status": "cleanup_verified"}
+    except (PolicyError, PreflightError) as error:
+        report = {"status": "fail", "reason": str(error), "launch_ready": False, "live_matrix": "not_tested"}
+        if args.phase == "cleanup":
+            report["cleanup"] = "unverified"
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        report = {"status": "fail", "reason": "invalid_live_input_or_response", "launch_ready": False, "live_matrix": "not_tested"}
+        if args.phase == "cleanup":
+            report["cleanup"] = "unverified"
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["status"] in ("planned", "cleanup_verified") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

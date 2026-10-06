@@ -380,6 +380,11 @@ def private_write(path, value):
             os.fsync(file.fileno())
             temporary.chmod(0o600)
             temporary.replace(path)
+            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             temporary.unlink(missing_ok=True)
 

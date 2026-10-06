@@ -25,7 +25,7 @@ SSH_OPTIONS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --batch)
-      SSH_OPTIONS+=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+      SSH_OPTIONS+=(-F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
       shift
       ;;
     --known-hosts)
