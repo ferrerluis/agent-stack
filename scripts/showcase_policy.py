@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -195,6 +196,75 @@ def reserve_amount(quote, provider, attempt_seconds, now):
     return (hourly * Decimal(attempt_seconds) / 3600 + fixed + model + cleanup).quantize(Decimal(".01"), rounding=ROUND_CEILING)
 
 
+MODEL_ROLES = ("openclaw", "hermes", "codex", "claude")
+MODEL_HASH = r"[a-f0-9]{64}"
+
+
+def validate_model_policy(value):
+    object_fields(value, ("source_revision", "scope", "roles"))
+    require(isinstance(value["source_revision"], str) and re.fullmatch(r"[a-f0-9]{40}", value["source_revision"])
+            and isinstance(value["scope"], dict) and value["scope"].get("provider") in ("aws", "digitalocean", "gcp", "hetzner"), "invalid_model_spend_policy")
+    object_fields(value["scope"], ("provider", "account_id", "project_id", "region", "zone"))
+    require(all(isinstance(item, str) for item in value["scope"].values()), "invalid_model_spend_policy")
+    require(isinstance(value["roles"], dict) and set(value["roles"]) == set(MODEL_ROLES), "invalid_model_spend_policy")
+    costs = {}
+    for role, row in value["roles"].items():
+        object_fields(row, ("provider", "model", "context_tokens_upper_bound", "output_tokens_upper_bound", "max_requests",
+                            "input_usd_per_million_upper_bound", "output_usd_per_million_upper_bound", "terms_sha256"))
+        require(row["provider"] in ("openai", "anthropic") and isinstance(row["model"], str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", row["model"])
+                and isinstance(row["terms_sha256"], str) and re.fullmatch(MODEL_HASH, row["terms_sha256"]), "invalid_model_spend_policy")
+        require(type(row["context_tokens_upper_bound"]) is int and 1 <= row["context_tokens_upper_bound"] <= 2000000
+                and type(row["output_tokens_upper_bound"]) is int and 16 <= row["output_tokens_upper_bound"] <= 4096
+                and type(row["max_requests"]) is int and 1 <= row["max_requests"] <= 32, "invalid_model_spend_policy")
+        names = ("input_usd_per_million_upper_bound", "output_usd_per_million_upper_bound")
+        require(all(isinstance(row[key], str) and re.fullmatch(r"[0-9]{1,4}(?:\.[0-9]{1,9})?", row[key]) for key in names),
+                "invalid_model_spend_policy")
+        rates = [money(row[key]) for key in names]
+        require(all(0 < rate <= 1000 for rate in rates), "invalid_model_spend_policy")
+        costs[role] = ((row["context_tokens_upper_bound"] * rates[0] + row["output_tokens_upper_bound"] * rates[1]) / 1000000).quantize(
+            Decimal(".000000001"), rounding=ROUND_CEILING)
+    return costs
+
+
+def validate_model_account(row):
+    """Validate optional accounting on old/new reservation rows without migration."""
+    allocated = any(key in row for key in ("model_usd", "quote_sha256", "price_quote"))
+    require(not allocated or all(key in row for key in ("model_usd", "quote_sha256", "price_quote")), "invalid_model_spend_account")
+    if allocated:
+        require(0 < money(row["model_usd"]) <= money(row["reserved_usd"])
+                and isinstance(row["quote_sha256"], str) and re.fullmatch(MODEL_HASH, row["quote_sha256"]), "invalid_model_spend_account")
+        require(all(type(row.get(key)) in (int, float) and math.isfinite(row[key]) for key in ("started_at", "deadline", "work_deadline")),
+                "invalid_model_spend_account")
+        seconds = row["deadline"] - row["started_at"]
+        require(seconds == int(seconds) and row["work_deadline"] == row["deadline"] - 900, "invalid_model_spend_account")
+        require(money(row["reserved_usd"]) == reserve_amount(row["price_quote"], row["provider"], int(seconds), row["started_at"])
+                and money(row["model_usd"]) == money(row["price_quote"]["model_usd"])
+                and hashlib.sha256(json.dumps(row["price_quote"], sort_keys=True, separators=(",", ":")).encode()).hexdigest() == row["quote_sha256"],
+                "model_quote_allocation_changed")
+    initialized = "model_policy" in row or "model_requests" in row
+    require(not initialized or allocated and "model_policy" in row and "model_requests" in row, "invalid_model_spend_account")
+    if not initialized:
+        return
+    costs = validate_model_policy(row["model_policy"])
+    require(row["model_policy"]["scope"].get("provider") == row["provider"], "invalid_model_spend_account")
+    require(all(type(row.get(key)) in (int, float) and math.isfinite(row[key]) for key in ("started_at", "work_deadline")),
+            "invalid_model_spend_account")
+    holds = row["model_requests"]
+    require(isinstance(holds, list) and len(holds) <= 128, "invalid_model_spend_account")
+    seen, counts, total = set(), dict.fromkeys(MODEL_ROLES, 0), Decimal(0)
+    for hold in holds:
+        object_fields(hold, ("role", "request_sha256", "held_usd", "started_at", "status"))
+        require(hold["role"] in MODEL_ROLES and isinstance(hold["request_sha256"], str) and re.fullmatch(MODEL_HASH, hold["request_sha256"]), "invalid_model_spend_account")
+        key = (hold["role"], hold["request_sha256"])
+        require(key not in seen and money(hold["held_usd"]) == costs[hold["role"]]
+                and type(hold["started_at"]) in (int, float) and math.isfinite(hold["started_at"])
+                and row["started_at"] <= hold["started_at"] < row["work_deadline"]
+                and hold["status"] in ("uncertain", "response_received"), "invalid_model_spend_account")
+        seen.add(key); counts[hold["role"]] += 1; total += costs[hold["role"]]
+    require(all(counts[role] <= row["model_policy"]["roles"][role]["max_requests"] for role in MODEL_ROLES)
+            and total <= money(row["model_usd"]), "invalid_model_spend_account")
+
+
 class Reservations:
     """One private batch ledger, exclusive per process and conservative on costs.
 
@@ -234,9 +304,11 @@ class Reservations:
                     and self.config["max_attempts"] <= state["limits"]["max_attempts"]
                     and self.config["attempt_seconds"] <= state["limits"]["attempt_seconds"], "ledger_scope_mismatch")
             for attempt in state["attempts"]:
-                object_fields(attempt, ("run_id", "provider", "reserved_usd", "started_at", "deadline", "work_deadline", "status"), ("cleanup_receipt",))
+                object_fields(attempt, ("run_id", "provider", "reserved_usd", "started_at", "deadline", "work_deadline", "status"),
+                              ("cleanup_receipt", "model_usd", "quote_sha256", "price_quote", "model_policy", "model_requests"))
                 require(attempt["status"] in ("active", "cleaned") and attempt["provider"] in PROVIDERS, "ledger_unreadable")
                 money(attempt["reserved_usd"])
+                validate_model_account(attempt)
             result = update(state)
             with tempfile.NamedTemporaryFile(mode="w", dir=self.directory, delete=False) as file:
                 temporary = Path(file.name)
@@ -272,7 +344,10 @@ class Reservations:
             require(provider not in state["provider_bindings"] or state["provider_bindings"][provider] == binding, "provider_scope_changed")
             state["provider_bindings"][provider] = binding
             attempt = {"run_id": run_id, "provider": provider, "reserved_usd": str(amount), "started_at": now,
-                       "deadline": now + self.config["attempt_seconds"], "work_deadline": now + self.config["attempt_seconds"] - 900, "status": "active"}
+                       "deadline": now + self.config["attempt_seconds"], "work_deadline": now + self.config["attempt_seconds"] - 900, "status": "active",
+                       "model_usd": str(money(quote["model_usd"])),
+                       "price_quote": json.loads(json.dumps(quote)),
+                       "quote_sha256": hashlib.sha256(json.dumps(quote, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
             attempts.append(attempt)
             return dict(attempt)
         return self.operate(update)

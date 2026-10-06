@@ -29,6 +29,8 @@ The [saved-plan driver and recovery command](../../TEST.md#saved-plans-and-guard
 
 The [peer access component](../../TEST.md#second-peer-browser-component) now collects the owned VM's browser credentials and SSH host keys in memory, sends checked source through key-based SSH to the selected peer, and checks host port 22, workspace port 2222 and both authenticated browser sessions. Reboot requires fresh peer checks afterward; these paths have fixture coverage only and remain unverified on a real peer.
 
+The internal model-request gate now preserves the quoted model allocation and records worst-case request holds before credentials or HTTP, sharing the original spending ledger across restarts. It enforces role request limits and generated-token ceilings without refunding uncertain requests. Fresh price/context/cache proof and routing all four tools through a credential-isolating gateway remain pending; the $25 live-run gate is still unverified.
+
 The [internal coordinator](../../TEST.md#remote-acceptance-component) now sequences deployment, acceptance, reboot and automatic cleanup, with a first-owned-VM container-test path when local Docker is absent. Deferred tests cannot enable doctors/model tasks or count as a pass; production launch-gate measurements and the paid public run phase remain unfinished, so the public command still supports planning and cleanup only.
 
 The [private preparation command](../../TEST.md#private-attempt-preparation) exports an exact commit, creates a new test SSH key and saves non-secret profile settings without retrieving credentials or making cloud/model requests. It refuses operator state/auth, changed source/settings/keys and added overrides. Preparation does not reserve spend or establish deployment readiness.
