@@ -12,7 +12,12 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: bin/agent-stack-ssh [--key <path>] [--host <user@ip>] [--batch] [--known-hosts <path>] [--] [remote-command...]
+Usage: bin/agent-stack-ssh [--key <path>] [--host <user@ip>] [--batch] [--known-hosts <path>] [--pinned] [--model-forward <local-port>] [--] [remote-command...]
+
+--model-forward opens one dynamically allocated remote loopback port to the
+local loopback model gateway. It requires --batch, --host and --known-hosts;
+the host key must already be pinned. No public or arbitrary forward is allowed.
+--pinned requires the same existing host pin without opening a forward.
 
 Defaults:
 - host is read from: terraform output -raw ssh_command
@@ -21,10 +26,15 @@ EOF
 }
 
 HOST_OVERRIDE=""
+BATCH_MODE=false
+KNOWN_HOSTS_PATH=""
+MODEL_FORWARD=""
+PINNED=false
 SSH_OPTIONS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --batch)
+      BATCH_MODE=true
       SSH_OPTIONS+=(-F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
       shift
       ;;
@@ -34,8 +44,21 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       mkdir -p "$(dirname "$2")"
-      SSH_OPTIONS+=(-o "UserKnownHostsFile=$2")
+      KNOWN_HOSTS_PATH="$2"
+      SSH_OPTIONS+=(-o "UserKnownHostsFile=\"$2\"")
       shift 2
+      ;;
+    --model-forward)
+      if [[ -n "$MODEL_FORWARD" || ! "${2:-}" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#${2:-0} > 65535 )); then
+        echo "error: --model-forward requires one local port from 1 to 65535" >&2
+        exit 1
+      fi
+      MODEL_FORWARD="$2"
+      shift 2
+      ;;
+    --pinned)
+      PINNED=true
+      shift
       ;;
     --key)
       KEY_PATH="${2:-}"
@@ -66,6 +89,25 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$MODEL_FORWARD" ]]; then PINNED=true; fi
+if [[ "$PINNED" == true ]]; then
+  if [[ "$BATCH_MODE" != true || -z "$HOST_OVERRIDE" || -z "$KNOWN_HOSTS_PATH" || ! -s "$KNOWN_HOSTS_PATH" ]]; then
+    echo "error: pinned SSH requires an explicit batch target and existing host pin" >&2
+    exit 1
+  fi
+  if [[ "$KNOWN_HOSTS_PATH" == *'$'* || "$KNOWN_HOSTS_PATH" == *'%'* || "$KNOWN_HOSTS_PATH" == *'~'* ||
+        "$KNOWN_HOSTS_PATH" == *'"'* || "$KNOWN_HOSTS_PATH" == *'\'* || "$KNOWN_HOSTS_PATH" == *$'\n'* || "$KNOWN_HOSTS_PATH" == *$'\r'* ]]; then
+    echo "error: pinned host path must not contain SSH expansion characters" >&2
+    exit 1
+  fi
+  # OpenSSH uses the first value for each option. Put these before the legacy
+  # batch defaults so accept-new and longer keepalives cannot win.
+  SSH_OPTIONS=(-F /dev/null -T -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null
+    -o UpdateHostKeys=no -o VerifyHostKeyDNS=no -o IdentityAgent=none -o ForwardAgent=no -o ForwardX11=no
+    -o ExitOnForwardFailure=yes -o LogLevel=INFO -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "${SSH_OPTIONS[@]}")
+  if [[ -n "$MODEL_FORWARD" ]]; then SSH_OPTIONS+=(-R "127.0.0.1:0:127.0.0.1:$MODEL_FORWARD"); fi
+fi
 
 if [[ ! -f "$KEY_PATH" ]]; then
   echo "error: SSH private key not found at $KEY_PATH" >&2

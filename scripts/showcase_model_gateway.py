@@ -30,6 +30,7 @@ ERRORS = {
     "model_gateway_header_refused": (400, "invalid_request_error"),
     "model_gateway_method_refused": (405, "invalid_request_error"),
     "model_gateway_closed": (503, "api_error"),
+    "model_transport_probe_refused": (400, "invalid_request_error"),
     "model_request_scope_changed": (400, "invalid_request_error"),
     "invalid_model_request": (400, "invalid_request_error"),
     "model_paid_feature_refused": (400, "invalid_request_error"),
@@ -157,11 +158,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             gateway = self.server.gateway
-            match = re.fullmatch(r"/(openclaw|hermes|codex|claude)(/v1/(?:responses|chat/completions|messages))", self.path)
+            match = re.fullmatch(r"/(openclaw|hermes|codex|claude)(/v1/(?:responses|chat/completions|messages)|/_transport)", self.path)
             require(match is not None, "model_gateway_route_refused")
             role, path = match.groups()
             provider = gateway.spend.policy["roles"][role]["provider"]
-            require(path == "/v1/messages" if provider == "anthropic" else path in ("/v1/responses", "/v1/chat/completions"), "model_gateway_route_refused")
+            require(path == "/_transport" or (path == "/v1/messages" if provider == "anthropic" else path in ("/v1/responses", "/v1/chat/completions")), "model_gateway_route_refused")
             for name in ("Authorization", "x-api-key", "Content-Length", "Content-Type", "Host", "anthropic-version"):
                 require(len(self.headers.get_all(name, [])) <= 1, "model_gateway_header_refused")
             auth, api_key = self.headers.get("Authorization"), self.headers.get("x-api-key")
@@ -179,6 +180,10 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(int(length))
             require(len(raw) == int(length), "model_gateway_frame_refused")
             gateway.begin_forward(self.request)
+            if path == "/_transport":
+                reply = json.dumps(gateway.probe_reply(role, raw), separators=(",", ":")).encode()
+                self.start("application/json"); self.write(reply); self.complete()
+                return
             gate = RequestGate(gateway.spend, gateway.key, gateway.opener, now=gateway.now,
                                permit=lambda: gateway.permitted(self.request))
             gate.forward(role, path, raw, gateway.timeout, sink=self)
@@ -198,6 +203,7 @@ class BudgetGateway:
         self.spend, self.reader, self.opener, self.timeout, self.now = spend, secret_reader, opener, timeout, now
         self.condition = threading.Condition(); self.key_lock = threading.Lock()
         self.state, self.connections, self.keys, self.tokens = "new", {}, {}, {}
+        self.transport, self.probes = None, {}
         self.server = self.thread = self.watchdog = None
         self.stop_watchdog = threading.Event()
 
@@ -230,8 +236,39 @@ class BudgetGateway:
         with self.condition:
             return self.healthy() and hmac.compare_digest(self.tokens.get(role, ""), token)
 
+    def require_transport(self, healthy):
+        with self.condition:
+            require(self.healthy() and self.transport is None and callable(healthy), "model_transport_required")
+            self.transport = healthy
+
+    def new_probe(self, role):
+        with self.condition:
+            bundle = self.client(role)
+            require(role not in self.probes, "model_transport_probe_already_used")
+            nonce = secrets.token_hex(32)
+            self.probes[role] = {"nonce": nonce, "deadline": self.now() + 15, "observed": False}
+            return {**bundle, "nonce": nonce}
+
+    def probe_reply(self, role, raw):
+        with self.condition:
+            row = self.probes.get(role)
+            require(self.healthy() and row is not None and not row["observed"] and self.now() < row["deadline"]
+                    and raw == json.dumps({"nonce": row["nonce"]}, separators=(",", ":")).encode(), "model_transport_probe_refused")
+            self.spend.activate(1)
+            row["observed"] = True
+            return {"schema": 1, "role": role, "nonce": row["nonce"], "source_revision": self.spend.policy["source_revision"]}
+
+    def probe_observed(self, role, nonce):
+        with self.condition:
+            row = self.probes.get(role)
+            return self.healthy() and row is not None and row["observed"] and hmac.compare_digest(row["nonce"], nonce)
+
     def healthy(self):
-        return self.state == "running" and all(thread is not None and thread.is_alive() for thread in (self.thread, self.watchdog))
+        try:
+            return self.state == "running" and all(thread is not None and thread.is_alive() for thread in (self.thread, self.watchdog)) \
+                and (self.transport is None or self.transport())
+        except Exception:
+            return False
 
     def permitted(self, request):
         with self.condition:
@@ -257,7 +294,7 @@ class BudgetGateway:
     def expire_connections(self):
         while not self.stop_watchdog.wait(.05):
             with self.condition:
-                expired = [connection for connection, row in self.connections.items() if self.now() >= row["deadline"]]
+                expired = [connection for connection, row in self.connections.items() if not self.healthy() or self.now() >= row["deadline"]]
             for connection in expired: self.close_socket(connection)
 
     def close(self):
@@ -279,6 +316,6 @@ class BudgetGateway:
         for thread in (self.thread, self.watchdog):
             if thread is not None and thread.ident is not None: thread.join(timeout=1)
             require(thread is None or not thread.is_alive(), "model_gateway_shutdown_unverified")
-        self.keys.clear(); self.state = "closed"
+        self.keys.clear(); self.probes.clear(); self.state = "closed"
 
     def __exit__(self, *args): self.close()

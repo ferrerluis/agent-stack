@@ -193,6 +193,53 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
         self.assertTrue(all(hold["status"] == "response_received" for hold in holds))
         self.reader.assert_called_once()
 
+    def test_registered_private_transport_nonce_is_single_use_and_does_not_read_keys_or_spend(self):
+        proof = self.gateway.new_probe("codex")
+        raw = json.dumps({"nonce": proof["nonce"]}, separators=(",", ":")).encode()
+        self.assertEqual(self.request(path="/_transport", raw=b'{"nonce":"unknown"}')[0], 400)
+        self.assertEqual(self.request(path="/_transport", raw=raw)[0], 200)
+        self.assertTrue(self.gateway.probe_observed("codex", proof["nonce"]))
+        self.assertEqual(self.request(path="/_transport", raw=raw)[0], 400)
+        with self.assertRaises(PolicyError): self.gateway.new_probe("codex")
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+        self.assertEqual(self.account()["model_requests"], [])
+
+    def test_required_transport_failure_revokes_auth_clients_and_dispatch(self):
+        active = [True]; self.gateway.require_transport(lambda: active[0])
+        with self.assertRaises(PolicyError): self.gateway.require_transport(lambda: True)
+        active[0] = False
+        self.assertFalse(self.gateway.healthy())
+        with self.assertRaises(PolicyError): self.gateway.client("codex")
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+        self.assertEqual(self.account()["model_requests"], [])
+
+    def test_transport_failure_interrupts_stream_and_keeps_the_original_hold(self):
+        active = [True]; self.gateway.require_transport(lambda: active[0])
+        allow, waiting = threading.Event(), threading.Event()
+        def later():
+            waiting.set(); self.assertTrue(allow.wait(3)); return SSE_DONE
+        self.opener.open.side_effect = lambda *a, **k: Response([SSE_FIRST, later], "text/event-stream")
+        connection = HTTPConnection("127.0.0.1", self.gateway.server.server_port, timeout=3)
+        try:
+            connection.request("POST", "/codex/v1/responses", body(), self.headers("codex"))
+            response = connection.getresponse(); self.assertEqual(response.read1(len(SSE_FIRST)), SSE_FIRST)
+            self.assertTrue(waiting.wait(1)); active[0] = False; allow.set()
+            with self.assertRaises((IncompleteRead, OSError)): response.read()
+        finally: allow.set(); connection.close()
+        self.assertEqual(len(self.account()["model_requests"]), 1)
+        self.assertEqual(self.account()["model_requests"][0]["status"], "uncertain")
+
+    def test_private_probe_expiry_cleanup_and_malformed_duplicate_input_are_not_billable(self):
+        proof = self.gateway.new_probe("codex")
+        raw = json.dumps({"nonce": proof["nonce"]}, separators=(",", ":")).encode()
+        for bad in (b'{}', raw[:-1] + b',"nonce":"wrong"}', raw + b'\n', b'[NaN]'):
+            self.assertEqual(self.request(path="/_transport", raw=bad)[0], 400)
+        self.clock[0] = self.reservation["work_deadline"]
+        self.assertEqual(self.request(path="/_transport", raw=raw)[0], 403)
+        self.assertFalse(self.gateway.probe_observed("codex", proof["nonce"]))
+        self.assertEqual(self.account()["model_requests"], [])
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+
     def test_replayed_tool_call_and_output_payloads_keep_matching_ids_without_resetting_budget(self):
         call = {"type": "function_call", "name": "write", "call_id": "fixture-call", "arguments": "{}"}
         output = {"type": "function_call_output", "call_id": "fixture-call", "output": "fixture tool result"}
