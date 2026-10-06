@@ -67,10 +67,10 @@ class ModelSpend:
         require(len(rows) == 1 and rows[0]["status"] == "active", "active_model_reservation_required")
         row = rows[0]
         require("model_usd" in row and "quote_sha256" in row, "model_allocation_missing")
+        require(sum(self.costs[role] * self.policy["roles"][role]["max_requests"] for role in ROLES) <= money(row["model_usd"]),
+                "model_bounds_exceed_reservation")
         if "model_policy" not in row:
             require(initialize, "model_spend_account_missing")
-            require(sum(self.costs[role] * self.policy["roles"][role]["max_requests"] for role in ROLES) <= money(row["model_usd"]),
-                    "model_bounds_exceed_reservation")
             row.update(model_policy=copy.deepcopy(self.policy), model_requests=[])
         require(row["model_policy"] == self.policy, "model_spend_policy_changed")
         return row
@@ -93,6 +93,17 @@ class ModelSpend:
             holds.append(hold); validate_account(row)
             return dict(hold)
         return self.ledger.operate(update)
+
+    def activate(self, timeout):
+        """Bind the original model allocation before opening a local listener."""
+        self.binding()
+        require(type(timeout) is int and 1 <= timeout <= 80, "invalid_model_spend_request")
+        now = self.now()
+        require(type(now) in (int, float) and math.isfinite(now), "invalid_model_spend_clock")
+        def update(state):
+            row = self.account(state, initialize=True)
+            require(row["started_at"] <= now and now + timeout <= row["work_deadline"], "model_work_deadline_reached")
+        self.ledger.operate(update)
 
     def dispatch_allowed(self, role, request_sha256, remaining):
         self.binding()
@@ -183,11 +194,12 @@ def prepare_request(policy, role, path, raw):
 
 class RequestGate:
     """One fixed-origin HTTP POST per durable hold, no redirects/proxies/retries."""
-    def __init__(self, spend, secret_reader, opener=None, now=time.monotonic):
+    def __init__(self, spend, secret_reader, opener=None, now=time.monotonic, permit=None):
         self.spend, self.reader, self.now = spend, secret_reader, now
+        self.permit = (lambda: True) if permit is None else permit
         self.opener = build_opener(ProxyHandler({}), NoRedirect()) if opener is None else opener
 
-    def forward(self, role, path, raw, timeout=60):
+    def forward(self, role, path, raw, timeout=60, sink=None):
         began = self.now()
         url, body = prepare_request(self.spend.policy, role, path, raw)
         request_hash = digest({"path": path, "body_sha256": hashlib.sha256(body).hexdigest()})
@@ -196,6 +208,7 @@ class RequestGate:
         reference = self.spend.ledger.config["secret_refs"][provider + "_api_key"]
         require(secret_ref(reference), "secret_reference_required")
         try:
+            require(self.permit() is True, "model_gateway_closed")
             key = self.reader(reference)
             require(isinstance(key, str) and 0 < len(key) <= 65536 and not any(c.isspace() for c in key), "invalid_secret_field")
             headers = {"Content-Type": "application/json", "Accept": "text/event-stream, application/json", "User-Agent": "AgentStack-model-gate/1"}
@@ -203,18 +216,29 @@ class RequestGate:
             remaining = timeout - (self.now() - began)
             require(0 < remaining <= timeout, "model_request_timeout")
             self.spend.dispatch_allowed(role, request_hash, remaining)
+            require(self.permit() is True, "model_gateway_closed")
             with self.opener.open(Request(url, data=body, method="POST", headers=headers), timeout=min(remaining, 20)) as response:
                 require(response.status == 200, "model_request_failed")
                 response_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
                 require(response_type in ("application/json", "text/event-stream"), "model_response_type_refused")
+                if sink is not None:
+                    sink.start(response_type)
                 result = bytearray()
+                received_bytes = 0
                 while True:
                     require(0 <= self.now() - began < timeout, "model_request_timeout")
-                    chunk = response.read(min(65536, MAX_RESPONSE + 1 - len(result)))
+                    require(self.permit() is True, "model_gateway_closed")
+                    read = response.read if sink is None else response.read1
+                    chunk = read(min(65536, MAX_RESPONSE + 1 - received_bytes))
+                    require(isinstance(chunk, bytes), "model_request_failed")
                     if not chunk:
                         break
-                    result.extend(chunk)
-                    require(len(result) <= MAX_RESPONSE, "model_response_too_large")
+                    received_bytes += len(chunk)
+                    require(received_bytes <= MAX_RESPONSE, "model_response_too_large")
+                    if sink is None:
+                        result.extend(chunk)
+                    else:
+                        sink.write(chunk)
             require(0 <= self.now() - began < timeout, "model_request_timeout")
         except HTTPError as error:
             error.close()
@@ -226,4 +250,6 @@ class RequestGate:
             # The admission remains uncertain and charged at its whole bound.
             raise PolicyError("model_request_failed") from None
         self.spend.received(role, request_hash)
+        if sink is not None:
+            sink.complete()
         return response_type, bytes(result)
