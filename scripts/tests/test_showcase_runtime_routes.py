@@ -35,6 +35,16 @@ def route(role="openclaw", provider="openai"):
 
 
 class CompileTest(unittest.TestCase):
+    def test_temporary_acceptance_tools_are_disabled_without_changing_original_app_settings(self):
+        for role, original in (("openclaw", {"tools": {"profile": "full", "deny": ["browser"]}}),
+                               ("hermes", {"platform_toolsets": {"api_server": ["terminal"], "telegram": ["web"]}, "mcp_servers": {"personal": {"command": "fixture"}}})):
+            before = copy.deepcopy(original); value = routes.compile_config(original, route(role))
+            if role == "openclaw": self.assertEqual(value["tools"], {"profile": "full", "deny": ["*"]})
+            else:
+                self.assertEqual(value["platform_toolsets"], {"api_server": [], "telegram": ["web"]})
+                self.assertEqual(value["mcp_servers"], {})
+            self.assertEqual(original, before)
+
     def test_openclaw_preserves_gateway_and_workspace_but_replaces_all_model_routes(self):
         original = {"gateway": {"auth": {"token": "fixture-app-token"}}, "agents": {"defaults": {"workspace": "/workspace",
                     "model": "old/model", "models": {"old/model": {"agentRuntime": {"id": "codex"}}}}},

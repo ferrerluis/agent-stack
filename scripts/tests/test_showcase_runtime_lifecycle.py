@@ -22,6 +22,7 @@ from showcase_policy import PolicyError
 import test_showcase_runtime_routes as route_fixtures
 import test_showcase_model_session as model_fixtures
 import test_showcase_remote as remote_fixtures
+import test_showcase_agents as agent_fixtures
 
 ROOT = Path(__file__).resolve().parents[2]
 CAPABILITY = route_fixtures.CAPABILITY
@@ -191,9 +192,12 @@ class LifecycleTest(unittest.TestCase):
             "findings": [], "warnings": []}).encode() if role == "openclaw" else HERMES_DOCTOR)
         self.doctor_failure = self.doctor_change = False
         self.stop_on_disarm = False
+        self.task_mutation = None; self.task_failure = self.bad_help = False
         self.vm = lifecycle.RuntimeLifecycle(route_fixtures.binding(), self.execute, files.transaction,
                                              now=lambda: self.clock, sleep=self.sleep)
         patcher = patch.object(lifecycle, "PROBE_SOURCE", (ROOT / "scripts/showcase_runtime_probe.py").read_text())
+        patcher.start(); self.addCleanup(patcher.stop)
+        patcher = patch.object(lifecycle, "TASK_SOURCE", (ROOT / "scripts/showcase_runtime_task.py").read_text())
         patcher.start(); self.addCleanup(patcher.stop)
         namespace = {"__name__": "fixture_native_doctor", "__file__": str(ROOT / remote_fixtures.remote.DOCTOR_PATH)}
         exec(compile((ROOT / remote_fixtures.remote.DOCTOR_PATH).read_bytes(), namespace["__file__"], "exec"), namespace)
@@ -221,6 +225,26 @@ class LifecycleTest(unittest.TestCase):
             return b""
         if args[:2] == ["systemctl", "show"]: return b"active" if self.timer else b"inactive"
         if args[:2] == ["/usr/bin/docker", "exec"]:
+            if "--help" in args:
+                return b"unsupported" if self.bad_help else b"--expect-url --expect-final --params --timeout --json"
+            if "agent" in args or (input is not None and "challenge" in json.loads(input)):
+                self.assertEqual(timeout, 190); self.assertTrue(self.timer)
+                self.assertEqual(args[args.index("--user") + 1], str(routes.OWNERS[self.role]))
+                self.assertIn(CONTAINER, args); self.assertIn("env", args); self.assertIn("-i", args)
+                if self.task_failure: raise lifecycle.agents.ProbeError("fixture timeout")
+                value = agent_fixtures.response(self.role)
+                if self.role == "openclaw":
+                    params = json.loads(args[args.index("--params") + 1])
+                    self.assertEqual(params["sessionId"], agent_fixtures.ID); self.assertEqual(params["idempotencyKey"], agent_fixtures.ID)
+                    self.assertFalse(params["deliver"])
+                    value["result"]["meta"]["agentMeta"]["provider"] = self.route["provider"]
+                else:
+                    value["runtime"]["requested"] = {"provider": "as7-budget", "model": self.route["model"]}
+                    value.update(completed=True, partial=False, interrupted=False)
+                    value = lifecycle.agents.parse_turn(self.role, value, self.route["provider"] + "/" + self.route["model"],
+                        agent_fixtures.CHALLENGE, agent_fixtures.ID, agent_fixtures.RUN, native_provider="custom")
+                if self.task_mutation: self.task_mutation(value)
+                return json.dumps(value).encode()
             if "doctor" in args:
                 self.assertNotIn("--fix", args); self.assertNotIn("--live", args); self.assertIn("-i", args)
                 self.assertEqual(timeout, 90)
@@ -361,6 +385,77 @@ class LifecycleTest(unittest.TestCase):
             self.assertFalse(self.running)
             self.assertEqual(json.loads(self.vm.path("hermes").read_text())["status"], "uncertain")
             self.vm.restore("hermes")
+
+    def ready_task(self, role="openclaw", provider="openai"):
+        self.make(role, provider); self.prepare(); self.vm.verify(self.route, "f" * 64)
+        return self.vm.doctor(self.route, "a" * 32)
+
+    def task(self): return self.vm.task(self.route, agent_fixtures.CHALLENGE, agent_fixtures.ID)
+
+    def test_four_task_routes_bind_same_container_doctor_and_fresh_answer_then_restore_original(self):
+        for role in ("openclaw", "hermes"):
+            for provider in ("openai", "anthropic"):
+                doctor = self.ready_task(role, provider); report = self.task()
+                self.assertEqual(report["status"], "runtime_task_verified"); self.assertFalse(self.timer)
+                self.assertEqual(report["doctor_sha256"], doctor["doctor_sha256"])
+                self.assertEqual(report["container_id"], doctor["container_id"])
+                self.assertEqual(report["challenge_sha256"], routes.sha(routes.encoded(agent_fixtures.CHALLENGE)))
+                self.assertEqual(report["turn"]["answer"]["sum"], 826364)
+                self.assertNotIn(CAPABILITY, json.dumps(report))
+                calls = len(self.calls)
+                with self.assertRaises(ValueError): self.task()
+                self.assertEqual(len(self.calls), calls)
+                self.vm.restore(role); self.assertFalse(self.running)
+                self.assertEqual(self.files.target(role).read_bytes(), self.files.before[role])
+                self.assertEqual(self.environment_path.read_bytes(), self.original_environment)
+
+    def test_task_without_fresh_native_doctor_never_dispatches_or_arms_timer(self):
+        self.make(); self.prepare(); self.vm.verify(self.route, "f" * 64)
+        calls = len(self.calls)
+        with self.assertRaises(ValueError): self.task()
+        self.assertEqual(len(self.calls), calls); self.assertFalse(self.timer)
+
+    def test_lost_task_reply_bad_answer_or_pinned_help_stops_exact_container_and_cannot_repeat(self):
+        for role in ("openclaw", "hermes"):
+            for failure in ("timeout", "answer", "help"):
+                if role == "hermes" and failure == "help": continue
+                self.ready_task(role); self.task_failure = failure == "timeout"; self.bad_help = failure == "help"
+                if failure == "answer":
+                    self.task_mutation = (lambda value: value["result"]["payloads"][0].update(text='{"sum":0,"nonce":"a"}')) if role == "openclaw" else (lambda value: value["answer"].update(sum=0))
+                with self.assertRaises((ValueError, lifecycle.agents.ProbeError)): self.task()
+                self.assertFalse(self.running)
+                self.assertEqual(json.loads(self.vm.path(role).read_text())["status"], "uncertain")
+                calls = len(self.calls)
+                with self.assertRaises(ValueError): self.task()
+                self.assertEqual(len(self.calls), calls)
+                self.vm.restore(role); self.assertFalse(self.timer)
+
+    def test_task_changed_files_or_watchdog_stop_cannot_keep_success_or_overwrite_operator_change(self):
+        for role in ("openclaw", "hermes"):
+            for failure in ("config", "environment", "timer"):
+                if role == "openclaw" and failure == "environment": continue
+                self.ready_task(role)
+                if failure == "timer": self.stop_on_disarm = True
+                else:
+                    changed = self.environment_path if failure == "environment" else self.files.target(role)
+                    self.task_mutation = lambda value: changed.write_bytes(b'{"operator":"change"}\n')
+                with self.assertRaises(ValueError): self.task()
+                self.assertFalse(self.running)
+                if failure != "timer":
+                    with self.assertRaises(ValueError): self.vm.restore(role)
+                    self.assertEqual(changed.read_bytes(), b'{"operator":"change"}\n')
+                else: self.vm.restore(role)
+
+    def test_task_replaced_image_and_expired_task_duration_are_not_accepted_as_fresh_proof(self):
+        for failure in ("image", "duration"):
+            self.ready_task()
+            if failure == "image": self.task_mutation = lambda value: setattr(self, "image_id", "sha256:" + "a" * 64)
+            else: self.task_mutation = lambda value: setattr(self, "clock", 286)
+            with self.assertRaises((ValueError, lifecycle.agents.ProbeError)): self.task()
+            self.assertEqual(json.loads(self.vm.path("openclaw").read_text())["status"], "uncertain")
+            if failure == "image":
+                self.assertFalse(any(args[:2] == ["/usr/bin/docker", "stop"] and args[-1] != CONTAINER for args, _, _ in self.calls))
+            else: self.assertFalse(self.running)
 
 
 class SessionReloadTest(unittest.TestCase):

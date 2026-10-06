@@ -24,7 +24,7 @@ import showcase_task_evidence as task_evidence
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
 SOURCES = ("modules/common/runtime/hermes_health.py",) + tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
-    "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
+    "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_task", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
 def proof_hash(value):

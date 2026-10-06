@@ -80,7 +80,7 @@ def usage_counts(raw, names):
     return result
 
 
-def parse_turn(runtime, raw, model_ref, challenge, request_id, run_id=None):
+def parse_turn(runtime, raw, model_ref, challenge, request_id, run_id=None, native_provider=None):
     """Validate the actual serving pair and terminal response, never model echoes."""
     challenge_valid(challenge)
     match = re.fullmatch(MODEL, model_ref) if isinstance(model_ref, str) else None
@@ -119,8 +119,13 @@ def parse_turn(runtime, raw, model_ref, challenge, request_id, run_id=None):
         need(raw.get("object") == "hermes.run" and raw.get("run_id") == run_id and raw.get("status") == "completed"
              and not raw.get("error") and not raw.get("shutdown_requested_at"))
         actual = raw.get("runtime")
-        need(isinstance(actual, dict) and actual.get("provider") == ("custom" if provider == "openai" else provider)
+        expected_provider = ("custom" if provider == "openai" else provider) if native_provider is None else native_provider
+        need(isinstance(actual, dict) and actual.get("provider") == expected_provider
              and actual.get("model") == model and actual.get("route_source") == "raw_request", "served_model_mismatch")
+        if native_provider is not None:
+            need(native_provider == "custom" and actual.get("requested") == {"provider": "as7-budget", "model": model}
+                 and raw.get("completed") is True and raw.get("partial") is False and raw.get("interrupted") is False
+                 and not any(raw.get(k) for k in ("pending_steer", "turn_exit_reason")), "agent_proof_failed")
         # The API's top-level model is only an echo and is deliberately ignored.
         answer = strict_json(raw.get("output"))
         usage = usage_counts(raw.get("usage"), {key: key for key in

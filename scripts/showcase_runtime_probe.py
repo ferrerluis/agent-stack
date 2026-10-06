@@ -78,6 +78,7 @@ def native_openclaw(snapshot, route):
     need(isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{64}", revision)
          and snapshot.get("appliedConfigHash") == revision)
     config = snapshot.get("config"); need(isinstance(config, dict))
+    need(isinstance(config.get("tools"), dict) and config["tools"].get("deny") == ["*"])
     models = config.get("models"); need(isinstance(models, dict) and models.get("mode") == "replace")
     providers = models.get("providers"); need(isinstance(providers, dict) and set(providers) == {route["provider"]})
     actual = providers[route["provider"]]

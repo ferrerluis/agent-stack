@@ -79,7 +79,7 @@ def route_valid(route):
 
 
 def compile_config(original, route):
-    """Explicit single model/transport; retain gateway and other nonmodel settings."""
+    """Temporary single model/transport and no tools; retain app settings."""
     route_valid(route); need(isinstance(original, dict))
     result = copy.deepcopy(original)
     provider, model, base = route["provider"], route["model"], route["base_url"]
@@ -100,6 +100,8 @@ def compile_config(original, route):
         defaults["model"] = {"primary": reference, "fallbacks": []}
         defaults["models"] = {reference: {}}
         defaults["imageModel"] = {"primary": reference, "fallbacks": []}
+        tools = result.setdefault("tools", {}); need(isinstance(tools, dict))
+        tools["deny"] = ["*"]  # This arithmetic acceptance turn has no tools.
     else:
         # A dedicated name avoids the builtin Anthropic route and its env/OAuth
         # resolution. Native resolution must still be independently measured.
@@ -114,6 +116,9 @@ def compile_config(original, route):
         result["fallback_providers"] = []
         # Existing explicitly routed auxiliary slots can escape the main route.
         need(not result.get("auxiliary"))
+        platforms = result.setdefault("platform_toolsets", {}); need(isinstance(platforms, dict))
+        platforms["api_server"] = []
+        result["mcp_servers"] = {}
     encoded(result)
     return result
 

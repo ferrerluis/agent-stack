@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Owned-VM runtime reload, native route and nonbillable container checks.
+"""Owned-VM runtime reload, native diagnostics and one bounded acceptance task.
 
-No paid task, secret retrieval, image pull, replacement container or service-wide
-restart is allowed. A private receipt and captured-ID watchdog precede stopping
-one pinned container. Failure stops that container and preserves recovery data.
+No secret retrieval, image pull, replacement container or service-wide restart.
+A task requires this boot's native doctor and a separate controller grant at the
+model gateway. Failure stops the captured container and preserves recovery data.
 """
 import builtins
 import base64
@@ -24,7 +24,7 @@ import showcase_runtime_probe as probe
 
 COMPOSE = ["/usr/bin/docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml"]
 INSPECT = '{"id":{{json .Id}},"image_id":{{json .Image}},"image_ref":{{json .Config.Image}},"state":{{json .State}},"restarts":{{json .RestartCount}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}'
-SOURCES = ("showcase_runtime_routes", "showcase_agents", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe", "showcase_strict_health", "showcase_runtime_lifecycle")
+SOURCES = ("showcase_runtime_routes", "showcase_agents", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe", "showcase_runtime_task", "showcase_strict_health", "showcase_runtime_lifecycle")
 
 
 def need(value):
@@ -62,9 +62,14 @@ def source_command(checkout):
         ("showcase_runtime_routes", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe")})
     native += "mods['showcase_runtime_probe'].HEALTH_MODULE=mods['showcase_hermes_health']\n"
     native += "raise SystemExit(mods['showcase_runtime_probe'].main())\n"
+    task = inline_source({name: payloads[name] for name in
+        ("showcase_runtime_routes", "showcase_agents", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe", "showcase_runtime_task")})
+    task += "mods['showcase_runtime_probe'].HEALTH_MODULE=mods['showcase_hermes_health']\n"
+    task += "raise SystemExit(mods['showcase_runtime_task'].main())\n"
     code = inline_source(payloads)
     code += "mods['showcase_runtime_lifecycle'].PROBE_SOURCE=" + repr(wrapped_source(native)) + "\n"
     code += "mods['showcase_runtime_lifecycle'].DOCTOR_MODULE=mods['showcase_strict_health']\n"
+    code += "mods['showcase_runtime_lifecycle'].TASK_SOURCE=" + repr(wrapped_source(task)) + "\n"
     code += "raise SystemExit(mods['showcase_runtime_lifecycle'].main())\n"
     return ["sudo", "-n", "python3", "-B", "-I", "-c", wrapped_source(code)]
 
@@ -247,6 +252,72 @@ class RuntimeLifecycle:
                 context["status"] = "uncertain"; self.save(context)
                 raise
 
+    def task(self, route, challenge, request_id):
+        """One fresh task in the captured container, after this boot's doctor.
+
+        This entry point does not authorize the gateway or retrieve a key. A
+        missing controller grant still prevents any upstream model request.
+        Persisting the start before execution makes a lost reply nonrepeatable.
+        """
+        routes.route_valid(route); agents.challenge_valid(challenge)
+        need(isinstance(request_id, str) and re.fullmatch(agents.REQUEST, request_id))
+        started = self.now()
+        with self.tx.lock():
+            role = route["role"]; context = self.load(role)
+            need(context["status"] == "doctor_verified" and isinstance(context.get("doctor_sha256"), str)
+                 and re.fullmatch(r"[a-f0-9]{64}", context["doctor_sha256"]))
+            context.update(status="task_started", request_id=request_id, challenge_sha256=routes.sha(routes.encoded(challenge)),
+                           unit="as7-route-" + self.binding["run_id"] + "-" + role + "-" + request_id.replace("-", ""))
+            self.save(context)
+            try:
+                self.current_files(context, route); need(self.native(context, route) == context["native_route"])
+                owner = str(routes.OWNERS[role])
+                prefix = ["/usr/bin/docker", "exec", "--user", owner, context["container_id"], "env", "-i"]
+                if role == "openclaw":
+                    prefix += ["HOME=/home/node", "PATH=/usr/local/bin:/usr/bin:/bin", "openclaw", "gateway", "call"]
+                    help_text = self.execute(prefix + ["--help"], timeout=10).decode("utf-8")
+                    need(all(flag in help_text for flag in ("--expect-url", "--expect-final", "--params", "--timeout", "--json")))
+                else: need(isinstance(TASK_SOURCE, str) and len(TASK_SOURCE) > 100)
+                self.execute(["systemd-run", "--quiet", "--unit=" + context["unit"], "--on-active=250s",
+                    "--timer-property=AccuracySec=1s", "--property=RuntimeMaxSec=30s", "/usr/bin/docker", "stop", "-t", "5", context["container_id"]], timeout=10)
+                need(self.execute(["systemctl", "is-active", context["unit"] + ".timer"], timeout=10).strip() == b"active")
+                model = route["provider"] + "/" + route["model"]
+                if role == "openclaw":
+                    params = {"message": agents.prompt(challenge), "sessionId": request_id,
+                        "sessionKey": "agent:main:as7-" + request_id, "agentId": "main", "idempotencyKey": request_id,
+                        "model": model, "deliver": False, "timeout": 180}
+                    raw = self.execute(prefix + ["agent", "--expect-url", "ws://127.0.0.1:18789", "--expect-final",
+                        "--timeout", "185000", "--json", "--params", json.dumps(params, separators=(",", ":"))], timeout=190)
+                    turn = agents.parse_turn(role, agents.strict_json(raw), model, challenge, request_id)
+                else:
+                    packet = {"route": route, "config_sha256": context["config_sha256"],
+                        "environment_sha256": context["environment_sha256"], "source_revision": self.binding["source_revision"],
+                        "challenge": challenge, "request_id": request_id}
+                    raw = self.execute(["/usr/bin/docker", "exec", "-i", "--user", owner, context["container_id"],
+                        "env", "-i", "HOME=/opt/data", "HERMES_HOME=/opt/data", "PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin",
+                        "/opt/hermes/.venv/bin/python", "-B", "-I", "-c", TASK_SOURCE],
+                        input=json.dumps(packet, separators=(",", ":")).encode(), timeout=190)
+                    turn = agents.strict_json(raw)
+                # Never accept a task after route/file/container replacement or
+                # a watchdog stop, even if its answer and usage look correct.
+                self.current_files(context, route); need(self.native(context, route) == context["native_route"])
+                self.disarm(context); self.current_files(context, route)
+                need(self.native(context, route) == context["native_route"] and self.healthy(self.known(context)))
+                self.current_files(context, route)
+                turn.update(watchdog="disarmed", duration_seconds=round(self.now() - started, 2))
+                agents.validate_proof(turn, role, model, challenge, request_id)
+                context.update(status="task_verified", turn_sha256=routes.sha(routes.encoded(turn))); self.save(context)
+                return {"schema": 1, "status": "runtime_task_verified", "binding": self.binding,
+                    **{key: context[key] for key in ("role", "container_id", "image_ref", "image_id", "config_sha256", "native_route",
+                                                   "doctor_sha256", "request_id", "challenge_sha256")},
+                    **({"environment_sha256": context["environment_sha256"]} if role == "hermes" else {}),
+                    "uid": routes.OWNERS[role], "health": "healthy", "watchdog": "disarmed", "turn": turn}
+            except BaseException:
+                try: self.stop(context)
+                except BaseException: pass
+                context["status"] = "uncertain"; self.save(context)
+                raise
+
     def prepare(self, route, image, request_id):
         routes.route_valid(route); image_valid(route["role"], image)
         need(isinstance(request_id, str) and re.fullmatch(r"[a-f0-9]{32}", request_id))
@@ -331,6 +402,7 @@ class RuntimeLifecycle:
 
 
 PROBE_SOURCE = ""  # The checked inline loader sets this; no dynamic VM imports.
+TASK_SOURCE = ""  # Same loader; only the native task adapter runs in the child.
 DOCTOR_MODULE = None  # The same loader supplies the checked strict parser.
 
 
@@ -353,6 +425,9 @@ def main():
         elif action == "doctor":
             need(set(packet) == {"action", "binding", "route", "request_id"})
             report = lifecycle.doctor(packet["route"], packet["request_id"])
+        elif action == "task":
+            need(set(packet) == {"action", "binding", "route", "challenge", "request_id"})
+            report = lifecycle.task(packet["route"], packet["challenge"], packet["request_id"])
         else:
             need(action == "restore" and set(packet) == {"action", "binding", "role"})
             report = lifecycle.restore(packet["role"])
