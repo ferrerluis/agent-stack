@@ -10,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, build_opener, ProxyHandler
 
-from showcase_policy import PolicyError, RESOURCE_TYPES, require, text, validate_fresh_plan
+from showcase_policy import PolicyError, RESOURCE_TYPES, require, text, validate_fresh_plan, resolved_plan_data
 from showcase_prices import Decimal, NoRedirect, dollars
 
 SERVICE = "services/6F81-5844-456A"
@@ -183,26 +183,13 @@ class GCPCatalog:
 
 def planned_image(plan):
     """Require the actual resolved data value, never a caller-supplied image hint."""
-    root = plan.get("planned_values", {}).get("root_module", {})
-    modules = root.get("child_modules", [])
-    require(isinstance(modules, list) and all(isinstance(item, dict) for item in modules), "gcp_resolved_image_plan_required")
-    selected = [item for item in modules if item.get("address") == "module.gcp[0]"]
-    require(len(selected) == 1 and isinstance(selected[0].get("resources"), list)
-            and all(isinstance(item, dict) for item in selected[0]["resources"]), "gcp_resolved_image_plan_required")
-    images = [item for item in selected[0]["resources"] if item.get("type") == "google_compute_image"]
-    require(len(images) == 1 and images[0].get("address") == IMAGE_ADDRESS and images[0].get("mode") == "data"
-            and isinstance(images[0].get("values"), dict), "gcp_resolved_image_plan_required")
-    value = images[0]["values"]
+    value = resolved_plan_data(plan, "module.gcp[0]", "google_compute_image", IMAGE_ADDRESS, "gcp_resolved_image_plan_required")
     name, identifier = value.get("name"), value.get("image_id")
     require(isinstance(name, str) and re.fullmatch(r"ubuntu-2204-jammy-v[0-9]+", name)
             and isinstance(identifier, str) and re.fullmatch(r"[1-9][0-9]{0,19}", identifier) and int(identifier) < 2 ** 64
             and value.get("project") == "ubuntu-os-cloud" and value.get("family") == "ubuntu-2204-lts"
             and value.get("status") == "READY" and value.get("licenses") == [LICENSE]
             and value.get("self_link") == IMAGE_LINK + name, "gcp_resolved_image_plan_required")
-    changes = [item for item in plan["resource_changes"] if item.get("address") == IMAGE_ADDRESS]
-    require(len(changes) <= 1 and all(item.get("mode") == "data" and item.get("type") == "google_compute_image"
-            and item["change"].get("actions") == ["no-op"] and item["change"].get("after") == value
-            and item["change"].get("after_unknown", {}) == {} for item in changes), "gcp_resolved_image_plan_required")
     return {"image": name, "image_id": identifier, "image_self_link": value["self_link"]}
 
 

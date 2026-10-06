@@ -21,3 +21,4 @@ host_codex_cli_enabled              = false
 generate_repo_ssh_config            = true
 gcp_pin_boot_image                 = true
 aws_showcase_cost_controls         = true
+hcloud_pin_boot_image              = true

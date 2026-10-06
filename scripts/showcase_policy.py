@@ -181,6 +181,42 @@ def validate_fresh_plan(plan, provider, resource_prefix, run_dir):
     return {"status": "fresh_plan_checked", "resource_count": len(addresses), "identity": "requires_live_preflight"}
 
 
+def resolved_plan_data(plan, module, kind, address, error):
+    """Completed data reads may be stored only in a saved plan's refreshed state."""
+    copies = []
+    states = []
+    if "planned_values" in plan:
+        states.append(plan["planned_values"])
+    if "prior_state" in plan:
+        prior = plan["prior_state"]
+        require(isinstance(prior, dict) and isinstance(prior.get("values"), dict), error)
+        states.append(prior["values"])
+    for state in states:
+        require(isinstance(state, dict) and isinstance(state.get("root_module"), dict), error)
+        modules = state["root_module"].get("child_modules", [])
+        require(isinstance(modules, list) and all(isinstance(item, dict) for item in modules), error)
+        selected = [item for item in modules if item.get("address") == module]
+        require(len(selected) <= 1, error)
+        if not selected:
+            continue
+        rows = selected[0].get("resources", [])
+        require(isinstance(rows, list) and all(isinstance(item, dict) for item in rows), error)
+        images = [item for item in rows if item.get("type") == kind or item.get("address") == address]
+        require(len(images) <= 1, error)
+        if images:
+            image = images[0]
+            require(image.get("address") == address and image.get("type") == kind and image.get("mode") == "data"
+                    and isinstance(image.get("values"), dict), error)
+            copies.append(image["values"])
+    require(copies and all(value == copies[0] for value in copies), error)
+    value = copies[0]
+    changes = [item for item in plan["resource_changes"] if item.get("address") == address]
+    require(len(changes) <= 1 and all(item.get("mode") == "data" and item.get("type") == kind
+            and item["change"].get("actions") == ["no-op"] and item["change"].get("after") == value
+            and item["change"].get("after_unknown", {}) == {} for item in changes), error)
+    return value
+
+
 def reserve_amount(quote, provider, attempt_seconds, now):
     require(provider in PROVIDERS and type(attempt_seconds) is int and 900 < attempt_seconds <= 14400, "invalid_price_scope")
     object_fields(quote, ("provider", "currency", "verified_at", "source", "hourly_usd", "fixed_usd", "model_usd", "cleanup_usd"))

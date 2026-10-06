@@ -9,13 +9,13 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
 
-from showcase_policy import PolicyError, RESOURCE_TYPES, require, validate_fresh_plan
+from showcase_policy import PolicyError, RESOURCE_TYPES, require, validate_fresh_plan, resolved_plan_data
 from showcase_preflight import PreflightError, hetzner_deprecation, hetzner_location
 from showcase_prices import Decimal, MAX_RESPONSE, NoRedirect, PriceHTML, dollars
 
 SOURCES = {"billing": "https://docs.hetzner.com/cloud/billing/faq/",
            "volumes": "https://docs.hetzner.com/cloud/volumes/overview/"}
-IMAGE_PATH = "/images?type=system&name=ubuntu-22.04&architecture=x86&include_deprecated=true"
+IMAGE_ADDRESS = "module.hetzner[0].data.hcloud_image.boot[0]"
 BASE = "https://api.hetzner.cloud/v1"
 
 
@@ -96,8 +96,22 @@ def hourly(row, vat):
     return result
 
 
+def planned_image(plan):
+    """Require the actual resolved data value, never a caller-supplied image hint."""
+    image = resolved_plan_data(plan, "module.hetzner[0]", "hcloud_image", IMAGE_ADDRESS, "hetzner_resolved_image_plan_required")
+    identifier = image.get("id")
+    require(type(identifier) is int and 0 < identifier < 2 ** 63 and image.get("name") == "ubuntu-22.04"
+            and image.get("type") == "system" and image.get("architecture") == "x86"
+            and image.get("os_flavor") == "ubuntu" and image.get("os_version") == "22.04"
+            and image.get("with_architecture") == "x86" and image.get("with_status") == ["available"]
+            and image.get("most_recent") is False and image.get("include_deprecated") is True
+            and all(image.get(key) is None for key in ("selector", "with_selector")), "hetzner_resolved_image_plan_required")
+    return identifier
+
+
 def plan_selection(plan, cloud, prefix, run):
     validate_fresh_plan(plan, "hetzner", prefix, run)
+    image_id = planned_image(plan)
     changes = {}
     for item in plan["resource_changes"]:
         if item.get("mode") == "data" or item["type"] in ("random_password", "terraform_data", "local_file"):
@@ -111,11 +125,12 @@ def plan_selection(plan, cloud, prefix, run):
             "size", "location", "server_type", "image", "backups", "iso", "rescue", "placement_group_id", "keep_disk")),
             "hetzner_price_plan_values_unknown")
     vm, volume = changes["hcloud_server"]["after"], changes["hcloud_volume"]["after"]
-    require(vm.get("server_type") == cloud["size"] and vm.get("location") == cloud["region"] and vm.get("image") == "ubuntu-22.04"
+    require(vm.get("server_type") == cloud["size"] and vm.get("location") == cloud["region"] and vm.get("image") == str(image_id)
             and volume.get("location") == cloud["region"], "hetzner_price_plan_scope_changed")
     require((vm.get("backups") is None or vm.get("backups") is False)
+            and (vm.get("keep_disk") is None or vm.get("keep_disk") is False)
             and vm.get("public_net") == [] and vm.get("network") == []
-            and all(vm.get(key) is None for key in ("iso", "rescue", "placement_group_id", "keep_disk", "datacenter")),
+            and all(vm.get(key) is None for key in ("iso", "rescue", "placement_group_id", "datacenter")),
             "hetzner_price_extra_vm_features_unpriced")
     # The actual provider plan leaves automatic Primary IP creation implicit.
     # Price one of each, but keep that default a pending launch requirement.
@@ -123,11 +138,11 @@ def plan_selection(plan, cloud, prefix, run):
     require(unknown.get("public_net", []) == [] and unknown.get("network", []) == [], "hetzner_price_plan_values_unknown")
     amount = volume.get("size")
     require(type(amount) is int and 10 <= amount <= 10240 and volume.get("server_id") is None, "hetzner_price_plan_disk_changed")
-    return amount
+    return amount, image_id
 
 
 def hetzner_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, public=None, now=time.time):
-    amount = plan_selection(plan, cloud, prefix, run)
+    amount, image_id = plan_selection(plan, cloud, prefix, run)
     require(adapter.cloud == cloud and isinstance(source_revision, str) and re.fullmatch(r"[a-f0-9]{40}", source_revision)
             and isinstance(plan_sha256, str) and re.fullmatch(r"[a-f0-9]{64}", plan_sha256), "price_measurement_scope_changed")
     began = now()
@@ -141,9 +156,10 @@ def hetzner_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha25
         hetzner_location(size, cloud["region"], began)
     except PreflightError as error:
         raise PolicyError(str(error)) from None
-    images = adapter.pages(IMAGE_PATH, "images", "hetzner")
-    image = selected(images, "name", "ubuntu-22.04")
-    require(type(image.get("id")) is int and image["id"] > 0 and image.get("type") == "system" and image.get("status") == "available"
+    reply = adapter.get("/images/" + str(image_id))
+    image = reply.get("image") if isinstance(reply, dict) else None
+    require(isinstance(image, dict) and type(image.get("id")) is int and image["id"] == image_id
+            and image.get("name") == "ubuntu-22.04" and image.get("type") == "system" and image.get("status") == "available"
             and image.get("architecture") == "x86" and image.get("os_flavor") == "ubuntu" and image.get("os_version") == "22.04"
             and "deprecation" in image, "hetzner_price_ubuntu_image_required")
     value = adapter.get("/pricing")
@@ -178,7 +194,7 @@ def hetzner_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha25
     except PreflightError as error:
         raise PolicyError(str(error)) from None
     pending = ["model_execution_cost_bound", "egress_quantity_and_tb_billing_unit_bound", "cleanup_deadline_enforcement",
-               "account_project_token_mapping", "tax_and_account_adjustments", "resolved_image_plan_binding",
+               "account_project_token_mapping", "tax_and_account_adjustments",
                "automatic_primary_ip_creation_defaults", "remaining_resource_charges"]
     if pricing["currency"] == "EUR":
         pending.append("eur_to_usd_spend_bound_and_conversion_fees")

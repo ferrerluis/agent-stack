@@ -261,6 +261,11 @@ run "hetzner_module_plans_with_mocked_provider" {
   }
 
   assert {
+    condition     = hcloud_server.this.image == "ubuntu-22.04" && length(data.hcloud_image.boot) == 0
+    error_message = "Ordinary deployments must keep the named image and avoid an extra image data read."
+  }
+
+  assert {
     condition     = output.instance_public_ip == "203.0.113.30"
     error_message = "Hetzner module should use the mocked server public IP."
   }
@@ -274,4 +279,38 @@ run "hetzner_module_plans_with_mocked_provider" {
     condition     = output.ssh_command == "ssh admin@203.0.113.30"
     error_message = "Hetzner module SSH handoff should use the admin user and mocked public IP."
   }
+}
+
+run "hetzner_showcase_requests_resolved_boot_image" {
+  command = plan
+  module { source = "./modules/hetzner" }
+  providers = { hcloud = hcloud.fake }
+  variables {
+    project_name              = "as7-fixture01"
+    hcloud_location           = "ash"
+    hcloud_server_type        = "cpx31"
+    hcloud_image              = "ubuntu-22.04"
+    hcloud_disk_size_gb       = 50
+    hcloud_existing_volume_id = ""
+    hcloud_pin_boot_image     = true
+  }
+  assert {
+    condition     = length(data.hcloud_image.boot) == 1 && data.hcloud_image.boot[0].name == "ubuntu-22.04" && data.hcloud_image.boot[0].with_architecture == "x86" && data.hcloud_image.boot[0].with_status == toset(["available"]) && data.hcloud_image.boot[0].include_deprecated && !data.hcloud_image.boot[0].most_recent
+    error_message = "The showcase must request one available standard x86 Ubuntu image without choosing an ambiguous recent match."
+  }
+}
+
+run "hetzner_pin_rejects_different_image" {
+  command = plan
+  module { source = "./modules/hetzner" }
+  providers = { hcloud = hcloud.fake }
+  variables {
+    hcloud_location           = "ash"
+    hcloud_server_type        = "cpx31"
+    hcloud_image              = "debian-12"
+    hcloud_disk_size_gb       = 50
+    hcloud_existing_volume_id = ""
+    hcloud_pin_boot_image     = true
+  }
+  expect_failures = [var.hcloud_pin_boot_image]
 }

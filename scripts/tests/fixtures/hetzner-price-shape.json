@@ -1,4 +1,38 @@
 {
+  "prior_state": {
+    "values": {
+      "root_module": {
+        "child_modules": [
+          {
+            "address": "module.hetzner[0]",
+            "resources": [
+              {
+                "address": "module.hetzner[0].data.hcloud_image.boot[0]",
+                "mode": "data",
+                "type": "hcloud_image",
+                "values": {
+                  "id": 45557056,
+                  "name": "ubuntu-22.04",
+                  "type": "system",
+                  "architecture": "x86",
+                  "os_flavor": "ubuntu",
+                  "os_version": "22.04",
+                  "with_architecture": "x86",
+                  "with_status": [
+                    "available"
+                  ],
+                  "most_recent": false,
+                  "include_deprecated": true,
+                  "selector": null,
+                  "with_selector": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
   "resource_changes": [
     {
       "address": "module.hetzner[0].hcloud_firewall.this",
@@ -28,14 +62,14 @@
           "name": "as7-fixture01",
           "server_type": "cpx31",
           "location": "ash",
-          "image": "ubuntu-22.04",
-          "backups": null,
+          "image": "45557056",
+          "backups": false,
           "public_net": [],
           "network": [],
           "iso": null,
           "rescue": null,
           "placement_group_id": null,
-          "keep_disk": null,
+          "keep_disk": false,
           "datacenter": null
         },
         "after_unknown": {

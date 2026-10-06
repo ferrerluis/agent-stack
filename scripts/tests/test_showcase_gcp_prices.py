@@ -104,6 +104,25 @@ class PriceTest(unittest.TestCase):
         self.adapter.http.request.assert_called_once_with(prices.IMAGE_ENDPOINT + image()["name"], "Bearer " + PRIVATE)
         with self.assertRaises(PolicyError): reserve_amount(result, "gcp", 14400, NOW)
 
+    def test_resolved_image_in_refreshed_saved_plan_state_keeps_exact_vm_binding(self):
+        self.plan["prior_state"] = {"values": self.plan.pop("planned_values")}
+        result = self.measure()
+        self.assertEqual(result["selection"]["image_id"], image()["id"])
+        self.adapter.http.request.assert_called_once_with(prices.IMAGE_ENDPOINT + image()["name"], "Bearer " + PRIVATE)
+
+    def test_conflicting_image_copies_or_malformed_refreshed_state_refuse_before_reads(self):
+        original = copy.deepcopy(self.plan)
+        changes = [{}, {"values": None}, {"values": {"root_module": None}}]
+        for prior in changes:
+            self.plan = copy.deepcopy(original); self.plan["prior_state"] = prior
+            with self.assertRaisesRegex(PolicyError, "gcp_resolved_image_plan_required"): self.measure()
+        for key, value in (("image_id", "1234567890123456790"), ("family", "foreign"), ("self_link", "https://foreign.invalid/image")):
+            self.plan = copy.deepcopy(original); self.plan["prior_state"] = {"values": copy.deepcopy(self.plan["planned_values"])}
+            self.plan["prior_state"]["values"]["root_module"]["child_modules"][0]["resources"][0]["values"][key] = value
+            with self.assertRaisesRegex(PolicyError, "gcp_resolved_image_plan_required"): self.measure()
+        self.adapter.get.assert_not_called(); self.adapter.http.request.assert_not_called(); self.adapter.access_token.assert_not_called()
+        self.assertEqual(self.http.calls, [])
+
     def test_changed_scope_unknown_values_extra_disks_spot_gpu_or_foreign_network_fail_before_reads(self):
         original = copy.deepcopy(self.plan)
         changes = (

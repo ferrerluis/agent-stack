@@ -248,6 +248,17 @@ variable "hcloud_image" {
   default     = "ubuntu-22.04"
 }
 
+variable "hcloud_pin_boot_image" {
+  description = "Resolve the standard x86 Ubuntu image during planning so the saved showcase plan uses that exact image ID."
+  type        = bool
+  default     = false
+  nullable    = false
+  validation {
+    condition     = !var.hcloud_pin_boot_image || var.hcloud_image == "ubuntu-22.04"
+    error_message = "hcloud_pin_boot_image requires the standard ubuntu-22.04 image."
+  }
+}
+
 variable "hcloud_disk_size_gb" {
   description = "Size in GB for the extra Hetzner Cloud volume."
   type        = number

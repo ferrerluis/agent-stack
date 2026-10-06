@@ -573,6 +573,14 @@ run "rejects_pinned_nonstandard_gcp_image" {
   }
   expect_failures = [var.gcp_pin_boot_image]
 }
+run "rejects_pinned_nonstandard_hetzner_image" {
+  command = plan
+  variables {
+    hcloud_pin_boot_image = true
+    hcloud_image          = "debian-12"
+  }
+  expect_failures = [var.hcloud_pin_boot_image]
+}
 run "rejects_unpinned_claude" {
   command = plan
   variables {

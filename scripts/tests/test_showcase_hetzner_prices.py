@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -52,9 +52,12 @@ def api_adapter(cloud):
     def pages(path, key, style):
         assert style == "hetzner"
         if path == "/server_types" and key == "server_types": return [size]
-        if path == prices.IMAGE_PATH and key == "images": return [image]
         raise AssertionError("unexpected endpoint")
-    return SimpleNamespace(cloud=cloud, size=size, image=image, pricing=pricing, pages=Mock(side_effect=pages), get=Mock(return_value={"pricing": pricing}))
+    def get(path):
+        if path == "/images/45557056": return {"image": image}
+        if path == "/pricing": return {"pricing": pricing}
+        raise AssertionError("unexpected endpoint")
+    return SimpleNamespace(cloud=cloud, size=size, image=image, pricing=pricing, pages=Mock(side_effect=pages), get=Mock(side_effect=get))
 
 
 class FakePublic:
@@ -86,11 +89,11 @@ class PriceTest(unittest.TestCase):
         self.assertEqual(result["selection"]["data_volume_gb"], 50); self.assertEqual(result["selection"]["image_id"], 45557056)
         self.assertIn("eur_to_usd_spend_bound_and_conversion_fees", result["not_verified"])
         self.assertIn("automatic_primary_ip_creation_defaults", result["not_verified"])
-        self.assertIn("resolved_image_plan_binding", result["not_verified"])
+        self.assertNotIn("resolved_image_plan_binding", result["not_verified"])
         self.assertFalse(result["complete_quote"]); self.assertEqual(result["launch_gate"], "unverified")
         self.assertEqual(result["server_billing_increment_seconds"], 3600)
         self.assertEqual(self.public.calls, ["billing", "volumes"])
-        self.adapter.get.assert_called_once_with("/pricing")
+        self.assertEqual(self.adapter.get.call_args_list, [call("/images/45557056"), call("/pricing")])
         with self.assertRaises(PolicyError): reserve_amount(result, "hetzner", 14400, NOW)
         self.assertNotIn(PRIVATE, json.dumps(result))
 
@@ -102,9 +105,83 @@ class PriceTest(unittest.TestCase):
         self.assertNotIn("eur_to_usd_spend_bound_and_conversion_fees", result["not_verified"])
         self.assertFalse(result["complete_quote"])
 
+    def test_mutable_different_or_unknown_boot_image_refuses_before_any_reads(self):
+        original = copy.deepcopy(self.plan)
+        for image, unknown in (("ubuntu-22.04", {}), ("45557057", {}), (45557056, {}),
+                               (None, {}), ("45557056", {"image": True})):
+            self.plan = copy.deepcopy(original)
+            vm = next(row["change"] for row in self.plan["resource_changes"] if row["type"] == "hcloud_server")
+            vm["after"]["image"] = image; vm["after_unknown"].update(unknown)
+            with self.subTest(image=image, unknown=unknown), self.assertRaises(PolicyError): self.measure()
+        self.adapter.pages.assert_not_called(); self.adapter.get.assert_not_called(); self.assertEqual(self.public.calls, [])
+
+    def test_missing_forged_duplicate_or_foreign_planned_image_refuses_before_reads(self):
+        original = copy.deepcopy(self.plan)
+        mutations = [lambda p: p.pop("prior_state"), lambda p: p.update(prior_state=None),
+                     lambda p: p["prior_state"]["values"].update(root_module=None),
+                     lambda p: p["prior_state"]["values"]["root_module"].update(child_modules=[]),
+                     lambda p: p["prior_state"]["values"]["root_module"]["child_modules"].append(copy.deepcopy(p["prior_state"]["values"]["root_module"]["child_modules"][0])),
+                     lambda p: p["prior_state"]["values"]["root_module"]["child_modules"][0].update(address="module.foreign[0]"),
+                     lambda p: p["prior_state"]["values"]["root_module"]["child_modules"][0]["resources"].append(copy.deepcopy(p["prior_state"]["values"]["root_module"]["child_modules"][0]["resources"][0]))]
+        for mutation in mutations:
+            self.plan = copy.deepcopy(original); mutation(self.plan)
+            with self.assertRaisesRegex(PolicyError, "hetzner_resolved_image_plan_required"): self.measure()
+        for key, value in (("id", None), ("id", True), ("id", 0), ("id", "45557056"), ("id", 2 ** 63),
+                           ("name", "debian-12"), ("type", "snapshot"), ("architecture", "arm"),
+                           ("os_flavor", "debian"), ("os_version", "24.04"), ("with_architecture", "arm"),
+                           ("with_status", ["creating"]), ("most_recent", True), ("include_deprecated", False),
+                           ("selector", "foreign=yes"), ("with_selector", "foreign=yes")):
+            self.plan = copy.deepcopy(original)
+            self.plan["prior_state"]["values"]["root_module"]["child_modules"][0]["resources"][0]["values"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(PolicyError, "hetzner_resolved_image_plan_required"): self.measure()
+        self.adapter.pages.assert_not_called(); self.adapter.get.assert_not_called(); self.assertEqual(self.public.calls, [])
+
+    def test_image_data_changes_must_be_complete_unchanged_and_unique(self):
+        original = copy.deepcopy(self.plan)
+        value = copy.deepcopy(self.plan["prior_state"]["values"]["root_module"]["child_modules"][0]["resources"][0]["values"])
+        change = {"address": prices.IMAGE_ADDRESS, "mode": "data", "type": "hcloud_image", "change": {
+            "actions": ["no-op"], "before": copy.deepcopy(value), "after": copy.deepcopy(value), "after_unknown": {}}}
+        self.plan["resource_changes"].append(copy.deepcopy(change)); self.measure()
+        for mutation in (lambda c: c["change"].update(actions=["read"]), lambda c: c["change"]["after"].update(id=45557057),
+                         lambda c: c["change"].update(after_unknown={"id": True}), lambda c: c.update(type="foreign")):
+            self.plan = copy.deepcopy(original); data = copy.deepcopy(change); mutation(data); self.plan["resource_changes"].append(data)
+            self.adapter.pages.reset_mock(); self.adapter.get.reset_mock(); self.public.calls.clear()
+            with self.assertRaisesRegex(PolicyError, "hetzner_resolved_image_plan_required"): self.measure()
+            self.adapter.pages.assert_not_called(); self.adapter.get.assert_not_called(); self.assertEqual(self.public.calls, [])
+        self.plan = copy.deepcopy(original); self.plan["resource_changes"].extend([copy.deepcopy(change), copy.deepcopy(change)])
+        with self.assertRaisesRegex(PolicyError, "hetzner_resolved_image_plan_required"): self.measure()
+        self.adapter.pages.assert_not_called(); self.adapter.get.assert_not_called()
+
+    def test_exact_image_reread_rejects_changed_missing_or_malformed_identity_before_pricing(self):
+        original = copy.deepcopy(self.adapter.image)
+        replies = [{}, {"image": None}, {"image": [original]}, {"image": original | {"id": True}},
+                   {"image": original | {"id": 45557057}}, {"image": original | {"name": "debian-12"}},
+                   {"image": original | {"status": "unavailable"}}]
+        for reply in replies:
+            self.adapter.get.reset_mock(); self.adapter.get.side_effect = None; self.adapter.get.return_value = reply
+            with self.assertRaisesRegex(PolicyError, "hetzner_price_ubuntu_image_required"): self.measure()
+            self.adapter.get.assert_called_once_with("/images/45557056"); self.assertEqual(self.public.calls, [])
+
+    def test_refreshed_state_image_and_matching_copies_are_supported_but_conflicts_refuse(self):
+        original = copy.deepcopy(self.plan)
+        self.plan["planned_values"] = self.plan.pop("prior_state")["values"]; self.measure()
+        self.plan["prior_state"] = {"values": copy.deepcopy(self.plan["planned_values"])}; self.measure()
+        for key, value in (("id", 45557057), ("architecture", "arm")):
+            self.plan = copy.deepcopy(original)
+            self.plan["planned_values"] = copy.deepcopy(self.plan["prior_state"]["values"])
+            self.plan["prior_state"]["values"]["root_module"]["child_modules"][0]["resources"][0]["values"][key] = value
+            self.adapter.pages.reset_mock(); self.adapter.get.reset_mock(); self.public.calls.clear()
+            with self.assertRaisesRegex(PolicyError, "hetzner_resolved_image_plan_required"): self.measure()
+            self.adapter.pages.assert_not_called(); self.adapter.get.assert_not_called(); self.assertEqual(self.public.calls, [])
+        for prior in ({}, {"values": None}, {"values": {"root_module": None}}):
+            self.plan = copy.deepcopy(original); self.plan["prior_state"] = prior
+            with self.assertRaisesRegex(PolicyError, "hetzner_resolved_image_plan_required"): self.measure()
+            self.adapter.pages.assert_not_called(); self.adapter.get.assert_not_called()
+
     def test_extra_or_unknown_plan_features_and_disk_quantities_fail_before_any_reads(self):
         original = copy.deepcopy(self.plan)
         mutations = [lambda vm, vol, unknown: vm.update(backups=True), lambda vm, vol, unknown: vm.update(backups=0),
+            lambda vm, vol, unknown: vm.update(keep_disk=True), lambda vm, vol, unknown: vm.update(keep_disk=0),
             lambda vm, vol, unknown: vm.update(public_net=[{"ipv4_enabled": True}]), lambda vm, vol, unknown: vm.update(iso="paid"),
             lambda vm, vol, unknown: vm.update(image="snapshot"), lambda vm, vol, unknown: vm.update(location="wrong"),
             lambda vm, vol, unknown: vm.update(placement_group_id=42), lambda vm, vol, unknown: unknown.update(backups=True),

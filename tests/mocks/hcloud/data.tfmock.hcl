@@ -1,3 +1,12 @@
+mock_data "hcloud_image" {
+  defaults = {
+    type         = "system"
+    architecture = "x86"
+    os_flavor    = "ubuntu"
+    os_version   = "22.04"
+  }
+}
+
 mock_resource "hcloud_server" {
   defaults = {
     id           = 31337

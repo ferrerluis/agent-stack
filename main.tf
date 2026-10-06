@@ -315,6 +315,7 @@ module "hetzner" {
   hcloud_location                      = var.hcloud_location
   hcloud_server_type                   = var.hcloud_server_type
   hcloud_image                         = var.hcloud_image
+  hcloud_pin_boot_image                = var.hcloud_pin_boot_image
   hcloud_disk_size_gb                  = var.hcloud_disk_size_gb
   hcloud_existing_volume_id            = var.hcloud_existing_volume_id
   ssh_public_key                       = local.resolved_ssh_public_key
