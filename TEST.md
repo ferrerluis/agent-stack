@@ -109,7 +109,25 @@ python3 scripts/showcase_policy.py --config <private-inputs.json> --provider aws
 
 `inputs_complete` means the required fields and approved limits are present. Identity, project isolation, permissions, prices, model availability, minimum VM memory and second-peer access still require live preflight; none is established by an input declaration.
 
-The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. A new config or ledger must not be used to restart the same batch's spending allowance. The opt-in cloud execution runner and provider cleanup adapters remain to be implemented.
+The runner library conservatively reserves the full attempt allowance, blocks concurrent launches and further attempts until independently queried cleanup succeeds, and allows at most two attempts per cloud. Later provider inputs and repaired pins retain prior spending/retry history; each provider stays bound to its original account/project. A new config or ledger must not be used to restart the same batch's spending allowance. The deployment/test runner and independent provider/tailnet cleanup adapters remain to be implemented.
+
+## Read-only Cloud Preflight
+
+Install `scripts/requirements-live.txt` in a task-owned Python virtual environment, then use that environment's Python:
+
+```bash
+AGENT_STACK_LIVE_TESTS=1 python3 scripts/showcase_preflight.py \
+  --config <mode-0600-private-inputs.json> --provider aws \
+  --run-id <as7-unique-id>
+```
+
+This command retrieves only the selected cloud's fields and the tailnet read key through `op`. Shared references are read once in the process. It makes read requests and a GCP OAuth exchange/permission probe; it creates no cloud resource, enrolls no peer and makes no model call. It does not discover personal AWS profiles or GCP ADC files. Reports contain fixed error codes and selected check results, never credentials or raw provider responses.
+
+Checks cover exact AWS/DO/GCP identity where available, dedicated-project occupancy, regional x86 VM memory/availability, selected quota/permission checks, prefix collisions, and a registered authorized second peer. GCP inventories VMs and disks across zones; DO checks team scope and account-level resources outside project membership. Missing pages, unreachable inventories, HTTP errors and malformed responses fail. Hetzner's API proves token scope and resource/size reads but cannot independently return the declared account/project ID.
+
+`read_checks_passed` is deliberately distinct from deployment readiness: `launch_ready` remains false, and each provider lists unverified permissions, quotas or capacity. Current prices, model access, enrollment/deletion authority, actual peer connectivity/browser authentication and live matrix results remain unverified. This preflight must not be used to bypass the remaining launch gates.
+
+Default unit tests use generated RSA keys and provider fixtures; when the optional AWS SDK is installed, an offline SDK test validates actual request shapes and rejects inherited personal-profile/endpoint settings. These tests perform no secret retrieval or provider request and do not establish real authentication or cloud support.
 
 ## Optional Live Smoke Suite
 

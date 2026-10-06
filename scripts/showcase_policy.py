@@ -80,6 +80,7 @@ def validate_inputs(config, provider):
     require(type(config["attempt_seconds"]) is int and 900 < config["attempt_seconds"] <= 14400, "lifetime_exceeds_approval")
     require(type(config["max_attempts"]) is int and 1 <= config["max_attempts"] <= 2, "retries_exceed_approval")
     object_fields(config["runner"], ("ssh_cidr",))
+    require(text(config["runner"]["ssh_cidr"]), "runner_ipv4_32_required")
     try:
         cidr = ipaddress.ip_network(config["runner"]["ssh_cidr"], strict=True)
     except (ValueError, TypeError):
@@ -192,7 +193,9 @@ class Reservations:
     def __init__(self, directory, config):
         self.directory = Path(directory)
         self.config = config
-        self.fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        # Other providers may become ready later, and repairs may change pins
+        # or credentials. Neither may reset costs or past attempts.
+        self.fingerprint = hashlib.sha256(config["owner"].encode()).hexdigest()
 
     def operate(self, update):
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -209,8 +212,15 @@ class Reservations:
                 except (ValueError, OSError):
                     raise PolicyError("ledger_unreadable") from None
             else:
-                state = {"schema": 1, "config_fingerprint": self.fingerprint, "attempts": []}
-            require(isinstance(state, dict) and state.get("schema") == 1 and state.get("config_fingerprint") == self.fingerprint and isinstance(state.get("attempts"), list), "ledger_scope_mismatch")
+                state = {"schema": 2, "owner_fingerprint": self.fingerprint, "limits": {
+                    "budget_usd": self.config["budget_usd"], "max_attempts": self.config["max_attempts"], "attempt_seconds": self.config["attempt_seconds"]
+                }, "provider_bindings": {}, "attempts": []}
+            require(isinstance(state, dict) and state.get("schema") == 2 and state.get("owner_fingerprint") == self.fingerprint
+                    and isinstance(state.get("attempts"), list) and isinstance(state.get("provider_bindings"), dict), "ledger_scope_mismatch")
+            object_fields(state.get("limits"), ("budget_usd", "max_attempts", "attempt_seconds"))
+            require(money(self.config["budget_usd"]) <= money(state["limits"]["budget_usd"])
+                    and self.config["max_attempts"] <= state["limits"]["max_attempts"]
+                    and self.config["attempt_seconds"] <= state["limits"]["attempt_seconds"], "ledger_scope_mismatch")
             for attempt in state["attempts"]:
                 object_fields(attempt, ("run_id", "provider", "reserved_usd", "started_at", "deadline", "work_deadline", "status"), ("cleanup_receipt",))
                 require(attempt["status"] in ("active", "cleaned") and attempt["provider"] in PROVIDERS, "ledger_unreadable")
@@ -239,6 +249,10 @@ class Reservations:
             require(not any(item["run_id"] == run_id for item in attempts), "run_id_already_used")
             require(sum(item["provider"] == provider for item in attempts) < self.config["max_attempts"], "attempt_limit_reached")
             require(sum((money(item["reserved_usd"]) for item in attempts), Decimal(0)) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
+            cloud = self.config["providers"][provider]
+            binding = {"account_id": cloud["account_id"], "project_id": cloud.get("project_id", "")}
+            require(provider not in state["provider_bindings"] or state["provider_bindings"][provider] == binding, "provider_scope_changed")
+            state["provider_bindings"][provider] = binding
             attempt = {"run_id": run_id, "provider": provider, "reserved_usd": str(amount), "started_at": now,
                        "deadline": now + self.config["attempt_seconds"], "work_deadline": now + self.config["attempt_seconds"] - 900, "status": "active"}
             attempts.append(attempt)
@@ -246,7 +260,7 @@ class Reservations:
         return self.operate(update)
 
     def confirm_cleanup(self, run_id, receipt):
-        object_fields(receipt, ("provider", "account_id", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"))
+        object_fields(receipt, ("provider", "account_id", "project_id", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"))
         require(type(receipt["owned_ids_checked"]) is int and receipt["owned_ids_checked"] >= 0 and receipt["remaining_ids"] == []
                 and type(receipt["tailnet_nodes_checked"]) is int and receipt["tailnet_nodes_checked"] >= 0 and receipt["remaining_tailnet_nodes"] == []
                 and all(type(receipt[key]) is int and receipt[key] > 0 for key in ("cloud_queries_succeeded", "tailnet_queries_succeeded")), "cleanup_unverified")
@@ -254,7 +268,9 @@ class Reservations:
             matches = [item for item in state["attempts"] if item["run_id"] == run_id]
             require(len(matches) == 1 and matches[0]["status"] == "active", "active_attempt_required")
             attempt = matches[0]
-            require(receipt["provider"] == attempt["provider"] and receipt["account_id"] == self.config["providers"][attempt["provider"]]["account_id"], "cleanup_identity_mismatch")
+            binding = state["provider_bindings"].get(attempt["provider"])
+            require(receipt["provider"] == attempt["provider"] and isinstance(binding, dict)
+                    and receipt["account_id"] == binding.get("account_id") and receipt["project_id"] == binding.get("project_id"), "cleanup_identity_mismatch")
             require(type(receipt["verified_at"]) in (int, float) and receipt["verified_at"] >= attempt["started_at"], "cleanup_unverified")
             attempt.update(status="cleaned", cleanup_receipt=receipt)
             return {"run_id": run_id, "cleanup": "verified", "reserved_usd": attempt["reserved_usd"]}

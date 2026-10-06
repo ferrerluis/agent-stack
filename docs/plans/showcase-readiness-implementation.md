@@ -109,6 +109,7 @@ Affected files: new `scripts/test-live.sh`, fixture/verifier helpers, examples a
 - Implement the companion test plan: separate state/checkouts per cloud, unique owned resources, preflighted credentials/permissions, sequential runs, bounded command timeouts and cleanup on failure or interruption.
 - Prepare all input choices before execution. One authorized batch can cover provisioning, SSH, tests, source repairs, narrowly affected reruns and deletion of this batch's temporary resources within an approved spend/retry limit.
 - Mock operator prompts and provider actions when testing the runner locally. Real matrix evidence must use real Terraform infrastructure, tailnet access and model-backed commands.
+- The private input/reservation policy and read-only preflight are implemented. The preflight retrieves selected 1Password fields once, checks API identity/project/VM size and selected quota/permission/inventory results, and lists remaining gates with `launch_ready: false`. It makes no deployment or model call; Hetzner account/project mapping requires separate proof. Deployment/test execution and independent cleanup adapters remain pending.
 - Record 24 required matrix cells, exact commit, non-secret configuration, image digests/CLI versions, checks, durations and cleanup outcomes. Retain sanitized summaries; keep state, plans with secrets, private keys and raw sensitive logs outside PARA and version control.
 
 Exit: all cells pass on the same final implementation; cleanup is confirmed for all owned resources and temporary tailnet nodes.

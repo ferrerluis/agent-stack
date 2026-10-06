@@ -1,0 +1,3 @@
+# Optional read-only/live showcase tools. Install in a task-owned virtualenv.
+botocore==1.43.108
+cryptography==46.0.5

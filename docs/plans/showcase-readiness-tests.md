@@ -57,7 +57,11 @@ Build rendered templates with fake inputs, verify CLI paths/versions under UID 1
 
 The implemented command covers workspace SSH, versions, persistent data/host keys, missing-binary/password failures and ownership-checked cleanup. Native agent image/readiness checks and real model execution remain in the live tier; no container run has passed on the current host because Docker is absent.
 
-Private input structure and approved limits can now be checked per provider with `python3 scripts/showcase_policy.py --config <mode-0600-inputs.json> --provider <provider>`. This retrieves no secret and performs no live preflight. The reservation and fresh-plan library is implemented; cloud execution and independent provider/tailnet cleanup adapters are still pending.
+Private input structure and approved limits can be checked per provider with `python3 scripts/showcase_policy.py --config <mode-0600-inputs.json> --provider <provider>`. This retrieves no secret and performs no live preflight. The reservation/fresh-plan library and opt-in read-only provider preflight are implemented; deployment/test execution and independent provider/tailnet cleanup adapters are pending.
+
+After installing the optional task-local dependencies, run `AGENT_STACK_LIVE_TESTS=1 python3 scripts/showcase_preflight.py --config <mode-0600-inputs.json> --provider <provider> --run-id <as7-unique-id>`. It retrieves selected 1Password fields once, checks cloud identity/project/VM size and selected permissions/quotas, inventories project/prefix resources and finds the registered authorized second peer. Tests use generated signing keys, paginated fixtures and the actual offline AWS SDK without live secrets or requests.
+
+The report always keeps `launch_ready: false` and lists unresolved checks; registered peer status does not prove browser connectivity, and price/model/deletion checks remain pending. Hetzner's project-scoped token cannot return account/project IDs, so that mapping requires separate evidence. Adding a later provider's inputs or repairing pins must preserve spending/retry history; each provider's recorded account/project must remain unchanged for retries and cleanup.
 
 ## Proposed live-run interface and resource ownership
 

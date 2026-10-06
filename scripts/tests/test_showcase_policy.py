@@ -96,7 +96,7 @@ class ReservationTest(unittest.TestCase):
         self.ledger = policy.Reservations(Path(self.temp.name) / "batch", self.config)
 
     def receipt(self, **changes):
-        return {"provider": "aws", "account_id": "123456789012", "cloud_queries_succeeded": 1, "owned_ids_checked": 10, "remaining_ids": [],
+        return {"provider": "aws", "account_id": "123456789012", "project_id": "", "cloud_queries_succeeded": 1, "owned_ids_checked": 10, "remaining_ids": [],
                 "tailnet_queries_succeeded": 1, "tailnet_nodes_checked": 1, "remaining_tailnet_nodes": [], "verified_at": NOW + 100, **changes}
 
     def test_only_one_attempt_and_cleanup_required_even_after_deadline(self):
@@ -149,6 +149,36 @@ class ReservationTest(unittest.TestCase):
         changed["budget_usd"] = "25.00"
         with self.assertRaisesRegex(policy.PolicyError, "ledger_scope_mismatch"):
             policy.Reservations(self.ledger.directory, changed).reserve("gcp", "as7-fixture02", quote("gcp"), now=NOW)
+
+    def test_later_provider_inputs_and_new_pins_preserve_prior_spend(self):
+        first_config = config()
+        first_config["providers"].pop("gcp")
+        first = policy.Reservations(self.ledger.directory, first_config)
+        first.reserve("aws", "as7-fixture01", quote(), now=NOW)
+        first.confirm_cleanup("as7-fixture01", self.receipt())
+        later = config()
+        later["pins"]["openclaw_digest"] = "sha256:" + "c" * 64
+        policy.Reservations(self.ledger.directory, later).reserve("gcp", "as7-fixture02", quote("gcp"), now=NOW)
+        state = json.loads((self.ledger.directory / "reservations.json").read_text())
+        self.assertEqual(len(state["attempts"]), 2)
+        self.assertEqual(sum(policy.money(row["reserved_usd"]) for row in state["attempts"]), 4)
+
+    def test_retry_cannot_silently_switch_account(self):
+        self.ledger.reserve("aws", "as7-fixture01", quote(), now=NOW)
+        self.ledger.confirm_cleanup("as7-fixture01", self.receipt())
+        changed = config()
+        changed["providers"]["aws"]["account_id"] = "987654321098"
+        with self.assertRaisesRegex(policy.PolicyError, "provider_scope_changed"):
+            policy.Reservations(self.ledger.directory, changed).reserve("aws", "as7-fixture02", quote(), now=NOW)
+
+    def test_cleanup_is_bound_to_original_project_even_after_input_repair(self):
+        self.ledger.reserve("gcp", "as7-fixture01", quote("gcp"), now=NOW)
+        changed = config()
+        changed["providers"]["gcp"]["project_id"] = "different-project"
+        recovery = policy.Reservations(self.ledger.directory, changed)
+        with self.assertRaisesRegex(policy.PolicyError, "cleanup_identity_mismatch"):
+            recovery.confirm_cleanup("as7-fixture01", self.receipt(provider="gcp", account_id="fixture-account", project_id="different-project"))
+        recovery.confirm_cleanup("as7-fixture01", self.receipt(provider="gcp", account_id="fixture-account", project_id="agent-stack-fixture"))
 
     def test_fresh_official_price_and_nonzero_model_cleanup_allowances_required(self):
         self.assertEqual(policy.reserve_amount(quote(hourly="0.101"), "aws", 14400, NOW), policy.money("2.01"))

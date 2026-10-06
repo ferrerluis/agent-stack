@@ -17,18 +17,19 @@ Implemented:
 - OpenClaw first-start gateway seeding with authenticated local mode, existing-config preservation, safe rollback and matching host/sidecar listener configuration. Docker's published gateway port remains on host loopback.
 - Hermes native doctor is mandatory in strict health, with a completed passing summary and zero exit. Its config and environment-file privacy checks match the official container's UID/GID and modes, with no raw doctor output saved.
 - Optional DigitalOcean project assignment for newly created Droplets/disks; reused operator disks retain their existing project.
-- Reference-only execution inputs, per-provider structure checks, fresh-create plan restrictions, private concurrent spending reservations, two-attempt limits and independently queried cleanup receipts. These are runner components; live API preflight/execution/cleanup adapters are not yet implemented.
+- Reference-only execution inputs, per-provider structure checks, fresh-create plan restrictions, private concurrent spending reservations, two-attempt limits and cleanup-receipt policy. Later provider inputs and repaired pins preserve spending/retry history; retries and cleanup remain tied to the original account/project.
+- Opt-in read-only preflight for all four clouds and the registered authorized second peer. It retrieves selected 1Password fields once, performs bounded requests without redirects/personal-profile discovery, checks API identity/project/VM size and selected quota/permission/inventory results, and lists unresolved checks with `launch_ready: false`. GCP uses an in-memory signed token exchange and inventories VMs/disks across zones; DO verifies team scope and account-level prefix collisions. Hetzner account/project mapping needs separate proof.
 
 Validation:
 
 - Terraform 1.16.5: final isolated init, format and validate passed; 52 mocked plan tests passed, zero failed.
-- 131 setup, 13 doctor and 23 runner Python tests passed (167 total). Coverage includes ownership refusal, concurrent reservations, timeout child-process cleanup and actual Terraform workspace-template rendering without providers.
+- 131 setup, 13 doctor and 47 runner Python tests passed (191 total). Coverage includes ownership refusal, concurrent reservations, original-project cleanup binding, timeout child-process cleanup, actual Terraform workspace-template rendering, generated GCP JWT signature/refresh checks and offline actual AWS SDK request validation. No real provider/model request is made by the default suite.
 - Runtime shell/Python syntax and checkout-idempotence checks passed; no cloud-impacting command ran.
 - Deployment floor is Terraform >=1.9; plan-time mocking tests require >=1.11.
 
 No real credential was retrieved or imported, no personal coding-tool auth file was inspected, and no cloud/model spend occurred. Docker is absent on this host; image builds, native runtime/CLI execution and real authentication remain unverified.
 
-Next work: implement the opt-in execution runner and provider identity/permission/price/ownership/cleanup adapters. Once inputs are available, verify identities, permissions, billing/quota, model access, prices, pins and tailnet access; run container checks locally or on the first owned VM, then run providers sequentially with new resources under the approved $25/four-hour/one-retry limits.
+Next work: implement the opt-in deployment/test runner, remaining price/permission/quota gates and independently verified provider/tailnet cleanup. Once inputs are available, run the read-only preflight and resolve its unverified checks; verify model access, prices, pins and actual tailnet connectivity, run container checks locally or on the first owned VM, then run providers sequentially with new resources under the approved $25/four-hour/one-retry limits.
 
 Required live proof: all 24 matrix cells, direct authenticated browser access from a second peer, reboot/persistence, exact-revision documentation and independently confirmed resource/node cleanup. Neither the goal nor TODO #7 is complete.
 

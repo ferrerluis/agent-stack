@@ -17,7 +17,11 @@ Supply `do_project_id` for DigitalOcean so the new Droplet and disk join that pr
 
 The [private input example](execution-inputs.example.json) records accounts/projects and 1Password field references. Copy it outside Git with mode 0600, replace placeholders, and run `python3 scripts/showcase_policy.py --config <private-inputs.json> --provider <provider>`. This checks field structure and limits; live permissions, prices and account/model/peer access remain separate checks.
 
-The [container command](../../TEST.md) now accepts exact Codex and Claude versions and checks both workspace variants without model credentials. The cloud execution runner remains in development.
+The [container command](../../TEST.md) accepts exact Codex and Claude versions and checks both workspace variants without model credentials. The opt-in [read-only preflight](../../TEST.md#read-only-cloud-preflight) now checks one selected cloud and the registered second tailnet peer. It reads only the required 1Password fields, creates nothing and reports unresolved checks; `read_checks_passed` always has `launch_ready: false`.
+
+AWS and DigitalOcean account identities are checked through their APIs. GCP uses the explicitly supplied service-account field for an in-memory signed token exchange, then checks the target project, billing, permissions, CPU quota and inventories across zones. Hetzner's token scope can be checked for existing resources and VM availability, but account/project mapping needs separate proof because its Cloud API does not return those IDs. Prices, complete quotas/lifecycle permissions, model execution and peer browser access remain pending.
+
+The deployment, test and independently verified cleanup runner remains in development. Adding another cloud's inputs or repairing pins preserves the batch ledger's spending/retry history; retries and cleanup stay tied to the originally recorded account/project.
 
 After apply, `openclaw_url` and `hermes_url` use the observed full tailnet DNS name on HTTPS ports 443 and 8443. Retrieve `dashboard_url_with_token_import` and `hermes_dashboard_password` privately with `terraform output -raw`; ordinary apply output hides these values.
 
