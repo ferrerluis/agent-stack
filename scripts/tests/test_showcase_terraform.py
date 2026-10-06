@@ -311,6 +311,7 @@ class DriverTest(unittest.TestCase):
             with patch.dict(os.environ, {"AGENT_STACK_LIVE_TESTS": "1"}), patch.object(sys, "argv", common + ["--phase", phase]), \
                  patch.object(live.signal, "signal"), \
                  patch.object(live, "CloudSession", return_value=self.session), patch.object(live, "TerraformAttempt", return_value=self.client), \
+                 patch.object(self.client, "resource_unit_prices", return_value={"provider": "aws", "launch_gate": "unverified", "complete_quote": False}), \
                  contextlib.redirect_stdout(output):
                 status = live.main()
             self.assertNotIn(SECRET, output.getvalue())

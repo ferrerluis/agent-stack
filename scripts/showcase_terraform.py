@@ -335,18 +335,25 @@ class TerraformAttempt:
         return module
 
     @exclusive
-    def resource_unit_prices(self, public=None):
+    def resource_unit_prices(self, public=None, aws_query=None):
         from showcase_prices import digitalocean_rates
         verify_prepared(self.run, self.config, self.provider)
         record = self.record()
-        require(self.provider == "digitalocean" and record.get("stage") == "planned", "planned_digitalocean_attempt_required")
+        require(self.provider in ("aws", "digitalocean") and record.get("stage") == "planned", "planned_price_attempt_required")
         root = Path(__file__).resolve().parents[1]
-        for name in ("showcase_prices", "showcase_terraform", "showcase_policy"):
+        names = ("showcase_prices", "showcase_terraform", "showcase_policy", "showcase_preflight")
+        if self.provider == "aws":
+            names += ("showcase_aws_prices",)
+        for name in names:
             relative = "scripts/" + name + ".py"
             require((self.checkout / relative).is_file() and (self.checkout / relative).read_bytes() == (root / relative).read_bytes(),
                     "price_controller_source_changed")
-        result = digitalocean_rates(private_read(self.run / "deployment-plan.json"), self.config["providers"][self.provider],
-            self.prefix, self.checkout, self.session.adapter, self.prepared["source_revision"], record["plan_sha256"], public=public, now=self.now)
+        common = (private_read(self.run / "deployment-plan.json"), self.config["providers"][self.provider], self.prefix, self.checkout, self.session.adapter)
+        if self.provider == "aws":
+            from showcase_aws_prices import aws_rates
+            result = aws_rates(*common, self.session.credentials, self.prepared["source_revision"], record["plan_sha256"], query=aws_query, now=self.now)
+        else:
+            result = digitalocean_rates(*common, self.prepared["source_revision"], record["plan_sha256"], public=public, now=self.now)
         private_write(self.run / "resource-prices.json", result)
         return result
 

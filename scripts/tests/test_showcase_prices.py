@@ -209,7 +209,7 @@ class TransportTest(unittest.TestCase):
 class DriverTest(unittest.TestCase):
     def setUp(self):
         self.fixture = preparation.PreparationTest("runTest"); self.fixture.setUp(); self.addCleanup(self.fixture.doCleanups)
-        for name in ("showcase_prices", "showcase_terraform", "showcase_policy"):
+        for name in ("showcase_prices", "showcase_terraform", "showcase_policy", "showcase_preflight"):
             target = self.fixture.repo / "scripts" / (name + ".py")
             target.parent.mkdir(exist_ok=True)
             target.write_bytes((Path(terraform.__file__).parent / (name + ".py")).read_bytes())
