@@ -140,7 +140,7 @@ def peer_check(request, execute=invoke, resolve=socket.getaddrinfo):
         raise ProbeError("tailnet_dns_unverified") from None
     need(resolved and resolved <= target_ips, "tailnet_dns_unverified")
     return {"runner_dns": request["runner_dns"], "target_dns": request["target_dns"], "address": address,
-            "traffic": "tailscale_ping", "dns": "matches_peer"}
+            "runner_addresses": sorted(self_ips), "traffic": "tailscale_ping", "dns": "matches_peer"}
 
 
 class NetworkGuard:
@@ -322,10 +322,13 @@ def validate_proof(proof, request):
          and type(proof["schema"]) is int and proof["schema"] == 1 and proof["status"] == "pass"
          and proof["request_id"] == request["request_id"], "browser_proof_invalid")
     peer, apps = proof["peer"], proof["apps"]
-    need(isinstance(peer, dict) and set(peer) == {"runner_dns", "target_dns", "address", "traffic", "dns"}
+    need(isinstance(peer, dict) and set(peer) == {"runner_dns", "target_dns", "address", "runner_addresses", "traffic", "dns"}
          and peer["runner_dns"] == request["runner_dns"] and peer["target_dns"] == request["target_dns"]
          and peer["traffic"] == "tailscale_ping" and peer["dns"] == "matches_peer", "browser_proof_invalid")
     ts_ip(peer["address"])
+    need(isinstance(peer["runner_addresses"], list) and 1 <= len(peer["runner_addresses"]) <= 4
+         and peer["runner_addresses"] == sorted(set(peer["runner_addresses"]))
+         and all(ts_ip(value) != peer["address"] for value in peer["runner_addresses"]), "browser_proof_invalid")
     need(isinstance(apps, dict) and set(apps) == {"openclaw", "hermes"}, "browser_proof_invalid")
     for runtime, auth in (("openclaw", "gateway_hello"), ("hermes", "basic_session")):
         row = apps[runtime]

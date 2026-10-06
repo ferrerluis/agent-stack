@@ -145,10 +145,10 @@ def validate_proof(report, runtime, model, challenge, request_id):
             "answer_sha256": hashlib.sha256(json.dumps(report["answer"], sort_keys=True).encode()).hexdigest()}
 
 
-def invoke(args, timeout=10, input=None):
+def invoke(args, timeout=10, input=None, env=None):
     """Bound memory and elapsed time; kill local descendants on any interruption."""
     need(input is None or isinstance(input, bytes) and len(input) <= 4096, "probe_input_limit")
-    child = subprocess.Popen(args, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+    child = subprocess.Popen(args, env=env, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     output, size = bytearray(), 0
     deadline = time.monotonic() + timeout

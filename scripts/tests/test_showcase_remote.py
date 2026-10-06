@@ -16,6 +16,7 @@ import test_showcase_attempt as preparation_fixtures
 import test_showcase_terraform as terraform_fixtures
 from test_showcase_policy import config, quote, NOW
 from unittest.mock import Mock
+import test_showcase_peer as peer_fixtures
 
 ROOT = Path(__file__).resolve().parents[2]
 PREFIX = terraform_fixtures.PREFIX
@@ -31,7 +32,7 @@ class RemoteChecksTest(unittest.TestCase):
         self.fixture = preparation_fixtures.PreparationTest("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        for name in ("bin/agent-stack-ssh", remote.DOCTOR_PATH, remote.AGENT_PATH):
+        for name in ("bin/agent-stack-ssh", remote.DOCTOR_PATH, remote.AGENT_PATH, remote.BROWSER_PATH, remote.PEER_PATH):
             target = self.fixture.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / name).read_bytes())
@@ -39,9 +40,11 @@ class RemoteChecksTest(unittest.TestCase):
         self.fixture.git("add", ".")
         self.fixture.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "remote fixture")
         self.fixture.revision = self.fixture.git("rev-parse", "HEAD").strip()
-        self.prepared = self.fixture.prepare()
-        self.run = self.fixture.batch / "attempts" / PREFIX
         self.config = config()
+        self.config["runner"]["peer_ssh"] = peer_fixtures.access()
+        self.prepared = preparation_fixtures.attempt.prepare(self.config, "aws", PREFIX, self.fixture.batch,
+            self.fixture.revision, self.fixture.repo)
+        self.run = self.fixture.batch / "attempts" / PREFIX
         self.plan, self.state, _ = terraform_fixtures.plan_fixture()
         self.plan["resource_changes"].append({"address": "terraform_data.runtime_apply", "mode": "managed", "type": "terraform_data",
             "change": {"actions": ["create"], "before": None, "after": {"input": CHECKSUM}}})
@@ -69,6 +72,8 @@ class RemoteChecksTest(unittest.TestCase):
                 return {"Reservations": [{"Instances": [{"InstanceId": "i-a2", "State": {"Name": "running"}, "PublicIpAddress": self.api_ip}]}]}
             raise AssertionError("unexpected API operation")
         self.session.adapter.call.side_effect = provider
+        self.session.http = Mock()
+        self.session.http.request.return_value = {"devices": [{"name": self.config["tailnet"]["runner_dns"], "authorized": True}]}
         self.attempt = terraform.TerraformAttempt(self.run, self.config, "aws", self.session)
         self.ledger = cleanup.Reservations(self.fixture.batch, self.config)
         self.ledger.reserve("aws", PREFIX, quote(), now=NOW)
@@ -82,6 +87,8 @@ class RemoteChecksTest(unittest.TestCase):
         self.task_mutation = None
         self.file_mutation = None
         self.agent_mutation = None
+        self.private_mutation, self.peer_mutation = None, None
+        self.peer_calls = []
         self.checks = remote.RemoteChecks(self.attempt, self.ledger, execute=self.execute, now=lambda: self.clock, sleep=self.sleep)
 
     def sleep(self, amount):
@@ -93,6 +100,13 @@ class RemoteChecksTest(unittest.TestCase):
         if input == remote.BOOTSTRAP.encode():
             return json.dumps({"schema": 1, "status": "pass", "checksum": CHECKSUM, "dns": PREFIX + ".fixture.ts.net",
                 "boot_id": self.boot, "disk_uuid": self.disk, "data_volume_id": "vol-a3"}).encode()
+        if input == peer_fixtures.peer.VM_SOURCE.encode():
+            report = {"schema": 1, "status": "pass", "boot_id": self.boot,
+                "browser_url": "http://127.0.0.1:18789/#bootstrapToken=fake-handoff&gatewayUrl=ws%3A%2F%2F127.0.0.1%3A18789",
+                "hermes_username": "fixture", "hermes_password": terraform_fixtures.SECRET,
+                "host_public_key": peer_fixtures.KEY, "workspace_public_key": peer_fixtures.KEY}
+            if self.private_mutation: self.private_mutation(report)
+            return json.dumps(report).encode()
         if "--remote" in words:
             module = self.doctor()
             names = module.required_checks(["openclaw", "hermes", "workspace"], True, True)
@@ -148,6 +162,21 @@ class RemoteChecksTest(unittest.TestCase):
             self.checks.runtime_task(runtime)
         for cli in ("codex", "claude"):
             self.checks.workspace_task(cli)
+        self.checks.network_checks("before_reboot", self.peer_execute)
+
+    def peer_execute(self, access, command, payload):
+        self.peer_calls.append((access, command, payload))
+        request = payload["browser"]
+        peer = {"runner_dns": request["runner_dns"], "target_dns": request["target_dns"], "address": "100.100.2.3",
+            "runner_addresses": ["100.100.1.2"], "traffic": "tailscale_ping", "dns": "matches_peer"}
+        ssh = {role: {**peer_fixtures.ssh_proof(role), "nonce": payload["ssh"]["nonce"], "boot_id": payload["ssh"]["boot_id"]}
+            for role in ("host", "workspace")}
+        report = {"schema": 1, "status": "pass", "request_id": request["request_id"], "peer": peer, "ssh": ssh,
+            "duration_seconds": 1.5, "browser_duration_seconds": 1, "apps": {
+                "openclaw": {"origin": "https://" + request["target_dns"], "authentication": "gateway_hello", "rendered": True, "read_rpc": True},
+                "hermes": {"origin": "https://" + request["target_dns"] + ":8443", "authentication": "basic_session", "rendered": True, "gateway_running": True, "version": "fixture"}}}
+        if self.peer_mutation: self.peer_mutation(report)
+        return json.dumps(report).encode()
 
     def test_both_runtime_challenges_are_fresh_single_invocation_and_private(self):
         self.checks.bootstrap()
@@ -203,7 +232,12 @@ class RemoteChecksTest(unittest.TestCase):
     def test_measured_bootstrap_both_doctors_tasks_and_reboot_keep_disk_and_files(self):
         self.baseline()
         self.assertEqual(self.checks.reboot(), {"reboot": "pass", "workspace_files": "preserved", "doctors": "pass"})
+        self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["tailscale.acceptance"], "uncertain")
+        self.checks.network_checks("after_reboot", self.peer_execute)
         evidence = cleanup.private_read(self.checks.path)
+        self.assertEqual(evidence["checks"]["tailscale.acceptance"], "pass")
+        self.assertNotEqual(evidence["network"]["before_reboot"]["request_id"], evidence["network"]["after_reboot"]["request_id"])
+        self.assertEqual(evidence["network"]["after_reboot"]["boot_id"], NEW_BOOT)
         self.assertEqual(evidence["source_revision"], self.prepared["source_revision"])
         self.assertEqual(evidence["baseline"]["boot_id"], BOOT)
         self.assertEqual(evidence["after_reboot"]["boot_id"], NEW_BOOT)
@@ -219,6 +253,116 @@ class RemoteChecksTest(unittest.TestCase):
         model_calls = [call for call in self.calls if "--cli" in shlex.split(call["args"][-1])]
         self.assertEqual(len(model_calls), 2)
         self.assertTrue(all(call["input"] == terraform_fixtures.SECRET.encode() and call["timeout"] == 195 for call in model_calls))
+
+    def test_network_private_inputs_source_nonce_and_evidence_are_scoped(self):
+        self.checks.bootstrap(); self.checks.doctors()
+        proof = self.checks.network_checks("before_reboot", self.peer_execute)
+        self.assertEqual(proof["status"], "pass")
+        _, command, payload = self.peer_calls[0]
+        self.assertIn("python3 -I", command)
+        self.assertNotIn(terraform_fixtures.SECRET, command)
+        self.assertNotIn(payload["ssh"]["private_key"], command)
+        self.assertTrue(payload["browser"]["openclaw_url"].startswith("https://" + PREFIX + ".fixture.ts.net/#"))
+        saved = json.dumps(cleanup.private_read(self.checks.path))
+        self.assertNotIn(terraform_fixtures.SECRET, saved)
+        self.assertNotIn("fake-handoff", saved)
+        self.assertNotIn("BEGIN OPENSSH", saved)
+        self.assertFalse(list(self.attempt.checkout.rglob("__pycache__")))
+        self.session.http.request.assert_called_once()
+
+    def test_missing_peer_transport_refuses_before_secret_collection(self):
+        self.checks.bootstrap(); self.checks.doctors()
+        self.config["runner"].pop("peer_ssh")
+        cleanup.private_write(self.run / "inputs.json", self.config)
+        before = len(self.calls)
+        with self.assertRaisesRegex(terraform.PolicyError, "existing_peer_access_required"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        self.assertEqual(len(self.calls), before)
+        self.session.http.request.assert_not_called()
+        self.assertEqual(self.peer_calls, [])
+
+    def test_network_requires_doctors_correct_boot_stage_and_full_deadline(self):
+        self.checks.bootstrap()
+        with self.assertRaisesRegex(terraform.PolicyError, "runtime_doctor_proof_required"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        self.checks.doctors()
+        with self.assertRaisesRegex(terraform.PolicyError, "network_boot_stage_invalid"):
+            self.checks.network_checks("after_reboot", self.peer_execute)
+        active = self.attempt.active(self.ledger); self.clock = active["work_deadline"] - 749
+        before = len(self.calls)
+        with self.assertRaisesRegex(terraform.PolicyError, "network_check_time_required"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        self.assertEqual(before, len(self.calls))
+        self.assertEqual(self.peer_calls, [])
+
+    def test_revoked_runner_refuses_private_gateway_collection(self):
+        self.checks.bootstrap(); self.checks.doctors()
+        self.session.http.request.return_value["devices"][0]["authorized"] = False
+        with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        self.assertFalse(any(call["input"] == peer_fixtures.peer.VM_SOURCE.encode() for call in self.calls))
+        self.assertEqual(self.peer_calls, [])
+
+    def test_bad_private_handoff_key_or_changed_boot_never_dispatched(self):
+        self.checks.bootstrap(); self.checks.doctors()
+        for changes in ({"browser_url": "https://external.test/#bootstrapToken=secret"}, {"host_public_key": "ssh-ed25519 bad"},
+            {"hermes_password": 0}, {"boot_id": NEW_BOOT}, {"extra": terraform_fixtures.SECRET}):
+            self.private_mutation = lambda raw, changes=changes: raw.update(changes)
+            with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
+                self.checks.network_checks("before_reboot", self.peer_execute)
+            self.assertEqual(self.peer_calls, [])
+            self.assertEqual(cleanup.private_read(self.checks.path)["checks"]["tailscale.acceptance"], "uncertain")
+
+    def test_stale_network_proof_replaces_prior_green_and_blocks_reboot(self):
+        self.baseline()
+        before = cleanup.private_read(self.checks.path)["network"]["before_reboot"]["request_id"]
+        self.peer_mutation = lambda raw: raw.update(request_id=before)
+        with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        saved = cleanup.private_read(self.checks.path)
+        self.assertEqual(saved["network"]["before_reboot"]["status"], "uncertain")
+        self.assertEqual(saved["checks"]["tailscale.acceptance"], "uncertain")
+        with self.assertRaisesRegex(terraform.PolicyError, "peer_baseline_required"):
+            self.checks.reboot()
+
+    def test_changed_initial_boot_invalidates_prior_network_proof_before_peer_dispatch(self):
+        self.baseline()
+        self.boot = NEW_BOOT
+        before = len(self.peer_calls)
+        with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        saved = cleanup.private_read(self.checks.path)
+        self.assertEqual(saved["network"]["before_reboot"]["status"], "uncertain")
+        self.assertEqual(saved["checks"]["tailscale.acceptance"], "uncertain")
+        self.assertEqual(len(self.peer_calls), before)
+        with self.assertRaisesRegex(terraform.PolicyError, "peer_baseline_required"):
+            self.checks.reboot()
+
+    def test_peer_budget_and_boot_are_rechecked_after_collection_and_dispatch(self):
+        self.checks.bootstrap(); self.checks.doctors()
+        work_deadline = self.attempt.active(self.ledger)["work_deadline"]
+        self.private_mutation = lambda raw: setattr(self, 'clock', work_deadline - 249)
+        with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        self.assertEqual(self.peer_calls, [])
+        self.clock, self.private_mutation = NOW, None
+        self.peer_mutation = lambda raw: setattr(self, 'boot', NEW_BOOT)
+        with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
+            self.checks.network_checks("before_reboot", self.peer_execute)
+        self.assertEqual(cleanup.private_read(self.checks.path)["network"]["before_reboot"]["status"], "uncertain")
+
+    def test_secret_reader_failure_stops_and_raw_errors_are_redacted(self):
+        self.checks.bootstrap(); self.checks.doctors()
+        def locked(*args):
+            raise remote.PreflightError('onepassword_unavailable_or_locked')
+        with self.assertRaisesRegex(terraform.PolicyError, '^onepassword_unavailable_or_locked$'):
+            self.checks.network_checks("before_reboot", locked)
+        def raw_error(*args):
+            raise RuntimeError(terraform_fixtures.SECRET)
+        with self.assertRaisesRegex(terraform.PolicyError, '^network_acceptance_failed$') as caught:
+            self.checks.network_checks("before_reboot", raw_error)
+        self.assertNotIn(terraform_fixtures.SECRET, str(caught.exception))
+        self.assertNotIn(terraform_fixtures.SECRET, json.dumps(cleanup.private_read(self.checks.path)))
 
     def test_edited_public_ip_unowned_state_or_modified_source_fail_before_ssh(self):
         self.api_ip = "1.1.1.1"

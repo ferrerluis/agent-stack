@@ -5,6 +5,7 @@ This is a controller component, not a launch/readiness override. Authenticated
 second-peer browser checks are a separate requirement.
 Raw command output and secrets never enter the evidence record.
 """
+import builtins
 import importlib.util
 import ipaddress
 import json
@@ -15,18 +16,21 @@ import secrets
 import shlex
 import stat
 import time
+import types
 import uuid
 
 from showcase_attempt import KEY_PATH, command, isolated_environment, remaining_timeout, verify_prepared
 from showcase_cleanup import capture, private_read, private_write
 from showcase_policy import PolicyError, require
-from showcase_preflight import field, objects, segment
+from showcase_preflight import PreflightError, check_tailnet, field, objects, segment
 from showcase_terraform import exclusive, guard_state
 
 VM_TYPES = {"aws": "aws_instance", "digitalocean": "digitalocean_droplet", "gcp": "google_compute_instance", "hetzner": "hcloud_server"}
 DISK_TYPES = {"aws": "aws_ebs_volume", "digitalocean": "digitalocean_volume", "gcp": "google_compute_disk", "hetzner": "hcloud_volume"}
 DOCTOR_PATH = "skills/agent-stack-doctor/scripts/strict_health.py"
 AGENT_PATH = "scripts/showcase_agents.py"
+PEER_PATH = "scripts/showcase_peer.py"
+BROWSER_PATH = "scripts/showcase_browser.py"
 HOME = "/home/user"
 COMPOSE = ["sudo", "-n", "docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml"]
 WORKSPACE = COMPOSE + ["exec", "-T", "--user", "1000", "-e", "HOME=" + HOME,
@@ -162,6 +166,8 @@ class RemoteChecks:
                 and isinstance(result.get("checks"), dict) and isinstance(result.get("tasks"), dict), "remote_evidence_scope_mismatch")
         result.setdefault("agents", {})
         require(isinstance(result["agents"], dict), "remote_evidence_scope_mismatch")
+        result.setdefault("network", {})
+        require(isinstance(result["network"], dict), "remote_evidence_scope_mismatch")
         return result
 
     def bind(self):
@@ -276,6 +282,83 @@ class RemoteChecks:
         exec(compile(source.read_bytes(), str(source), "exec"), module.__dict__)
         return module
 
+    def peer_module(self):
+        # Resolve these imports from the checked revision, never a different
+        # worktree or personal module path, and create no Python cache files.
+        modules = {}
+        def local_import(name, *args, **kwargs):
+            return modules[name] if name in modules else builtins.__import__(name, *args, **kwargs)
+        for name, path in (("showcase_agents", AGENT_PATH), ("showcase_browser", BROWSER_PATH), ("showcase_peer", PEER_PATH)):
+            source = self.attempt.checkout / path
+            require(source.is_file(), "verified_peer_probe_required")
+            module = types.ModuleType(name)
+            module.__file__ = str(source)
+            module.__dict__["__builtins__"] = {**vars(builtins), "__import__": local_import}
+            exec(compile(source.read_bytes(), str(source), "exec"), module.__dict__)
+            modules[name] = module
+        return modules["showcase_peer"]
+
+    @exclusive
+    def network_checks(self, stage, peer_execute=None):
+        require(stage in ("before_reboot", "after_reboot"), "invalid_network_stage")
+        evidence = self.evidence()
+        required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
+        require(evidence["checks"].get("launch_ssh") == "pass" and
+                all(evidence["checks"].get(key) == "pass" for key in required), "runtime_doctor_proof_required")
+        require((stage == "before_reboot" and "reboot" not in evidence["checks"]) or
+                (stage == "after_reboot" and evidence["checks"].get("reboot") == "pass"), "network_boot_stage_invalid")
+        module = self.peer_module()
+        access = self.config["runner"].get("peer_ssh")
+        try:
+            module.access_valid(access)
+        except module.ProbeError:
+            raise PolicyError("existing_peer_access_required") from None
+        _, active = self.ensure()
+        require(remaining_timeout(active, 750, now=self.now()) == 750, "network_check_time_required")
+        baseline = evidence["baseline"] if stage == "before_reboot" else evidence.get("after_reboot")
+        require(isinstance(baseline, dict), "network_boot_baseline_changed")
+        request_id, nonce = str(uuid.uuid4()), secrets.token_hex(16)
+        evidence["network"][stage] = {"status": "started", "request_id": request_id, "boot_id": baseline["boot_id"], "nonce": nonce}
+        evidence["checks"]["tailscale.acceptance"] = "started"
+        private_write(self.path, evidence)
+        try:
+            target = self.bind()
+            require(self.probe(target) == baseline, "network_boot_baseline_changed")
+            check_tailnet(self.config["tailnet"], self.attempt.session.secret(self.config["tailnet"]["cleanup_key_ref"]),
+                          self.attempt.session.http)
+            raw = module.strict_json(self.ssh(target, ["sudo", "-n", "python3", "-"], input=module.VM_SOURCE.encode(), timeout=120))
+            require(isinstance(raw, dict) and set(raw) == {"schema", "status", "browser_url", "hermes_username", "hermes_password",
+                    "host_public_key", "workspace_public_key", "boot_id"} and type(raw["schema"]) is int and raw["schema"] == 1
+                    and raw["status"] == "pass" and raw["boot_id"] == baseline["boot_id"], "private_peer_inputs_unverified")
+            request = {"schema": 1, "request_id": request_id, "runner_dns": self.config["tailnet"]["runner_dns"],
+                "target_dns": target["dns"], "openclaw_url": module.browser.rebase_handoff(raw["browser_url"], target["dns"]),
+                "hermes_username": raw["hermes_username"], "hermes_password": raw["hermes_password"]}
+            payload = {"browser": request, "ssh": {"nonce": nonce, "boot_id": baseline["boot_id"],
+                "host_public_key": module.public_key(raw["host_public_key"]), "workspace_public_key": module.public_key(raw["workspace_public_key"]),
+                "private_key": (self.attempt.checkout / KEY_PATH).read_text()}}
+            module.payload_valid(payload)
+            command = module.source_command(self.attempt.checkout)
+            # Leave the full peer deadline after collection; never let a stale
+            # preparation window dispatch beyond the attempt's work deadline.
+            require(remaining_timeout(self.ensure()[1], 250, now=self.now()) == 250, "network_check_time_required")
+            if peer_execute is None:
+                reader = self.attempt.session.reader
+                peer_execute = lambda access, command, payload: module.existing_peer_execute(access, command, payload, reader)
+            report = module.strict_json(peer_execute(access, command, payload))
+            proof = module.validate_proof(report, payload)
+            require(self.probe(target) == baseline, "network_boot_baseline_changed")
+            evidence["network"][stage].update(proof)
+            evidence["checks"]["tailscale.acceptance"] = "pass"
+        except BaseException as error:
+            evidence["network"][stage]["status"] = "uncertain"
+            evidence["checks"]["tailscale.acceptance"] = "uncertain"
+            private_write(self.path, evidence)
+            # Collector/browser errors may contain credentials or private URLs.
+            reason = "onepassword_unavailable_or_locked" if isinstance(error, PreflightError) and str(error) == "onepassword_unavailable_or_locked" else "network_acceptance_failed"
+            raise PolicyError(reason) from None
+        private_write(self.path, evidence)
+        return proof
+
     @exclusive
     def runtime_task(self, runtime):
         require(runtime in ("openclaw", "hermes"), "invalid_runtime")
@@ -359,6 +442,7 @@ class RemoteChecks:
         require(isinstance(baseline, dict) and all(cli in evidence["tasks"] and evidence["tasks"][cli].get("status") == "pass"
                 for cli in ("codex", "claude")) and all(evidence["agents"].get(runtime, {}).get("status") == "pass"
                 for runtime in ("openclaw", "hermes")), "persistence_baseline_required")
+        require(evidence["network"].get("before_reboot", {}).get("status") == "pass", "peer_baseline_required")
         require(type(resume) is bool and ((resume and evidence["checks"].get("reboot") in ("started", "uncertain"))
                 or (not resume and "reboot" not in evidence["checks"])), "reboot_already_invoked")
         target = self.bind()
@@ -366,6 +450,9 @@ class RemoteChecks:
             before = self.probe(target)
             require(before == baseline, "persistence_baseline_changed")
         evidence["checks"]["reboot"] = "started"
+        # The previous network proof remains historical, but cannot establish
+        # post-reboot access. Only a fresh second-peer check can restore this.
+        evidence["checks"]["tailscale.acceptance"] = "uncertain"
         private_write(self.path, evidence)
         try:
             if not resume:

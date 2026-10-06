@@ -79,13 +79,25 @@ def validate_inputs(config, provider):
     require(0 < money(config["budget_usd"]) <= 25, "budget_exceeds_approval")
     require(type(config["attempt_seconds"]) is int and 900 < config["attempt_seconds"] <= 14400, "lifetime_exceeds_approval")
     require(type(config["max_attempts"]) is int and 1 <= config["max_attempts"] <= 2, "retries_exceed_approval")
-    object_fields(config["runner"], ("ssh_cidr",))
+    object_fields(config["runner"], ("ssh_cidr",), ("peer_ssh",))
     require(text(config["runner"]["ssh_cidr"]), "runner_ipv4_32_required")
     try:
         cidr = ipaddress.ip_network(config["runner"]["ssh_cidr"], strict=True)
     except (ValueError, TypeError):
         raise PolicyError("runner_ipv4_32_required") from None
     require(cidr.version == 4 and cidr.prefixlen == 32 and not cidr.is_unspecified, "runner_ipv4_32_required")
+    if "peer_ssh" in config["runner"]:
+        peer = config["runner"]["peer_ssh"]
+        object_fields(peer, ("host", "port", "username", "host_public_key", "private_key_ref"))
+        try:
+            address = ipaddress.ip_address(peer["host"])
+            require(not address.is_loopback and not address.is_unspecified and not address.is_multicast, "peer_ssh_input_invalid")
+        except (ValueError, TypeError):
+            raise PolicyError("peer_ssh_input_invalid") from None
+        require(type(peer["port"]) is int and 1 <= peer["port"] <= 65535
+                and isinstance(peer["username"], str) and re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", peer["username"])
+                and isinstance(peer["host_public_key"], str) and re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: [^\r\n]*)?", peer["host_public_key"])
+                and secret_ref(peer["private_key_ref"]), "peer_ssh_input_invalid")
     pins = config["pins"]
     object_fields(pins, ("openclaw_version", "openclaw_digest", "hermes_image", "codex_release", "claude_release"))
     require(isinstance(pins["openclaw_version"], str) and bool(re.fullmatch(r"20[0-9]{2}\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", pins["openclaw_version"])), "immutable_pins_required")

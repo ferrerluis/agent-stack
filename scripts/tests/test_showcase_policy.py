@@ -41,6 +41,22 @@ def quote(provider="aws", hourly="0.10"):
 
 
 class InputTest(unittest.TestCase):
+    def test_optional_existing_peer_structure_uses_only_a_key_reference(self):
+        value = config()
+        value['runner']['peer_ssh'] = {'host': '203.0.113.44', 'port': 22, 'username': 'fixture',
+            'host_public_key': 'ssh-ed25519 YWJj', 'private_key_ref': REF}
+        self.assertEqual(policy.validate_inputs(value, 'aws')['status'], 'inputs_complete')
+        # Structural validation is not the wire-format/identity/access gate.
+        self.assertEqual(policy.validate_inputs(value, 'aws')['live_matrix'], 'not_tested')
+
+    def test_peer_plaintext_key_proxy_command_or_unscoped_endpoint_refused(self):
+        peer = {'host': '203.0.113.44', 'port': 22, 'username': 'fixture',
+            'host_public_key': 'ssh-ed25519 YWJj', 'private_key_ref': REF}
+        for changes in ({'host': '127.0.0.1'}, {'host': 'hostname.test'}, {'port': True}, {'private_key_ref': 'plaintext'},
+            {'username': 'fixture;command'}, {'proxy_command': 'command'}, {'host_public_key': 'private-key'}):
+            value = config(); value['runner']['peer_ssh'] = {**peer, **changes}
+            with self.assertRaises(policy.PolicyError): policy.validate_inputs(value, 'aws')
+
     def test_all_providers_have_nonsecret_structure_but_no_live_pass(self):
         for provider in policy.PROVIDERS:
             report = policy.validate_inputs(config(), provider)

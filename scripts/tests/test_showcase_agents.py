@@ -313,6 +313,12 @@ class HermesRequestTest(unittest.TestCase):
 
 
 class BoundedCommandTest(unittest.TestCase):
+    def test_actual_child_can_receive_only_the_explicit_peer_environment(self):
+        with patch.dict(os.environ, {"AGENT_STACK_FAKE_SECRET": SECRET}):
+            result = agents.invoke([sys.executable, "-c", "import os; assert 'AGENT_STACK_FAKE_SECRET' not in os.environ; print('isolated')"],
+                env={"PATH": "/usr/bin:/bin"})
+        self.assertEqual(result.strip(), b"isolated")
+
     def test_actual_child_output_is_limited_on_both_streams(self):
         for stream in ("stdout", "stderr"):
             with self.assertRaisesRegex(agents.ProbeError, "probe_output_limit"):

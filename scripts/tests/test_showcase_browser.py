@@ -29,7 +29,7 @@ def status():
 
 
 def peer():
-    return {"runner_dns": RUNNER, "target_dns": TARGET, "address": ADDRESS, "traffic": "tailscale_ping", "dns": "matches_peer"}
+    return {"runner_dns": RUNNER, "target_dns": TARGET, "address": ADDRESS, "runner_addresses": ["100.100.1.2"], "traffic": "tailscale_ping", "dns": "matches_peer"}
 
 
 def route(url, method="GET", data=None):
