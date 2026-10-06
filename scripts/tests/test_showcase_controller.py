@@ -177,6 +177,36 @@ class RemoteContainerTest(unittest.TestCase):
 
 
 class FullRunTest(unittest.TestCase):
+    def test_matching_client_and_saved_token_or_answer_claims_cannot_replace_original_provider_evidence(self):
+        value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
+        original = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
+        original_evidence = cleanup.private_read(value.checks.path)
+        for role in ("openclaw", "hermes", "codex", "claude"):
+            for change in ("usage", "proof"):
+                observed, evidence = copy.deepcopy(original), copy.deepcopy(original_evidence)
+                row = evidence["agents" if role in ("openclaw", "hermes") else "tasks"][role]
+                if change == "usage":
+                    row["model_usage"]["output_tokens"] += 1
+                    row["provider_task"]["model_usage"]["output_tokens"] += 1
+                else: row["provider_task"]["requests_sha256"] = "0" * 64
+                for key in observed[role]: observed[role][key] = copy.deepcopy(row[key])
+                with self.assertRaisesRegex(terraform.PolicyError, "model_task_provider_mismatch"):
+                    value.controller.verdict(observed, evidence)
+
+    def test_matching_legacy_completion_receipts_do_not_create_missing_task_answer_proof(self):
+        value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
+        observed = copy.deepcopy(cleanup.private_read(value.controller.path)["acceptance"]["observed"])
+        evidence = cleanup.private_read(value.checks.path)
+        def erase(state):
+            for hold in state["attempts"][0]["model_requests"]: hold["completion"].pop("answer_sha256", None)
+        value.ledger.operate(erase)
+        holds = value.controller.reservation()["model_requests"]
+        for role in ("openclaw", "hermes", "codex", "claude"):
+            observed[role]["gateway_receipt"]["requests"] = [hold for hold in holds if hold["role"] == role]
+            evidence["agents" if role in ("openclaw", "hermes") else "tasks"][role]["gateway_receipt"] = copy.deepcopy(observed[role]["gateway_receipt"])
+        with self.assertRaisesRegex(terraform.PolicyError, "model_task_provider_mismatch"):
+            value.controller.verdict(observed, evidence)
+
     def make(self):
         fixture = remote_fixtures.RemoteChecksTest("runTest")
         fixture.setUp()

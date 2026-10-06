@@ -30,6 +30,43 @@ DISK = "33333333-3333-3333-3333-333333333333"
 
 
 class RemoteChecksTest(unittest.TestCase):
+    def test_stale_provider_answers_fail_all_roles_and_cannot_replay_paid_work(self):
+        for role in ("openclaw", "hermes", "codex", "claude"):
+            fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups)
+            fresh.checks.bootstrap(); fresh.checks.doctors()
+            original = fresh.models.fake_response
+            def stale(role, body, answer=None, usage=None):
+                original(role, body, {**answer, "nonce": "b2" * 16}, usage)
+            fresh.models.fake_response = stale
+            method = fresh.checks.runtime_task if role in ("openclaw", "hermes") else fresh.checks.workspace_task
+            with self.assertRaisesRegex(terraform.PolicyError, "model_task_provider_mismatch"): method(role)
+            evidence = cleanup.private_read(fresh.checks.path)
+            self.assertEqual(evidence["agents" if role in ("openclaw", "hermes") else "tasks"][role]["status"], "uncertain")
+            self.assertEqual(fresh.models.state, "closed")
+            holds = fresh.ledger.operate(fresh.models.spend.account)["model_requests"]
+            self.assertEqual(len(holds), 1); self.assertEqual(holds[0]["status"], "response_received")
+            before = len(fresh.calls)
+            with self.assertRaises(terraform.PolicyError): method(role)
+            self.assertEqual(len(fresh.calls), before)
+
+    def test_native_token_mismatch_seals_runtime_and_coding_tasks(self):
+        for role in ("openclaw", "hermes", "codex", "claude"):
+            fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups)
+            fresh.checks.bootstrap(); fresh.checks.doctors()
+            def changed(report): report["model_usage"]["cache_read_tokens"] += 1
+            if role in ("openclaw", "hermes"): fresh.agent_mutation = changed
+            else: fresh.task_mutation = changed
+            method = fresh.checks.runtime_task if role in ("openclaw", "hermes") else fresh.checks.workspace_task
+            with self.assertRaisesRegex(terraform.PolicyError, "model_task_provider_mismatch"): method(role)
+            self.assertEqual(fresh.models.state, "closed")
+
+    def test_independent_file_answer_hash_must_match_controller_challenge(self):
+        self.checks.bootstrap()
+        self.file_mutation = lambda report: report.update(answer_sha256="0" * 64)
+        with self.assertRaisesRegex(terraform.PolicyError, "workspace_file_verification_failed"):
+            self.checks.workspace_task("codex")
+        self.assertEqual(self.models.state, "closed")
+
     def setUp(self):
         self.fixture = preparation_fixtures.PreparationTest("runTest")
         self.fixture.setUp()
@@ -125,12 +162,13 @@ class RemoteChecksTest(unittest.TestCase):
         if input == (ROOT / remote.AGENT_PATH).read_bytes():
             _, _, _, _, runtime, model, request_id, challenge_json = words
             challenge = json.loads(challenge_json)
-            self.models.fake_response(runtime, challenge_json.encode())
+            answer = {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}
+            usage = {"input_tokens": 30, "output_tokens": 25, "cache_read_tokens": 0, "cache_write_tokens": 0}
+            self.models.fake_response(runtime, challenge_json.encode(), answer, usage)
             report = {"schema": 1, "status": "pass", "runtime": runtime, "served_model": model,
                 "request_id": request_id, "watchdog": "disarmed", "duration_seconds": 1.25,
                 "transport": "gateway_rpc" if runtime == "openclaw" else "api_runs",
-                "answer": {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]},
-                "model_usage": {"input_tokens": 30, "output_tokens": 25, "cache_read_tokens": 0, "cache_write_tokens": 0}}
+                "answer": answer, "model_usage": usage}
             if self.agent_mutation:
                 self.agent_mutation(report)
             return json.dumps(report).encode()
@@ -139,10 +177,15 @@ class RemoteChecksTest(unittest.TestCase):
             bundle = json.loads(input)
             self.assertIn("--model-gateway", words)
             self.assertEqual(bundle["base_url"], PRIVATE_ROUTE + cli)
-            self.models.fake_response(cli, input)
+            challenge = json.loads(words[words.index("--challenge") + 1])
+            answer = {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}
+            if not hasattr(self, "workspace_challenges"): self.workspace_challenges = {}
+            self.workspace_challenges[cli] = challenge
+            usage = {"input_tokens": 30, "output_tokens": 20, "cache_read_tokens": 0, "cache_write_tokens": 0}
+            self.models.fake_response(cli, input, answer, usage)
             report = {"schema": 1, "cli": cli, "status": "pass", "verified": True,
-                "model_usage": {"input_tokens": 30, "output_tokens": 20}, "fixture": ".agent-stack/acceptance/" + cli + "-fresh0001",
-                "input_sha256": ("b" if cli == "codex" else "c") * 64, "duration_seconds": 1.25,
+                "model_usage": usage, "fixture": ".agent-stack/acceptance/" + cli + "-fresh0001",
+                "input_sha256": remote.task_evidence.input_hash(challenge), "duration_seconds": 1.25,
                 "model_route": {"kind": "budget_gateway", "role": cli, "provider": bundle["provider"],
                                 "base_url_sha256": hashlib.sha256(bundle["base_url"].encode()).hexdigest()}}
             if self.task_mutation:
@@ -151,8 +194,12 @@ class RemoteChecksTest(unittest.TestCase):
         if remote.VERIFY_FILES in words:
             if self.fail_verifier:
                 raise terraform.PolicyError("command_failed")
-            digest = ("d" if "codex-" in words[-2] else "e") * 64
-            report = {"schema": 1, "status": "pass", "uid": 1000, "input_sha256": words[-1], "result_sha256": digest}
+            cli = "codex" if "codex-" in words[-2] else "claude"
+            challenge = self.workspace_challenges[cli]
+            answer = {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}
+            digest = hashlib.sha256(json.dumps(answer).encode()).hexdigest()
+            report = {"schema": 1, "status": "pass", "uid": 1000, "input_sha256": words[-1], "result_sha256": digest,
+                      "answer_sha256": remote.task_evidence.expected_answer(challenge)}
             if self.file_mutation:
                 self.file_mutation(report)
             return json.dumps(report).encode()
@@ -521,6 +568,30 @@ class AddressTest(unittest.TestCase):
 
 @unittest.skipUnless(os.geteuid() == 1000, "independent workspace file verifier runs as UID 1000")
 class FileVerifierTest(unittest.TestCase):
+    def test_actual_verifier_rejects_duplicate_nonfinite_or_ambiguous_files_and_hashes_canonical_answer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp); fixture = ".agent-stack/acceptance/codex-fresh0001"
+            directory = home / fixture; directory.mkdir(parents=True)
+            source, result = directory / "input.json", directory / "result.json"
+            challenge = {"lhs": 17, "rhs": 26, "nonce": "a1" * 16}
+            answer = {"sum": 43, "nonce": challenge["nonce"]}
+            source.write_text(json.dumps(challenge, sort_keys=True, separators=(",", ":")))
+            code = remote.VERIFY_FILES.replace("/home/user", temp)
+            def invoke():
+                return subprocess.run([sys.executable, "-c", code, fixture, hashlib.sha256(source.read_bytes()).hexdigest()],
+                                      env={**os.environ, "HOME": temp}, capture_output=True, timeout=10)
+            for text in (json.dumps(answer), json.dumps(answer, sort_keys=True, separators=(",", ":"))):
+                result.write_text(text)
+                report = json.loads(invoke().stdout)
+                self.assertEqual(report["answer_sha256"], remote.task_evidence.expected_answer(challenge))
+                self.assertEqual(report["result_sha256"], hashlib.sha256(text.encode()).hexdigest())
+            text = json.dumps(answer)
+            for invalid in (text[:-1] + ',"sum":43}', text.replace('43', 'NaN'), text[:-1] + ',"extra":1}', text.replace('43', 'true')):
+                result.write_text(invalid); self.assertEqual(invoke().returncode, 1)
+            result.write_text(text)
+            source.write_text(json.dumps(challenge)[:-1] + ',"lhs":17}')
+            self.assertEqual(invoke().returncode, 1)
+
     def test_actual_verifier_checks_nonce_sum_input_hash_and_regular_owned_files(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)

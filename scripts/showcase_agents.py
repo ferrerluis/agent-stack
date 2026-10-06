@@ -70,10 +70,13 @@ def usage_counts(raw, names):
     need(isinstance(raw, dict), "usage_not_verified")
     result = {}
     for key, name in names.items():
-        value = raw.get(name, 0) if key.startswith("cache_") else raw.get(name)
+        # OpenClaw omits zero input/cache buckets from its aggregate report.
+        # Positive context and exact provider totals are still required.
+        value = raw.get(name) if key == "output_tokens" else raw.get(name, 0)
         need(type(value) is int and 0 <= value <= 1000000000, "usage_not_verified")
         result[key] = value
-    need(result["input_tokens"] > 0 and result["output_tokens"] > 0, "usage_not_verified")
+    need(result["input_tokens"] + result["cache_read_tokens"] + result["cache_write_tokens"] > 0
+         and result["output_tokens"] > 0, "usage_not_verified")
     return result
 
 

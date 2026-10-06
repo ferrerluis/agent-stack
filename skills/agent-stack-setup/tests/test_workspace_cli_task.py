@@ -30,6 +30,59 @@ def owned_home(home):
 
 
 class WorkspaceTaskTest(unittest.TestCase):
+    def test_controller_challenge_is_written_exactly_before_native_execution(self):
+        challenge = {"lhs": 17, "rhs": 26, "nonce": "a1" * 16}
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), owned_home(home):
+            def invoke(args, directory, env, timeout):
+                self.assertEqual((directory / "input.json").read_text(), json.dumps(challenge, sort_keys=True, separators=(",", ":")))
+                self.assertIn("reply with only the same JSON object", args[-1])
+                (directory / "result.json").write_text(json.dumps({"sum": 43, "nonce": challenge["nonce"]}))
+                return 0, self.good_output("codex")
+            with patch.object(task, "invoke", side_effect=invoke), patch.object(task.secrets, "randbelow", side_effect=AssertionError("controller challenge must be used")):
+                result = task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True, challenge=challenge)
+            self.assertEqual(result["status"], "pass")
+            import hashlib
+            self.assertEqual(result["input_sha256"], hashlib.sha256(json.dumps(challenge, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+
+    def test_invalid_controller_challenges_refuse_before_files_or_execution(self):
+        original = {"lhs": 17, "rhs": 26, "nonce": "a1" * 16}
+        with patch.object(task.os, "geteuid", return_value=1000), patch.object(task, "invoke") as invoke, patch.object(task, "Path") as paths:
+            for change in ({"lhs": True}, {"rhs": 1000000}, {"lhs": -1}, {"nonce": "stale"}, {"extra": 1}):
+                result = task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True, challenge=original | change)
+                self.assertEqual(result["reason"], "invalid_task_challenge")
+            invoke.assert_not_called(); paths.assert_not_called()
+
+    def test_native_cache_counts_are_preserved_separately_for_both_tools(self):
+        for cli in ("codex", "claude"):
+            value = json.loads(self.good_output(cli))
+            value["usage"].update({"cached_input_tokens" if cli == "codex" else "cache_read_input_tokens": 12,
+                                   "cache_write_input_tokens" if cli == "codex" else "cache_creation_input_tokens": 5})
+            self.assertEqual(task.model_usage(cli, json.dumps(value)), {"input_tokens": 30, "output_tokens": 20, "cache_read_tokens": 12, "cache_write_tokens": 5})
+
+    def test_duplicate_nonfinite_boolean_or_unbounded_native_usage_cannot_pass(self):
+        for cli in ("codex", "claude"):
+            raw = self.good_output(cli)
+            for changed in (raw.replace('"input_tokens": 30', '"input_tokens": 30, "input_tokens": 30'),
+                            raw.replace('"output_tokens": 20', '"output_tokens": NaN'),
+                            raw.replace('"output_tokens": 20', '"output_tokens": true'),
+                            raw.replace('"output_tokens": 20', '"output_tokens": 1000000001')):
+                self.assertIsNone(task.model_usage(cli, changed))
+            cache = "cached_input_tokens" if cli == "codex" else "cache_read_input_tokens"
+            value = json.loads(raw); value["usage"][cache] = True
+            self.assertIsNone(task.model_usage(cli, json.dumps(value)))
+
+    def test_duplicate_extra_or_nonfinite_saved_answers_are_rejected(self):
+        challenge = {"lhs": 17, "rhs": 26, "nonce": "a1" * 16}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); (root / "input.json").write_text(json.dumps(challenge))
+            text = json.dumps({"sum": 43, "nonce": challenge["nonce"]})
+            for raw in (text[:-1] + ',"sum":43}', text[:-1] + ',"extra":1}', text.replace('43', 'NaN')):
+                (root / "result.json").write_text(raw)
+                self.assertFalse(task.verify_result(root, challenge))
+            (root / "result.json").write_text(text)
+            (root / "input.json").write_text(json.dumps(challenge)[:-1] + ',"lhs":17}')
+            self.assertFalse(task.verify_result(root, challenge))
+
     def bundle(self, cli="codex", host="127.0.0.1"):
         return {"role": cli, "provider": "openai" if cli == "codex" else "anthropic",
                 "base_url": "http://" + host + ":12345/" + cli, "credential": "a" * 64}
@@ -42,7 +95,8 @@ class WorkspaceTaskTest(unittest.TestCase):
 
     def test_model_usage_requires_successful_real_task_events(self):
         for cli in ("codex", "claude"):
-            self.assertEqual(task.model_usage(cli, self.good_output(cli)), {"input_tokens": 30, "output_tokens": 20})
+            self.assertEqual(task.model_usage(cli, self.good_output(cli)), {"input_tokens": 30, "output_tokens": 20,
+                                                                         "cache_read_tokens": 0, "cache_write_tokens": 0})
             for output in ("", "done", "[]", "{}", '{"usage":{"input_tokens":30,"output_tokens":20}}'):
                 self.assertIsNone(task.model_usage(cli, output))
         self.assertIsNone(task.model_usage("codex", '{"type":"turn.failed"}\n' + self.good_output("codex")))

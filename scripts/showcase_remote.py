@@ -25,6 +25,7 @@ from showcase_cleanup import capture, private_read, private_write
 from showcase_policy import PolicyError, require
 from showcase_preflight import PreflightError, check_tailnet, field, objects, segment
 from showcase_terraform import exclusive, guard_state
+import showcase_task_evidence as task_evidence
 
 VM_TYPES = {"aws": "aws_instance", "digitalocean": "digitalocean_droplet", "gcp": "google_compute_instance", "hetzner": "hcloud_server"}
 DISK_TYPES = {"aws": "aws_ebs_volume", "digitalocean": "digitalocean_volume", "gcp": "google_compute_disk", "hetzner": "hcloud_volume"}
@@ -69,6 +70,16 @@ print(json.dumps(report))
 sys.exit(0 if report['status']=='pass' else 1)
 """
 VERIFY_FILES = """import hashlib,json,os,pathlib,re,sys
+def unique(pairs):
+    value={}
+    for key,item in pairs:
+        assert key not in value
+        value[key]=item
+    return value
+def constant(_):
+    raise ValueError('invalid_json')
+def decoded(raw):
+    return json.loads(raw,object_pairs_hook=unique,parse_constant=constant)
 try:
     assert os.geteuid()==1000 and os.environ['HOME']=='/home/user'
     home=pathlib.Path('/home/user')
@@ -80,12 +91,13 @@ try:
     assert all(p.is_file() and not p.is_symlink() and p.stat().st_uid==1000 and p.stat().st_nlink==1 and p.stat().st_size<=4096 for p in paths)
     before=paths[0].read_bytes(); result=paths[1].read_bytes()
     assert hashlib.sha256(before).hexdigest()==sys.argv[2]
-    challenge=json.loads(before); actual=json.loads(result)
+    challenge=decoded(before); actual=decoded(result)
     assert set(challenge)=={'lhs','rhs','nonce'} and set(actual)=={'sum','nonce'}
     assert all(type(challenge[k]) is int and 0<=challenge[k]<1000000 for k in ('lhs','rhs'))
     assert re.fullmatch(r'[a-f0-9]{32}',challenge['nonce'])
     assert type(actual['sum']) is int and actual['sum']==challenge['lhs']+challenge['rhs'] and actual['nonce']==challenge['nonce']
-    report={'schema':1,'status':'pass','uid':1000,'input_sha256':hashlib.sha256(before).hexdigest(),'result_sha256':hashlib.sha256(result).hexdigest()}
+    report={'schema':1,'status':'pass','uid':1000,'input_sha256':hashlib.sha256(before).hexdigest(),'result_sha256':hashlib.sha256(result).hexdigest(),
+            'answer_sha256':hashlib.sha256(json.dumps(actual,sort_keys=True).encode()).hexdigest()}
 except Exception:
     report={'schema':1,'status':'fail'}
 print(json.dumps(report))
@@ -326,11 +338,22 @@ class RemoteChecks:
         return proof
 
     def verify_files(self, target, task):
+        try:
+            require(task["input_sha256"] == task_evidence.input_hash(task["challenge"])
+                    and task["answer_sha256"] == task_evidence.expected_answer(task["challenge"]), "workspace_file_verification_failed")
+        except (ValueError, TypeError, KeyError):
+            raise PolicyError("workspace_file_verification_failed") from None
         report = decoded(self.ssh(target, WORKSPACE + ["python3", "-c", VERIFY_FILES, task["fixture"], task["input_sha256"]]))
         require(report.get("status") == "pass" and type(report.get("uid")) is int and report["uid"] == 1000
                 and report.get("input_sha256") == task["input_sha256"] and isinstance(report.get("result_sha256"), str)
-                and re.fullmatch(HEX, report["result_sha256"]), "workspace_file_verification_failed")
+                and re.fullmatch(HEX, report["result_sha256"]) and report.get("answer_sha256") == task["answer_sha256"], "workspace_file_verification_failed")
         return report["result_sha256"]
+
+    def correlate_task(self, role, challenge, usage, receipt):
+        try:
+            return task_evidence.correlate(role, challenge, usage, receipt["requests"], self.models.policy["roles"][role])
+        except (ValueError, TypeError, KeyError, IndexError):
+            raise PolicyError("model_task_provider_mismatch") from None
 
     def agent_module(self):
         source = self.attempt.checkout / AGENT_PATH
@@ -447,6 +470,7 @@ class RemoteChecks:
             except module.ProbeError:
                 raise PolicyError("runtime_task_failed") from None
             proof["gateway_receipt"] = self.models.task_receipt(runtime, start)
+            proof["provider_task"] = self.correlate_task(runtime, challenge, proof["model_usage"], proof["gateway_receipt"])
             evidence = self.evidence()
             evidence["agents"][runtime].update(proof)
             evidence["checks"][runtime + ".agent_turn"] = "pass"
@@ -477,27 +501,32 @@ class RemoteChecks:
         require(isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", model), "model_ids_required")
         # Persist before secret retrieval/SSH: timeout or process loss cannot
         # silently repeat paid work inside the same attempt.
-        evidence["tasks"][cli] = {"status": "started", "model": model}
+        challenge = {"lhs": secrets.randbelow(1000000), "rhs": secrets.randbelow(1000000), "nonce": secrets.token_hex(16)}
+        evidence["tasks"][cli] = {"status": "started", "model": model, "challenge": challenge}
         private_write(self.path, evidence)
         try:
             bundle = self.models.workspace_client(cli)
             start = self.models.begin_task(cli)
             report = decoded(self.ssh(target, WORKSPACE + ["python3", "/usr/local/libexec/agent-stack-workspace-cli-task",
-                "--cli", cli, "--model", model, "--timeout", "180", "--model-gateway"], input=json.dumps(bundle).encode(), timeout=195))
+                "--cli", cli, "--model", model, "--timeout", "180", "--model-gateway", "--challenge",
+                json.dumps(challenge, sort_keys=True, separators=(",", ":"))], input=json.dumps(bundle).encode(), timeout=195))
             usage, fixture, digest = report.get("model_usage"), report.get("fixture"), report.get("input_sha256")
             duration = report.get("duration_seconds")
             require(report.get("cli") == cli and report.get("status") == "pass" and report.get("verified") is True
-                    and isinstance(usage, dict) and all(type(usage.get(k)) is int and usage[k] >= 0 for k in ("input_tokens", "output_tokens"))
+                    and isinstance(usage, dict) and set(usage) == task_evidence.COUNTS
+                    and all(type(usage.get(k)) is int and 0 <= usage[k] <= 1000000000 for k in task_evidence.COUNTS)
                     and usage["output_tokens"] > 0 and isinstance(fixture, str)
                     and re.fullmatch(r"\.agent-stack/acceptance/" + cli + r"-[a-z0-9_]{1,64}", fixture)
-                    and isinstance(digest, str) and re.fullmatch(HEX, digest)
+                    and digest == task_evidence.input_hash(challenge)
                     and type(duration) in (int, float) and math.isfinite(duration) and 0 <= duration <= 190, "workspace_task_failed")
             require(report.get("model_route") == {"kind": "budget_gateway", "role": cli, "provider": bundle["provider"],
                     "base_url_sha256": hashlib.sha256(bundle["base_url"].encode()).hexdigest()}, "workspace_model_route_unverified")
             task = {"status": "pass", "model": model, "fixture": fixture, "input_sha256": digest,
-                    "model_usage": {k: usage[k] for k in ("input_tokens", "output_tokens")}, "duration_seconds": duration}
+                    "challenge": challenge, "answer_sha256": task_evidence.expected_answer(challenge),
+                    "model_usage": dict(usage), "duration_seconds": duration}
             task["result_sha256"] = self.verify_files(target, task)
             task["gateway_receipt"] = self.models.task_receipt(cli, start)
+            task["provider_task"] = self.correlate_task(cli, challenge, usage, task["gateway_receipt"])
             evidence = self.evidence()
             evidence["tasks"][cli] = task
             evidence["checks"]["workspace." + cli + ".execution"] = "pass"

@@ -33,6 +33,18 @@ def response(runtime):
 
 
 class AgentProofTest(unittest.TestCase):
+    def test_zero_or_omitted_uncached_input_requires_positive_cache_and_output(self):
+        for runtime in ("openclaw", "hermes"):
+            for omitted in (False, True):
+                raw = response(runtime)
+                usage = raw["result"]["meta"]["agentMeta"]["usage"] if runtime == "openclaw" else raw["usage"]
+                names = ("input", "cacheRead", "cacheWrite") if runtime == "openclaw" else ("input_tokens", "cache_read_tokens", "cache_write_tokens")
+                usage.update(dict(zip(names, (0, 30, 0))))
+                if omitted: usage.pop(names[0])
+                self.assertEqual(self.proof(runtime, raw)["model_usage"]["input_tokens"], 0)
+                usage[names[1]] = 0
+                with self.assertRaisesRegex(agents.ProbeError, "usage_not_verified"): self.proof(runtime, raw)
+
     def proof(self, runtime, raw=None):
         return agents.parse_turn(runtime, raw or response(runtime), MODEL, CHALLENGE, ID, RUN)
 

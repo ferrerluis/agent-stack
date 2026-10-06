@@ -30,6 +30,22 @@ def hashed(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def answer_hash(value):
+    """Hash only the exact task answer shape, never arbitrary model text."""
+    check(isinstance(value, dict) and set(value) == {"sum", "nonce"})
+    integer(value["sum"], 1999998)
+    check(isinstance(value["nonce"], str) and re.fullmatch(r"[a-f0-9]{32}", value["nonce"]))
+    return hashed(json.dumps(value, sort_keys=True))
+
+
+def selected_answer(text, kind):
+    if kind != "text": return None
+    try:
+        return answer_hash(decoded(text))
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        return None
+
+
 def decoded(raw):
     def unique(pairs):
         value = {}
@@ -94,7 +110,10 @@ def usage(value, api):
 
 def validate_proof(value, terms):
     """Also used when reopening the original ledger; old HTTP holds stay old."""
-    check(isinstance(value, dict) and set(value) == FIELDS and type(value["schema"]) is int and value["schema"] == 1)
+    # Existing completion evidence remains readable for cleanup, but an old
+    # proof cannot establish an answer it never recorded.
+    check(isinstance(value, dict) and set(value) in (FIELDS, FIELDS | {"answer_sha256"})
+          and type(value["schema"]) is int and value["schema"] == 1)
     check(value["provider"] == terms["provider"] and value["model"] == terms["model"])
     api = value["api"]
     check(isinstance(api, str) and api in APIS.values()
@@ -114,6 +133,8 @@ def validate_proof(value, terms):
         check(counts["context_tokens"] == counts["input_tokens"] and counts["cache_read_input_tokens"] <= counts["input_tokens"]
               and counts["cache_creation_input_tokens"] <= counts["input_tokens"])
     check(value["kind"] != "text" or value["text_sha256"] != hashed(""))
+    answer = value.get("answer_sha256")
+    check(answer is None or value["kind"] == "text" and isinstance(answer, str) and re.fullmatch(r"[a-f0-9]{64}", answer))
 
 
 def tool(name, arguments, allowed):
@@ -380,7 +401,7 @@ def completion(provider, model, path, content_type, raw, request, terms):
         check(counts["output_tokens"] <= limit)
         proof = {"schema": 1, "provider": provider, "model": model, "api": api, "finish": finish, "kind": kind,
                  "response_id_sha256": hashed(value["id"]), "body_sha256": hashlib.sha256(raw).hexdigest(),
-                 "text_sha256": hashed(text), "usage": counts}
+                 "text_sha256": hashed(text), "answer_sha256": selected_answer(text, kind), "usage": counts}
         validate_proof(proof, terms)
         return proof
     except (ValueError, TypeError, KeyError, IndexError, AttributeError, UnicodeError, RecursionError):

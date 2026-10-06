@@ -13,7 +13,26 @@ import sys
 import tempfile
 import time
 
-PROMPT = "Read input.json. Write result.json containing the integer sum of lhs and rhs as sum, and the unchanged nonce as nonce. Then report completion."
+PROMPT = "Read input.json. Write result.json containing only the integer sum of lhs and rhs as sum, and the unchanged nonce as nonce. Then reply with only the same JSON object."
+
+
+def strict_json(raw):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value: raise ValueError("duplicate_json_field")
+            value[key] = item
+        return value
+    def constant(_):
+        raise ValueError("invalid_json_number")
+    return json.loads(raw, object_pairs_hook=unique, parse_constant=constant)
+
+
+def challenge_valid(value):
+    if (not isinstance(value, dict) or set(value) != {"lhs", "rhs", "nonce"}
+            or any(type(value[key]) is not int or not 0 <= value[key] < 1000000 for key in ("lhs", "rhs"))
+            or not isinstance(value["nonce"], str) or re.fullmatch(r"[a-f0-9]{32}", value["nonce"]) is None):
+        raise ValueError("invalid_task_challenge")
 
 
 def verify_result(directory, challenge):
@@ -22,17 +41,19 @@ def verify_result(directory, challenge):
     if not output.is_file() or output.is_symlink() or output.stat().st_nlink != 1 or output.stat().st_size > 4096:
         return False
     try:
-        actual = json.loads(output.read_text())
-        unchanged = json.loads((directory / "input.json").read_text()) == challenge
-        return unchanged and isinstance(actual, dict) and type(actual.get("sum")) is int and actual["sum"] == challenge["lhs"] + challenge["rhs"] and actual.get("nonce") == challenge["nonce"]
-    except (OSError, ValueError):
+        actual = strict_json(output.read_text())
+        unchanged = strict_json((directory / "input.json").read_text()) == challenge
+        return unchanged and isinstance(actual, dict) and set(actual) == {"sum", "nonce"} and type(actual.get("sum")) is int and actual["sum"] == challenge["lhs"] + challenge["rhs"] and actual.get("nonce") == challenge["nonce"]
+    except (OSError, ValueError, TypeError, RecursionError):
         return False
 
 
 def model_usage(cli, output):
     try:
+        if cli not in ("codex", "claude") or not isinstance(output, str) or len(output.encode()) > 4 * 1024 * 1024:
+            return None
         if cli == "codex":
-            events = [json.loads(line) for line in output.splitlines() if line.strip()]
+            events = [strict_json(line) for line in output.splitlines() if line.strip()]
             if any(not isinstance(event, dict) or event.get("type") in ("error", "turn.failed") for event in events):
                 return None
             completed = [event for event in events if event.get("type") == "turn.completed"]
@@ -40,17 +61,19 @@ def model_usage(cli, output):
                 return None
             usage = completed[0].get("usage")
         else:
-            report = json.loads(output)
+            report = strict_json(output)
             if not isinstance(report, dict) or report.get("type") != "result" or report.get("subtype") != "success" or report.get("is_error") is not False or report.get("permission_denials"):
                 return None
             usage = report.get("usage")
         if not isinstance(usage, dict):
             return None
         counts = {name: usage.get(name) for name in ("input_tokens", "output_tokens")}
-        if any(type(value) is not int or value < 0 for value in counts.values()) or counts["output_tokens"] == 0:
+        counts["cache_read_tokens"] = usage.get("cached_input_tokens" if cli == "codex" else "cache_read_input_tokens", 0)
+        counts["cache_write_tokens"] = usage.get("cache_write_input_tokens" if cli == "codex" else "cache_creation_input_tokens", 0)
+        if any(type(value) is not int or not 0 <= value <= 1000000000 for value in counts.values()) or counts["output_tokens"] == 0:
             return None
         return counts
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         return None
 
 
@@ -143,10 +166,15 @@ def invoke(command_args, directory, env, timeout):
         return 124, ""
 
 
-def run_task(cli, model, api_key, timeout, model_gateway=False):
+def run_task(cli, model, api_key, timeout, model_gateway=False, challenge=None):
     failed = {"schema": 1, "cli": cli, "status": "fail"}
     if os.geteuid() != 1000:
         return {**failed, "reason": "workspace_user_required"}
+    if challenge is not None:
+        try:
+            challenge_valid(challenge)
+        except (ValueError, TypeError):
+            return {**failed, "reason": "invalid_task_challenge"}
     gateway = None
     if model_gateway:
         try:
@@ -161,9 +189,10 @@ def run_task(cli, model, api_key, timeout, model_gateway=False):
     root = home / ".agent-stack/acceptance"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory = Path(tempfile.mkdtemp(prefix=cli + "-", dir=root))
-    challenge = {"lhs": secrets.randbelow(1000000), "rhs": secrets.randbelow(1000000), "nonce": secrets.token_hex(16)}
+    if challenge is None:
+        challenge = {"lhs": secrets.randbelow(1000000), "rhs": secrets.randbelow(1000000), "nonce": secrets.token_hex(16)}
     input_file = directory / "input.json"
-    input_file.write_text(json.dumps(challenge))
+    input_file.write_text(json.dumps(challenge, sort_keys=True, separators=(",", ":")))
     input_file.chmod(0o600)
     env = dict(os.environ)
     # Authentication for one CLI cannot accidentally fall back to another tool.
@@ -200,14 +229,17 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--model-gateway", action="store_true", help="read a private local role bundle from stdin instead of an API key")
+    parser.add_argument("--challenge", help="fresh, public controller-issued task JSON")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,199}", args.model) or not 1 <= args.timeout <= 180:
         parser.error("select a model ID and a timeout between 1 and 180 seconds")
     os.umask(0o077)
     api_key = sys.stdin.read(65537).strip()
     try:
-        result = run_task(args.cli, args.model, api_key, args.timeout, model_gateway=args.model_gateway)
-    except (OSError, ValueError, KeyError):
+        challenge = strict_json(args.challenge) if args.challenge is not None and len(args.challenge) <= 4096 else None
+        if args.challenge is not None and challenge is None: raise ValueError("invalid_task_challenge")
+        result = run_task(args.cli, args.model, api_key, args.timeout, model_gateway=args.model_gateway, challenge=challenge)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         result = {"schema": 1, "cli": args.cli, "status": "fail", "reason": "task_unavailable"}
     print(json.dumps(result))
     return 0 if result["status"] == "pass" else 1

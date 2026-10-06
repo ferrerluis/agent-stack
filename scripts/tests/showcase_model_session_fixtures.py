@@ -83,15 +83,24 @@ class FixtureSession(session.ModelSession):
         self.fixture_start()
         return super().workspace_client(role)
 
-    def fake_response(self, role, body):
+    def fake_response(self, role, body, answer=None, usage=None):
         # The fake SSH/model task admits a real durable hold, with no key
         # retrieval or network. Production never calls this test-only method.
         sha = hashlib.sha256(body).hexdigest()
         self.spend.reserve(role, sha, 60)
         row = self.policy["roles"][role]
         api = "messages" if row["provider"] == "anthropic" else "responses"
-        value = completions.response(api, response_id="fixture_" + role + "_" + sha)
+        value = completions.response(api, text=json.dumps(answer) if answer is not None else "fixture final answer",
+                                     response_id="fixture_" + role + "_" + sha)
         value["model"] = row["model"]
+        if usage is not None:
+            if api == "messages":
+                value["usage"] = {"input_tokens": usage["input_tokens"], "output_tokens": usage["output_tokens"],
+                                  "cache_read_input_tokens": usage["cache_read_tokens"], "cache_creation_input_tokens": usage["cache_write_tokens"]}
+            else:
+                inp = usage["input_tokens"] + (usage["cache_read_tokens"] + usage["cache_write_tokens"] if role != "codex" else 0)
+                value["usage"] = {"input_tokens": inp, "output_tokens": usage["output_tokens"], "total_tokens": inp + usage["output_tokens"],
+                                  "input_tokens_details": {"cached_tokens": usage["cache_read_tokens"], "cache_write_tokens": usage["cache_write_tokens"]}}
         path = "/v1/messages" if api == "messages" else "/v1/responses"
         request = {"stream": False, "max_tokens" if api == "messages" else "max_output_tokens": row["output_tokens_upper_bound"]}
         proof = completion.completion(row["provider"], row["model"], path, "application/json", completions.encoded(value), request, row)

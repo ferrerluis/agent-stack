@@ -24,6 +24,7 @@ from showcase_policy import PolicyError, Reservations
 from test_showcase_policy import config, quote, NOW
 import test_showcase_model_spend as fixtures
 import showcase_model_completion_fixtures as completions
+import showcase_task_evidence as task_evidence
 
 PRIVATE = "fixture-upstream-key-never-to-client-or-output"
 RUN = "as7-fixture01"
@@ -181,9 +182,14 @@ else:
     body = {"model": model, "messages": [{"role": "user", "content": challenge}], "max_tokens": 4096}
 request = urllib.request.Request(endpoint, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "Authorization": "Bearer " + credential})
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-with opener.open(request, timeout=5) as response: answer = json.loads(response.read())["answer"]
+with opener.open(request, timeout=5) as response: value = json.loads(response.read())
+text = value["output"][0]["content"][0]["text"] if cli == "codex" else value["content"][0]["text"]
+answer = json.loads(text)
 pathlib.Path("result.json").write_text(json.dumps(answer))
-usage = {"input_tokens": 30, "output_tokens": 20}
+usage = value["usage"]
+if cli == "codex":
+    usage = {"input_tokens": usage["input_tokens"], "output_tokens": usage["output_tokens"],
+             "cached_input_tokens": usage["input_tokens_details"]["cached_tokens"]}
 print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" else {"type": "result", "subtype": "success", "is_error": False, "usage": usage}))
 '''
         for cli in ("codex", "claude"):
@@ -193,7 +199,11 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
             raw = payload["input"] if request.full_url.endswith("/responses") else payload["messages"][0]["content"]
             challenge = json.loads(raw)
             self.assertEqual(payload.get("max_output_tokens", payload.get("max_tokens")), 128)
-            return Response([json.dumps({"answer": {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}}).encode()])
+            answer = {"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}
+            value = completions.response("responses" if request.full_url.endswith("/responses") else "messages",
+                                         text=json.dumps(answer), response_id="resp_" + task_evidence.input_hash(challenge))
+            value["model"] = payload["model"]
+            return Response([completions.encoded(value)])
         self.opener.open.side_effect = upstream
         original_stat = Path.stat
         def stat(path, *args, **kwargs):
@@ -206,11 +216,18 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
              patch.object(task.os, "geteuid", return_value=1000), patch.object(Path, "stat", stat):
             for cli in ("codex", "claude"):
                 bundle = self.gateway.client(cli)
-                result = task.run_task(cli, self.config["models"][cli], json.dumps(bundle), 10, model_gateway=True)
+                challenge = {"lhs": 17, "rhs": 26, "nonce": ("a1" if cli == "codex" else "b2") * 16}
+                result = task.run_task(cli, self.config["models"][cli], json.dumps(bundle), 10, model_gateway=True, challenge=challenge)
                 self.assertEqual(result["status"], "pass", result)
                 self.assertTrue(result["verified"])
                 directory = home / result["fixture"]
                 self.assertEqual({p.name for p in directory.iterdir()}, {"input.json", "result.json"})
+                self.assertEqual(result["input_sha256"], task_evidence.input_hash(challenge))
+                actual = json.loads((directory / "result.json").read_text())
+                self.assertEqual(task_evidence.answer_hash(actual), task_evidence.expected_answer(challenge))
+                holds = [hold for hold in self.account()["model_requests"] if hold["role"] == cli]
+                proof = task_evidence.correlate(cli, challenge, result["model_usage"], holds, self.policy["roles"][cli])
+                self.assertEqual(proof["status"], "task_provider_correlated")
                 for private in (PRIVATE, bundle["credential"]):
                     self.assertNotIn(private, json.dumps(result))
                     self.assertNotIn(private, "".join(p.read_text() for p in directory.iterdir()))

@@ -14,6 +14,32 @@ import test_showcase_model_spend as spending
 
 
 class CompletionTest(unittest.TestCase):
+    def test_canonical_answer_hash_is_selected_from_json_and_streams_without_raw_answer(self):
+        answer = {"sum": 43, "nonce": "a1" * 16}
+        expected = hashlib.sha256(json.dumps(answer, sort_keys=True).encode()).hexdigest()
+        for api in completion.APIS.values():
+            for streaming in (False, True):
+                for text in (json.dumps(answer), json.dumps(answer, sort_keys=True, separators=(",", ":"))):
+                    proof = self.proof(api, fixtures.response(api, text=text), streaming)
+                    self.assertEqual(proof["answer_sha256"], expected)
+                    self.assertNotIn(answer["nonce"], json.dumps(proof))
+
+    def test_ambiguous_fenced_extra_boolean_or_invalid_answer_keeps_completion_but_no_task_answer(self):
+        text = '{"sum":43,"nonce":"' + "a1" * 16 + '"}'
+        for invalid in (text[:-1] + ',"sum":43}', text[:-1] + ',"extra":1}', text.replace('43', 'true'),
+                        text.replace('43', '-1'), text.replace('43', '1999999'), text.replace('43', 'NaN'),
+                        text.replace('a1' * 16, 'stale'), '```json\n' + text + '\n```', 'Done. ' + text):
+            proof = self.proof(value=fixtures.response(text=invalid))
+            self.assertIsNotNone(proof); self.assertIsNone(proof["answer_sha256"])
+
+    def test_legacy_completion_still_validates_but_forged_optional_answer_shapes_do_not(self):
+        proof = self.proof(); terms = spending.policy(spending.config())["roles"]["codex"]
+        proof.pop("answer_sha256"); completion.validate_proof(proof, terms)
+        for answer in (False, 1, "raw answer", "A" * 64):
+            with self.assertRaises(ValueError): completion.validate_proof(proof | {"answer_sha256": answer}, terms)
+        tool = self.proof(tool_call=True)
+        with self.assertRaises(ValueError): completion.validate_proof(tool | {"answer_sha256": "a" * 64}, terms)
+
     def proof(self, api="responses", value=None, streaming=False, raw=None, request_changes=None, tool_call=False):
         path = next(path for path, name in completion.APIS.items() if name == api)
         role = "claude" if api == "messages" else "codex"

@@ -20,10 +20,11 @@ from showcase_cleanup import private_read, private_write, scope
 from showcase_policy import PolicyError, require
 from showcase_preflight import PreflightError
 from showcase_remote import RemoteChecks
+import showcase_task_evidence as task_evidence
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
 SOURCES = tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
-    "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
+    "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
 def proof_hash(value):
@@ -134,6 +135,15 @@ class RunController:
                     receipt.get("requests") == expected and all(hold["status"] == "response_received" and "completion" in hold for hold in expected)
                     and expected[-1]["completion"]["kind"] == "text",
                     "model_task_receipt_unverified")
+            row = evidence["agents" if role in ("openclaw", "hermes") else "tasks"][role]
+            try:
+                proof = task_evidence.correlate(role, row["challenge"], row["model_usage"], expected, model_account["model_policy"]["roles"][role])
+                require(row.get("provider_task") == proof and observed[role].get("provider_task") == proof
+                        and row.get("answer_sha256") == proof["answer_sha256"], "model_task_provider_mismatch")
+                if role in ("codex", "claude"):
+                    require(row.get("input_sha256") == task_evidence.input_hash(row["challenge"]), "coding_proof_changed")
+            except (ValueError, TypeError, KeyError, IndexError):
+                raise PolicyError("model_task_provider_mismatch") from None
         for stage, name, closed_name, baseline in (("before_reboot", "model_channel", "model_channel_closed", before),
                 ("after_reboot", "model_channel_after_reboot", "model_channel_after_reboot_closed", after)):
             channel = evidence.get("model_channels", {}).get(stage, {})
