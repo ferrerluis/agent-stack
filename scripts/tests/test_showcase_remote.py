@@ -18,6 +18,7 @@ import test_showcase_terraform as terraform_fixtures
 from test_showcase_policy import config, quote, NOW
 from unittest.mock import Mock
 import test_showcase_peer as peer_fixtures
+from showcase_model_session_fixtures import FixtureSession, PRIVATE_ROUTE
 
 ROOT = Path(__file__).resolve().parents[2]
 PREFIX = terraform_fixtures.PREFIX
@@ -93,6 +94,8 @@ class RemoteChecksTest(unittest.TestCase):
         self.private_mutation, self.peer_mutation = None, None
         self.peer_calls = []
         self.checks = remote.RemoteChecks(self.attempt, self.ledger, execute=self.execute, now=lambda: self.clock, sleep=self.sleep)
+        self.models = FixtureSession(self.checks)
+        self.checks.models = self.models  # Test-only lazy fixture channel.
 
     def sleep(self, amount):
         self.clock += amount
@@ -100,6 +103,8 @@ class RemoteChecksTest(unittest.TestCase):
     def execute(self, args, env, timeout, input):
         self.calls.append({"args": args, "env": env, "input": input, "timeout": timeout})
         words = shlex.split(args[-1])
+        if "-c" in words and "workspace_model_route_unverified" in words[-1]:
+            return json.dumps(self.models.fake_probe(json.loads(input))).encode()
         if input == remote.BOOTSTRAP.encode():
             return json.dumps({"schema": 1, "status": "pass", "checksum": CHECKSUM, "dns": PREFIX + ".fixture.ts.net",
                 "boot_id": self.boot, "disk_uuid": self.disk, "data_volume_id": "vol-a3"}).encode()
@@ -120,6 +125,7 @@ class RemoteChecksTest(unittest.TestCase):
         if input == (ROOT / remote.AGENT_PATH).read_bytes():
             _, _, _, _, runtime, model, request_id, challenge_json = words
             challenge = json.loads(challenge_json)
+            self.models.fake_response(runtime, challenge_json.encode())
             report = {"schema": 1, "status": "pass", "runtime": runtime, "served_model": model,
                 "request_id": request_id, "watchdog": "disarmed", "duration_seconds": 1.25,
                 "transport": "gateway_rpc" if runtime == "openclaw" else "api_runs",
@@ -130,9 +136,15 @@ class RemoteChecksTest(unittest.TestCase):
             return json.dumps(report).encode()
         if "--cli" in words:
             cli = words[words.index("--cli") + 1]
+            bundle = json.loads(input)
+            self.assertIn("--model-gateway", words)
+            self.assertEqual(bundle["base_url"], PRIVATE_ROUTE + cli)
+            self.models.fake_response(cli, input)
             report = {"schema": 1, "cli": cli, "status": "pass", "verified": True,
                 "model_usage": {"input_tokens": 30, "output_tokens": 20}, "fixture": ".agent-stack/acceptance/" + cli + "-fresh0001",
-                "input_sha256": ("b" if cli == "codex" else "c") * 64, "duration_seconds": 1.25}
+                "input_sha256": ("b" if cli == "codex" else "c") * 64, "duration_seconds": 1.25,
+                "model_route": {"kind": "budget_gateway", "role": cli, "provider": bundle["provider"],
+                                "base_url_sha256": hashlib.sha256(bundle["base_url"].encode()).hexdigest()}}
             if self.task_mutation:
                 self.task_mutation(report)
             return json.dumps(report).encode()
@@ -166,6 +178,7 @@ class RemoteChecksTest(unittest.TestCase):
         for cli in ("codex", "claude"):
             self.checks.workspace_task(cli)
         self.checks.network_checks("before_reboot", self.peer_execute)
+        self.models.close()
 
     def peer_execute(self, access, command, payload):
         self.peer_calls.append((access, command, payload))
@@ -210,7 +223,8 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertEqual(evidence["checks"]["service.hermes"], "uncertain")
         self.assertTrue(all(value == "uncertain" for key, value in evidence["checks"].items() if key.startswith("hermes.")))
         for cli in ("codex", "claude"):
-            self.checks.workspace_task(cli)
+            with self.assertRaisesRegex(terraform.PolicyError, "model_session_required"):
+                self.checks.workspace_task(cli)
         with self.assertRaisesRegex(terraform.PolicyError, "persistence_baseline_required"):
             self.checks.reboot()
         self.assertFalse(self.rebooted)
@@ -255,7 +269,8 @@ class RemoteChecksTest(unittest.TestCase):
             self.assertIn("admin@" + IP, call["args"])
         model_calls = [call for call in self.calls if "--cli" in shlex.split(call["args"][-1])]
         self.assertEqual(len(model_calls), 2)
-        self.assertTrue(all(call["input"] == terraform_fixtures.SECRET.encode() and call["timeout"] == 195 for call in model_calls))
+        self.assertTrue(all(call["timeout"] == 195 and json.loads(call["input"])["role"] in ("codex", "claude") for call in model_calls))
+        self.assertTrue(all(terraform_fixtures.SECRET.encode() not in call["input"] for call in model_calls))
 
     def test_network_private_inputs_source_nonce_and_evidence_are_scoped(self):
         self.checks.bootstrap(); self.checks.doctors()
@@ -393,23 +408,21 @@ class RemoteChecksTest(unittest.TestCase):
             self.checks.workspace_task("codex")
         evidence = cleanup.private_read(self.checks.path)
         self.assertEqual(evidence["tasks"]["codex"]["status"], "uncertain")
-        self.assertNotIn("workspace.codex.execution", evidence["checks"])
+        self.assertEqual(evidence["checks"]["workspace.codex.execution"], "uncertain")
         before = len(self.calls)
         with self.assertRaisesRegex(terraform.PolicyError, "workspace_task_already_invoked"):
             self.checks.workspace_task("codex")
         self.assertEqual(len(self.calls), before)
 
     def test_malformed_usage_wrong_cli_fixture_path_or_hash_cannot_pass(self):
-        self.checks.bootstrap()
         changes = ({"model_usage": {}}, {"cli": "claude"}, {"fixture": "../outside"}, {"input_sha256": ""}, {"verified": False})
         for change in changes:
-            evidence = cleanup.private_read(self.checks.path)
-            evidence["tasks"] = {}  # test-only independent fresh invocation fixture
-            cleanup.private_write(self.checks.path, evidence)
-            self.task_mutation = lambda report: report.update(change)
+            fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups)
+            fresh.checks.bootstrap()
+            fresh.task_mutation = lambda report: report.update(change)
             with self.assertRaisesRegex(terraform.PolicyError, "workspace_task_failed"):
-                self.checks.workspace_task("codex")
-            self.assertEqual(cleanup.private_read(self.checks.path)["tasks"]["codex"]["status"], "uncertain")
+                fresh.checks.workspace_task("codex")
+            self.assertEqual(cleanup.private_read(fresh.checks.path)["tasks"]["codex"]["status"], "uncertain")
 
     def test_root_verifier_cannot_pass(self):
         self.checks.bootstrap()

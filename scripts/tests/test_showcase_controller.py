@@ -219,7 +219,7 @@ class FullRunTest(unittest.TestCase):
         fixture.attempt.now = lambda: fixture.clock
         network = fixture.checks.network_checks
         fixture.checks.network_checks = lambda stage: network(stage, fixture.peer_execute)
-        fixture.controller = controller.RunController(fixture.attempt, fixture.ledger, fixture.checks, now=lambda: fixture.clock)
+        fixture.controller = controller.RunController(fixture.attempt, fixture.ledger, fixture.checks, now=lambda: fixture.clock, models=fixture.models)
         fixture.readiness = {"source_revision": fixture.prepared["source_revision"], "scope": cleanup.scope(fixture.config, "aws"),
                              "checks": {name: "pass" for name in terraform.LAUNCH_CHECKS}}
         return fixture
@@ -260,7 +260,7 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         flow = cleanup.private_read(value.controller.path)
         steps = [row["name"] for row in flow["steps"]]
-        self.assertEqual(steps[:4], ["apply", "bootstrap", "containers", "doctors"])
+        self.assertEqual(steps[:5], ["apply", "bootstrap", "containers", "model_channel", "doctors"])
         self.assertLess(steps.index("containers"), steps.index("openclaw"))
         self.assertEqual(value.attempt.record()["container_tests_gate"], "deferred_owned_vm")
         self.assertEqual(cleanup.private_read(value.checks.path)["checks"]["container_tests"], "pass")

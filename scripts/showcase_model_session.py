@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Internal original-budget model channel and independently checked coding routes.
+
+Production still needs runtime adapters and measured launch wiring. No public
+paid command, price override, provider selection or readiness bypass is added.
+"""
+import copy
+import hashlib
+import json
+from pathlib import Path
+
+from showcase_attempt import verify_prepared
+from showcase_cleanup import private_write
+from showcase_model_gateway import BudgetGateway
+from showcase_model_prices import policy_from_terms
+from showcase_model_spend import ModelSpend, ROLES, digest
+from showcase_model_transport import SSHModelTransport
+from showcase_policy import PolicyError, require
+
+PROBE = "scripts/showcase_model_container.py"
+
+
+class ModelSession:
+    def __init__(self, checks, policy, gateway_factory=BudgetGateway, transport_factory=SSHModelTransport):
+        self.checks, self.policy = checks, copy.deepcopy(policy)
+        self.revision = checks.attempt.prepared["source_revision"]
+        self.gateway_factory, self.transport_factory = gateway_factory, transport_factory
+        self.gateway = self.transport = None
+        self.stage, self.state, self.routes = None, "new", {}
+        self.tasks = {}
+        self.spend = ModelSpend(checks.ledger, checks.run.name, checks.provider,
+                                checks.attempt.prepared["source_revision"], self.policy, now=checks.now)
+
+    @classmethod
+    def from_measured_terms(cls, checks, receipt, limits):
+        record = checks.attempt.record()
+        policy = policy_from_terms(receipt, checks.config, checks.provider, checks.attempt.prepared["source_revision"],
+                                   record["plan_sha256"], limits, now=checks.now)
+        return cls(checks, policy)
+
+    def active(self):
+        require(self.state == "verified" and self.transport is not None and self.transport.healthy()
+                and self.gateway is not None and self.gateway.healthy(), "model_session_required")
+        require(self.policy == self.spend.policy, "model_session_scope_changed")
+        prepared, _ = self.checks.ensure()
+        require(prepared["source_revision"] == self.policy["source_revision"], "model_session_scope_changed")
+        self.spend.activate(1)
+        evidence = self.checks.evidence()
+        require((self.stage == "before_reboot" and "reboot" not in evidence["checks"]) or
+                (self.stage == "after_reboot" and evidence["checks"].get("reboot") == "pass"), "model_session_boot_changed")
+        baseline = evidence.get("after_reboot") if self.stage == "after_reboot" else evidence.get("baseline")
+        require(isinstance(baseline, dict) and baseline.get("boot_id") == self.transport.proof["boot_id"]
+                and baseline.get("checksum") == self.transport.proof["checksum"], "model_session_boot_changed")
+        return evidence
+
+    def start(self, stage):
+        require(stage in ("before_reboot", "after_reboot") and
+                ((self.state == "new" and stage == "before_reboot") or
+                 (self.state == "closed" and self.stage == "before_reboot" and stage == "after_reboot")), "model_session_already_invoked")
+        evidence = self.checks.evidence(); self.checks.require_container_gate(evidence)
+        require(stage not in evidence.get("model_channels", {}), "model_session_already_invoked")
+        require(stage != "after_reboot" or evidence["checks"].get("reboot") == "pass", "model_session_boot_changed")
+        # Reopening after reboot shares this same spend object and original
+        # policy/holds; it never reserves a new allocation or replays a task.
+        self.spend.activate(60)
+        self.stage, self.state, self.routes, self.tasks = stage, "starting", {}, {}
+        evidence.setdefault("model_channels", {})[stage] = {"status": "started"}
+        private_write(self.checks.path, evidence)
+        try:
+            self.gateway = self.gateway_factory(self.spend, self.checks.attempt.session.secret)
+            self.gateway.__enter__()
+            self.transport = self.transport_factory(self.checks, self.gateway)
+            self.transport.__enter__()
+            self.state = "verified"
+            self.checks.attach_models(self)
+            evidence["model_channels"][stage] = copy.deepcopy(self.transport.proof)
+            private_write(self.checks.path, evidence)
+            return copy.deepcopy(self.transport.proof)
+        except BaseException:
+            evidence["model_channels"][stage]["status"] = "uncertain"
+            private_write(self.checks.path, evidence)
+            self.close()
+            raise
+
+    def workspace_client(self, role):
+        require(role in ("codex", "claude"), "invalid_workspace_cli")
+        evidence = self.active()
+        require(role not in self.routes, "workspace_route_already_invoked")
+        checkout = self.checks.attempt.checkout
+        source = checkout / PROBE
+        require(source.is_file() and not source.is_symlink() and source.read_bytes() ==
+                (Path(__file__).resolve().parents[1] / PROBE).read_bytes(), "model_container_source_changed")
+        verify_prepared(self.checks.run, self.checks.config, self.checks.provider)
+        target = self.checks.bind()
+        baseline = evidence["baseline"] if self.stage == "before_reboot" else evidence["after_reboot"]
+        require(self.checks.probe(target) == baseline, "model_session_boot_changed")
+        bundle = self.transport.client(role)
+        probe = self.gateway.new_probe(role, kind="workspace")
+        packet = {**bundle, "nonce": probe["nonce"], "bridge_ipv4": self.transport.ready["bridge_ipv4"],
+                  "source_revision": self.policy["source_revision"]}
+        # Mark the route before the nonbillable container request. A lost
+        # response cannot reuse a capability/probe within this boot.
+        self.routes[role] = {"status": "started"}
+        from showcase_remote import WORKSPACE, decoded
+        report = decoded(self.checks.ssh(target, WORKSPACE + ["python3", "-B", "-I", "-c", source.read_text()],
+                                        input=json.dumps(packet).encode(), timeout=15))
+        expected = {"schema": 1, "status": "workspace_route_verified", "role": role, "provider": bundle["provider"],
+                    "uid": 1000, "bridge_ipv4": packet["bridge_ipv4"], "nonce": probe["nonce"],
+                    "source_revision": self.policy["source_revision"],
+                    "base_url_sha256": hashlib.sha256(bundle["base_url"].encode()).hexdigest()}
+        require(report == expected and type(report.get("uid")) is int and
+                self.gateway.probe_observed(role, probe["nonce"]), "workspace_model_route_unverified")
+        require(self.checks.probe(target) == baseline, "model_session_boot_changed")
+        self.active(); self.routes[role] = report
+        evidence = self.checks.evidence()
+        evidence["model_channels"][self.stage].setdefault("workspace_routes", {})[role] = report
+        private_write(self.checks.path, evidence)
+        return bundle
+
+    def begin_task(self, role):
+        self.active()
+        require(role in ROLES and role not in self.tasks, "model_role_already_used")
+        def verify(state):
+            row = self.spend.account(state)
+            require(not any(hold["role"] == role for hold in row["model_requests"]), "model_role_already_used")
+        self.checks.ledger.operate(verify)
+        start = {"role": role, "started_at": self.checks.now(), "boot_id": self.transport.proof["boot_id"],
+                 "policy_sha256": digest(self.policy)}
+        self.tasks[role] = start
+        return copy.deepcopy(start)
+
+    def runtime_client(self, role):
+        require(role in ("openclaw", "hermes"), "invalid_runtime")
+        self.active()
+        # Runtime processes need their own checked configuration adapters.
+        # Never run their old direct-origin path with an unverified route.
+        raise PolicyError("runtime_model_route_required")
+
+    def task_receipt(self, role, start):
+        self.active()
+        require(isinstance(start, dict) and set(start) == {"role", "started_at", "boot_id", "policy_sha256"}
+                and role in self.tasks and start == self.tasks[role]
+                and start["role"] == role and start["boot_id"] == self.transport.proof["boot_id"]
+                and start["policy_sha256"] == digest(self.policy), "model_task_receipt_unverified")
+        self.gateway.seal_role(role)
+        self.active()
+        def verify(state):
+            row = self.spend.account(state)
+            holds = [copy.deepcopy(hold) for hold in row["model_requests"] if hold["role"] == role]
+            require(holds and all(hold["status"] == "response_received" and start["started_at"] <= hold["started_at"] <=
+                                 self.checks.now() for hold in holds), "model_task_receipt_unverified")
+            return {"schema": 1, "status": "gateway_responses_received", "run_id": self.checks.run.name,
+                    "source_revision": self.policy["source_revision"], "scope": copy.deepcopy(self.policy["scope"]),
+                    "role": role, "provider": self.policy["roles"][role]["provider"], "model": self.policy["roles"][role]["model"],
+                    "boot_id": start["boot_id"], "policy_sha256": digest(self.policy), "quote_sha256": row["quote_sha256"],
+                    "requests": holds}
+        receipt = self.checks.ledger.operate(verify)
+        del self.tasks[role]
+        return receipt
+
+    def close(self):
+        if self.state in ("new", "closed"): return {"status": "closed"}
+        require(self.state != "closed_unverified", "model_session_shutdown_unverified")
+        self.state = "stopping"
+        failed = False
+        for component in (self.transport, self.gateway):
+            if component is not None:
+                try: component.close()
+                except BaseException: failed = True
+        self.state = "closed_unverified" if failed else "closed"
+        self.routes.clear()
+        self.tasks.clear()
+        from showcase_cleanup import private_read
+        if self.checks.path.exists():
+            evidence = private_read(self.checks.path)
+            require(evidence.get("run_id") == self.checks.run.name and evidence.get("source_revision") ==
+                    self.revision, "model_session_scope_changed")
+            row = evidence.get("model_channels", {}).get(self.stage)
+            if row is not None:
+                row["shutdown"] = "uncertain" if failed else "verified"
+                private_write(self.checks.path, evidence)
+        require(not failed, "model_session_shutdown_unverified")
+        return {"status": "closed"}

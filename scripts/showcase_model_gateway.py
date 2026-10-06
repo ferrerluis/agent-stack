@@ -179,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
             require(int(length) <= MAX_BODY, "model_gateway_body_too_large")
             raw = self.rfile.read(int(length))
             require(len(raw) == int(length), "model_gateway_frame_refused")
-            gateway.begin_forward(self.request)
+            gateway.begin_forward(self.request, role)
             if path == "/_transport":
                 reply = json.dumps(gateway.probe_reply(role, raw), separators=(",", ":")).encode()
                 self.start("application/json"); self.write(reply); self.complete()
@@ -203,7 +203,7 @@ class BudgetGateway:
         self.spend, self.reader, self.opener, self.timeout, self.now = spend, secret_reader, opener, timeout, now
         self.condition = threading.Condition(); self.key_lock = threading.Lock()
         self.state, self.connections, self.keys, self.tokens = "new", {}, {}, {}
-        self.transport, self.probes = None, {}
+        self.transport, self.probes, self.probe_kinds = None, {}, set()
         self.server = self.thread = self.watchdog = None
         self.stop_watchdog = threading.Event()
 
@@ -227,7 +227,7 @@ class BudgetGateway:
 
     def client(self, role):
         with self.condition:
-            require(self.healthy() and role in ROLES, "model_gateway_closed")
+            require(self.healthy() and role in ROLES and role in self.tokens, "model_gateway_closed")
             return {"role": role, "provider": self.spend.policy["roles"][role]["provider"],
                     "base_url": "http://127.0.0.1:" + str(self.server.server_port) + "/" + role,
                     "credential": self.tokens[role]}
@@ -241,12 +241,16 @@ class BudgetGateway:
             require(self.healthy() and self.transport is None and callable(healthy), "model_transport_required")
             self.transport = healthy
 
-    def new_probe(self, role):
+    def new_probe(self, role, kind="channel"):
         with self.condition:
             bundle = self.client(role)
-            require(role not in self.probes, "model_transport_probe_already_used")
+            require(kind in ("channel", "workspace") and (kind != "workspace" or role in ("codex", "claude")),
+                    "model_transport_probe_refused")
+            require((role, kind) not in self.probe_kinds and (role not in self.probes or self.probes[role]["observed"]),
+                    "model_transport_probe_already_used")
             nonce = secrets.token_hex(32)
             self.probes[role] = {"nonce": nonce, "deadline": self.now() + 15, "observed": False}
+            self.probe_kinds.add((role, kind))
             return {**bundle, "nonce": nonce}
 
     def probe_reply(self, role, raw):
@@ -273,12 +277,27 @@ class BudgetGateway:
     def permitted(self, request):
         with self.condition:
             row = self.connections.get(request)
-            return self.healthy() and row is not None and self.now() < row["deadline"]
+            return self.healthy() and row is not None and self.now() < row["deadline"] \
+                and (row.get("role") is None or row["role"] in self.tokens)
 
-    def begin_forward(self, request):
+    def begin_forward(self, request, role=None):
         with self.condition:
-            require(self.permitted(request), "model_gateway_closed")
-            self.connections[request] = {"phase": "forwarding", "deadline": self.now() + self.timeout + 20 + FRAME_SECONDS}
+            require(self.permitted(request) and (role is None or role in self.tokens), "model_gateway_closed")
+            self.connections[request] = {"phase": "forwarding", "role": role,
+                                        "deadline": self.now() + self.timeout + 20 + FRAME_SECONDS}
+
+    def seal_role(self, role):
+        """Revoke one task's capability before checking its original ledger holds."""
+        with self.condition:
+            require(role in ROLES and self.healthy(), "model_gateway_closed")
+            self.tokens.pop(role, None)
+            connections = [connection for connection, row in self.connections.items() if row.get("role") == role]
+        for connection in connections: self.close_socket(connection)
+        end = time.monotonic() + 2
+        with self.condition:
+            while any(row.get("role") == role for row in self.connections.values()) and time.monotonic() < end:
+                self.condition.wait(min(.05, max(0, end - time.monotonic())))
+            require(not any(row.get("role") == role for row in self.connections.values()), "model_role_shutdown_unverified")
 
     def key(self, reference):
         with self.key_lock:
@@ -316,6 +335,6 @@ class BudgetGateway:
         for thread in (self.thread, self.watchdog):
             if thread is not None and thread.ident is not None: thread.join(timeout=1)
             require(thread is None or not thread.is_alive(), "model_gateway_shutdown_unverified")
-        self.keys.clear(); self.probes.clear(); self.state = "closed"
+        self.keys.clear(); self.probes.clear(); self.probe_kinds.clear(); self.state = "closed"
 
     def __exit__(self, *args): self.close()

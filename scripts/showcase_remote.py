@@ -6,6 +6,7 @@ second-peer browser checks are a separate requirement.
 Raw command output and secrets never enter the evidence record.
 """
 import builtins
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -150,6 +151,13 @@ class RemoteChecks:
         self.run, self.config, self.provider = attempt.run, attempt.config, attempt.provider
         self.execute, self.now, self.sleep = execute, now, sleep
         self.path = self.run / "remote-checks.json"
+        self.models = None
+
+    def attach_models(self, models):
+        from showcase_model_session import ModelSession
+        require(isinstance(models, ModelSession) and models.checks is self and
+                models.spend.ledger is self.ledger and (self.models is None or self.models is models), "model_session_scope_changed")
+        self.models = models
 
     def ensure(self):
         prepared = verify_prepared(self.run, self.config, self.provider)
@@ -207,7 +215,8 @@ class RemoteChecks:
                 and stat.S_IMODE(hosts.stat().st_mode) == 0o600, "private_known_hosts_required")
         wrapper = self.attempt.checkout / "bin/agent-stack-ssh"
         require(wrapper.is_file() and wrapper.stat().st_mode & 0o100, "verified_ssh_wrapper_required")
-        return self.execute([str(wrapper), "--batch", "--known-hosts", str(hosts), "--key", str(self.attempt.checkout / KEY_PATH),
+        return self.execute([str(wrapper), "--batch", *( ["--pinned"] if self.models is not None else [] ),
+                             "--known-hosts", str(hosts), "--key", str(self.attempt.checkout / KEY_PATH),
                              "--host", target["host"], "--", shlex.join(args)], env=isolated_environment(self.run),
                             input=input, timeout=remaining_timeout(active, timeout, now=self.now()))
 
@@ -418,6 +427,7 @@ class RemoteChecks:
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         require(all(evidence["checks"].get(key) == "pass" for key in required), "runtime_doctor_proof_required")
         require(runtime not in evidence["agents"], "runtime_task_already_invoked")
+        require(self.models is not None, "model_session_required")
         target, module = self.bind(), self.agent_module()
         model = self.config["models"][runtime]
         require(isinstance(model, str) and re.fullmatch(module.MODEL, model), "model_ids_required")
@@ -428,15 +438,22 @@ class RemoteChecks:
         evidence["agents"][runtime] = {"status": "started", "model": model, "request_id": request_id, "challenge": challenge}
         private_write(self.path, evidence)
         try:
+            self.models.runtime_client(runtime)
+            start = self.models.begin_task(runtime)
             report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", runtime, model, request_id, json.dumps(challenge)],
                 input=(self.attempt.checkout / AGENT_PATH).read_bytes(), timeout=300))
             try:
                 proof = module.validate_proof(report, runtime, model, challenge, request_id)
             except module.ProbeError:
                 raise PolicyError("runtime_task_failed") from None
+            proof["gateway_receipt"] = self.models.task_receipt(runtime, start)
+            evidence = self.evidence()
             evidence["agents"][runtime].update(proof)
             evidence["checks"][runtime + ".agent_turn"] = "pass"
         except BaseException:
+            try: self.models.close()
+            except BaseException: pass
+            evidence = private_read(self.path)
             evidence["agents"][runtime]["status"] = "uncertain"
             # A failed task can stop its test container. Prior healthy/doctor
             # evidence cannot remain green after that uncertainty.
@@ -454,6 +471,7 @@ class RemoteChecks:
         self.require_container_gate(evidence)
         require(evidence["checks"].get("launch_ssh") == "pass", "bootstrap_proof_required")
         require(cli not in evidence["tasks"], "workspace_task_already_invoked")
+        require(self.models is not None, "model_session_required")
         target = self.bind()
         model = self.config["models"][cli]
         require(isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", model), "model_ids_required")
@@ -462,10 +480,10 @@ class RemoteChecks:
         evidence["tasks"][cli] = {"status": "started", "model": model}
         private_write(self.path, evidence)
         try:
-            key = self.attempt.session.secret(self.config["secret_refs"]["openai_api_key" if cli == "codex" else "anthropic_api_key"])
-            require(isinstance(key, str) and 0 < len(key.encode()) <= 65536 and not any(char.isspace() for char in key), "invalid_secret_field")
+            bundle = self.models.workspace_client(cli)
+            start = self.models.begin_task(cli)
             report = decoded(self.ssh(target, WORKSPACE + ["python3", "/usr/local/libexec/agent-stack-workspace-cli-task",
-                "--cli", cli, "--model", model, "--timeout", "180"], input=key.encode(), timeout=195))
+                "--cli", cli, "--model", model, "--timeout", "180", "--model-gateway"], input=json.dumps(bundle).encode(), timeout=195))
             usage, fixture, digest = report.get("model_usage"), report.get("fixture"), report.get("input_sha256")
             duration = report.get("duration_seconds")
             require(report.get("cli") == cli and report.get("status") == "pass" and report.get("verified") is True
@@ -474,13 +492,23 @@ class RemoteChecks:
                     and re.fullmatch(r"\.agent-stack/acceptance/" + cli + r"-[a-z0-9_]{1,64}", fixture)
                     and isinstance(digest, str) and re.fullmatch(HEX, digest)
                     and type(duration) in (int, float) and math.isfinite(duration) and 0 <= duration <= 190, "workspace_task_failed")
+            require(report.get("model_route") == {"kind": "budget_gateway", "role": cli, "provider": bundle["provider"],
+                    "base_url_sha256": hashlib.sha256(bundle["base_url"].encode()).hexdigest()}, "workspace_model_route_unverified")
             task = {"status": "pass", "model": model, "fixture": fixture, "input_sha256": digest,
                     "model_usage": {k: usage[k] for k in ("input_tokens", "output_tokens")}, "duration_seconds": duration}
             task["result_sha256"] = self.verify_files(target, task)
+            task["gateway_receipt"] = self.models.task_receipt(cli, start)
+            evidence = self.evidence()
             evidence["tasks"][cli] = task
             evidence["checks"]["workspace." + cli + ".execution"] = "pass"
         except BaseException:
+            # Stop authority immediately, even when the CLI/SSH result is
+            # lost. Closing does not refund or replay any admitted request.
+            try: self.models.close()
+            except BaseException: pass
+            evidence = private_read(self.path)
             evidence["tasks"][cli]["status"] = "uncertain"
+            evidence["checks"]["workspace." + cli + ".execution"] = "uncertain"
             private_write(self.path, evidence)
             raise
         private_write(self.path, evidence)
@@ -498,6 +526,7 @@ class RemoteChecks:
         require(evidence["network"].get("before_reboot", {}).get("status") == "pass", "peer_baseline_required")
         require(type(resume) is bool and ((resume and evidence["checks"].get("reboot") in ("started", "uncertain"))
                 or (not resume and "reboot" not in evidence["checks"])), "reboot_already_invoked")
+        require(self.models is None or self.models.state == "closed", "model_session_must_close_before_reboot")
         target = self.bind()
         if not resume:
             before = self.probe(target)

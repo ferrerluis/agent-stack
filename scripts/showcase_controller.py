@@ -23,7 +23,7 @@ from showcase_remote import RemoteChecks
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
 SOURCES = tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
-    "showcase_preflight", "showcase_models", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
+    "showcase_preflight", "showcase_models", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
 def proof_hash(value):
@@ -74,11 +74,12 @@ def prepare_container_deferral(attempt):
 
 
 class RunController:
-    def __init__(self, attempt, ledger, remote=None, now=time.time):
+    def __init__(self, attempt, ledger, remote=None, now=time.time, models=None):
         self.attempt, self.ledger = attempt, ledger
         self.run, self.config, self.provider = attempt.run, attempt.config, attempt.provider
         self.remote = RemoteChecks(attempt, ledger) if remote is None else remote
         self.now = now
+        self.models = models
         self.path = self.run / "showcase-run.json"
 
     def verdict(self, observed, evidence=None):
@@ -109,6 +110,40 @@ class RunController:
         for cli in ("codex", "claude"):
             row = evidence.get("tasks", {}).get(cli, {})
             require(row == observed[cli] and row.get("status") == "pass" and row.get("model") == self.config["models"][cli], "coding_proof_changed")
+        # Client reports cannot create billing proof. Match every request to
+        # the original durable account, including recovery after deletion.
+        def account(state):
+            rows = [row for row in state["attempts"] if row["provider"] == self.provider and row["run_id"] == self.run.name]
+            require(len(rows) == 1 and "model_policy" in rows[0], "model_task_receipt_unverified")
+            return rows[0]
+        model_account = self.ledger.operate(account)
+        for role in ("openclaw", "hermes", "codex", "claude"):
+            receipt = observed[role].get("gateway_receipt")
+            expected = [hold for hold in model_account["model_requests"] if hold["role"] == role]
+            require(isinstance(receipt, dict) and set(receipt) == {"schema", "status", "run_id", "source_revision", "scope", "role",
+                    "provider", "model", "boot_id", "policy_sha256", "quote_sha256", "requests"}
+                    and type(receipt.get("schema")) is int and receipt["schema"] == 1
+                    and receipt.get("status") == "gateway_responses_received"
+                    and receipt.get("run_id") == self.run.name and receipt.get("source_revision") == evidence["source_revision"]
+                    and receipt.get("scope") == model_account["model_policy"]["scope"] and receipt.get("role") == role
+                    and receipt.get("provider") == model_account["model_policy"]["roles"][role]["provider"]
+                    and receipt.get("model") == model_account["model_policy"]["roles"][role]["model"]
+                    and receipt.get("boot_id") == before["boot_id"]
+                    and receipt.get("policy_sha256") == proof_hash(model_account["model_policy"])
+                    and receipt.get("quote_sha256") == model_account["quote_sha256"] and expected and
+                    receipt.get("requests") == expected and all(hold["status"] == "response_received" for hold in expected),
+                    "model_task_receipt_unverified")
+        for stage, name, closed_name, baseline in (("before_reboot", "model_channel", "model_channel_closed", before),
+                ("after_reboot", "model_channel_after_reboot", "model_channel_after_reboot_closed", after)):
+            channel = evidence.get("model_channels", {}).get(stage, {})
+            require(channel.get("status") == "private_channel_verified" and channel.get("shutdown") == "verified"
+                    and channel.get("boot_id") == baseline["boot_id"] and channel.get("checksum") == baseline["checksum"]
+                    and channel.get("source_revision") == evidence["source_revision"] and channel.get("run_id") == self.run.name
+                    and all(channel.get(key) == value for key, value in observed[name].items())
+                    and observed[closed_name] == {"status": "closed"}, "model_channel_proof_changed")
+        routes = evidence["model_channels"]["before_reboot"].get("workspace_routes", {})
+        require(set(routes) == {"codex", "claude"} and all(routes[cli].get("status") == "workspace_route_verified"
+                and type(routes[cli].get("uid")) is int and routes[cli]["uid"] == 1000 for cli in routes), "workspace_model_route_unverified")
         requests = []
         for stage, boot in (("before_reboot", before["boot_id"]), ("after_reboot", after["boot_id"])):
             row = evidence.get("network", {}).get(stage, {})
@@ -138,6 +173,8 @@ class RunController:
         checked_controller_source(self.attempt)
         require(not self.path.exists() and not self.path.is_symlink(), "showcase_recovery_required")
         require(self.attempt.record().get("stage") == "planned", "fresh_planned_attempt_required")
+        from showcase_model_session import ModelSession
+        require(isinstance(self.models, ModelSession) and self.models.checks is self.remote, "measured_model_session_required")
         gate = self.attempt.launch_gates(readiness)
         record = {"schema": 1, "run_id": self.run.name, "provider": self.provider, "scope": scope(self.config, self.provider),
                   "source_revision": prepared["source_revision"], "stage": "reserving", "started_at": self.now(), "steps": [],
@@ -163,14 +200,18 @@ class RunController:
             observed["bootstrap"] = step("bootstrap", self.remote.bootstrap)
             if gate == "deferred_owned_vm":
                 observed["containers"] = step("containers", self.remote.container_tests)
+            observed["model_channel"] = step("model_channel", lambda: self.models.start("before_reboot"))
             observed["doctors"] = step("doctors", self.remote.doctors)
             for runtime in ("openclaw", "hermes"):
                 observed[runtime] = step(runtime, lambda runtime=runtime: self.remote.runtime_task(runtime))
             for cli in ("claude", "codex"):
                 observed[cli] = step(cli, lambda cli=cli: self.remote.workspace_task(cli))
             observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
+            observed["model_channel_closed"] = step("model_channel_closed", self.models.close)
             observed["reboot"] = step("reboot", self.remote.reboot)
+            observed["model_channel_after_reboot"] = step("model_channel_after_reboot", lambda: self.models.start("after_reboot"))
             observed["after_reboot"] = step("after_reboot", lambda: self.remote.network_checks("after_reboot"))
+            observed["model_channel_after_reboot_closed"] = step("model_channel_after_reboot_closed", self.models.close)
             evidence = self.remote.evidence()
             record["cells"] = self.verdict(observed, evidence)
             record["acceptance"] = {"status": "verified", "observed": observed,
@@ -183,6 +224,12 @@ class RunController:
                 record["steps"][-1]["status"] = "uncertain"
             record["failure_stage"] = record["stage"]
         finally:
+            if self.models is not None:
+                try: self.models.close()
+                except BaseException:
+                    acceptance = False
+                    failure = "model_session_shutdown_unverified"
+                    record.setdefault("failure_stage", "model_channel_close")
             # Even a failed/uncertain reserve can have committed a ledger row.
             # Inspect only this run, never clean another active provider/run.
             try:

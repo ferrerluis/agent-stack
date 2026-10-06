@@ -213,6 +213,54 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
         self.reader.assert_not_called(); self.opener.open.assert_not_called()
         self.assertEqual(self.account()["model_requests"], [])
 
+    def test_channel_and_workspace_probes_are_separate_single_use_nonbillable_checks(self):
+        first = self.gateway.new_probe("codex")
+        with self.assertRaises(PolicyError): self.gateway.new_probe("codex", kind="workspace")
+        raw = json.dumps({"nonce": first["nonce"]}, separators=(",", ":")).encode()
+        self.assertEqual(self.request(path="/_transport", raw=raw)[0], 200)
+        second = self.gateway.new_probe("codex", kind="workspace")
+        self.assertNotEqual(second["nonce"], first["nonce"])
+        self.assertEqual(self.request(path="/_transport", raw=raw)[0], 400)
+        raw = json.dumps({"nonce": second["nonce"]}, separators=(",", ":")).encode()
+        self.assertEqual(self.request(path="/_transport", raw=raw)[0], 200)
+        self.assertTrue(self.gateway.probe_observed("codex", second["nonce"]))
+        for kind in ("channel", "workspace", "override"):
+            with self.assertRaises(PolicyError): self.gateway.new_probe("codex", kind=kind)
+        with self.assertRaises(PolicyError): self.gateway.new_probe("hermes", kind="workspace")
+        self.assertEqual(self.account()["model_requests"], [])
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+
+    def test_sealing_one_role_revokes_its_capability_and_leaves_other_original_role_allocations_available(self):
+        headers = self.headers("codex")
+        self.gateway.seal_role("codex")
+        self.assertEqual(self.request(headers=headers)[0], 401)
+        with self.assertRaises(PolicyError): self.gateway.client("codex")
+        self.assertEqual(self.request(role="claude", path="/v1/messages")[0], 200)
+        self.assertEqual([row["role"] for row in self.account()["model_requests"]], ["claude"])
+
+    def test_sealing_an_inflight_role_interrupts_its_stream_and_retains_the_uncertain_hold(self):
+        waiting, release = threading.Event(), threading.Event()
+        def pause():
+            waiting.set()
+            if not release.wait(3): raise TimeoutError("fixture upstream delay")
+            return SSE_DONE
+        self.opener.open.side_effect = lambda *args, **kwargs: Response([SSE_FIRST, pause], "text/event-stream")
+        connection = HTTPConnection("127.0.0.1", self.gateway.server.server_port, timeout=3)
+        try:
+            connection.request("POST", "/codex/v1/responses", body(), self.headers("codex"))
+            response = connection.getresponse(); self.assertEqual(response.read1(len(SSE_FIRST)), SSE_FIRST)
+            self.assertTrue(waiting.wait(1))
+            # Release only after revocation, so the next upstream chunk must
+            # fail permission rather than delivering a completion/refund.
+            original = self.gateway.close_socket
+            def stop(sock): original(sock); release.set()
+            with patch.object(self.gateway, "close_socket", side_effect=stop): self.gateway.seal_role("codex")
+            with self.assertRaises(IncompleteRead): response.read()
+            self.assertEqual(self.account()["model_requests"][0]["status"], "uncertain")
+            self.assertEqual(self.account()["model_requests"][0]["held_usd"], "0.020640000")
+            self.assertTrue(self.gateway.client("claude")["credential"])
+        finally: release.set(); connection.close()
+
     def test_transport_failure_interrupts_stream_and_keeps_the_original_hold(self):
         active = [True]; self.gateway.require_transport(lambda: active[0])
         allow, waiting = threading.Event(), threading.Event()
