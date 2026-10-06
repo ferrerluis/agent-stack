@@ -7,6 +7,8 @@ import secrets
 
 import showcase_model_session as session
 import test_showcase_model_spend as terms
+import showcase_model_completion as completion
+import showcase_model_completion_fixtures as completions
 from showcase_policy import require
 
 CAPABILITY = "7" * 64
@@ -86,7 +88,15 @@ class FixtureSession(session.ModelSession):
         # retrieval or network. Production never calls this test-only method.
         sha = hashlib.sha256(body).hexdigest()
         self.spend.reserve(role, sha, 60)
-        self.spend.received(role, sha)
+        row = self.policy["roles"][role]
+        api = "messages" if row["provider"] == "anthropic" else "responses"
+        value = completions.response(api, response_id="fixture_" + role + "_" + sha)
+        value["model"] = row["model"]
+        path = "/v1/messages" if api == "messages" else "/v1/responses"
+        request = {"stream": False, "max_tokens" if api == "messages" else "max_output_tokens": row["output_tokens_upper_bound"]}
+        proof = completion.completion(row["provider"], row["model"], path, "application/json", completions.encoded(value), request, row)
+        require(proof is not None, "invalid_fixture_completion")
+        self.spend.received(role, sha, proof)
 
     def fake_probe(self, packet):
         self.gateway.observed.add((packet["role"], packet["nonce"]))

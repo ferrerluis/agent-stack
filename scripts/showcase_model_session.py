@@ -343,7 +343,9 @@ class ModelSession:
             holds = [copy.deepcopy(hold) for hold in row["model_requests"] if hold["role"] == role]
             require(holds and all(hold["status"] == "response_received" and start["started_at"] <= hold["started_at"] <=
                                  self.checks.now() for hold in holds), "model_task_receipt_unverified")
-            return {"schema": 1, "status": "gateway_responses_received", "run_id": self.checks.run.name,
+            require(all("completion" in hold for hold in holds) and holds[-1]["completion"]["kind"] == "text",
+                    "model_task_completion_unverified")
+            return {"schema": 1, "status": "provider_completions_verified", "run_id": self.checks.run.name,
                     "source_revision": self.policy["source_revision"], "scope": copy.deepcopy(self.policy["scope"]),
                     "role": role, "provider": self.policy["roles"][role]["provider"], "model": self.policy["roles"][role]["model"],
                     "boot_id": start["boot_id"], "policy_sha256": digest(self.policy), "quote_sha256": row["quote_sha256"],

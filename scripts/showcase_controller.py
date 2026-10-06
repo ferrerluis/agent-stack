@@ -23,7 +23,7 @@ from showcase_remote import RemoteChecks
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
 SOURCES = tuple("scripts/" + name + ".py" for name in ("showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
-    "showcase_preflight", "showcase_models", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
+    "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
 def proof_hash(value):
@@ -123,7 +123,7 @@ class RunController:
             require(isinstance(receipt, dict) and set(receipt) == {"schema", "status", "run_id", "source_revision", "scope", "role",
                     "provider", "model", "boot_id", "policy_sha256", "quote_sha256", "requests"}
                     and type(receipt.get("schema")) is int and receipt["schema"] == 1
-                    and receipt.get("status") == "gateway_responses_received"
+                    and receipt.get("status") == "provider_completions_verified"
                     and receipt.get("run_id") == self.run.name and receipt.get("source_revision") == evidence["source_revision"]
                     and receipt.get("scope") == model_account["model_policy"]["scope"] and receipt.get("role") == role
                     and receipt.get("provider") == model_account["model_policy"]["roles"][role]["provider"]
@@ -131,7 +131,8 @@ class RunController:
                     and receipt.get("boot_id") == before["boot_id"]
                     and receipt.get("policy_sha256") == proof_hash(model_account["model_policy"])
                     and receipt.get("quote_sha256") == model_account["quote_sha256"] and expected and
-                    receipt.get("requests") == expected and all(hold["status"] == "response_received" for hold in expected),
+                    receipt.get("requests") == expected and all(hold["status"] == "response_received" and "completion" in hold for hold in expected)
+                    and expected[-1]["completion"]["kind"] == "text",
                     "model_task_receipt_unverified")
         for stage, name, closed_name, baseline in (("before_reboot", "model_channel", "model_channel_closed", before),
                 ("after_reboot", "model_channel_after_reboot", "model_channel_after_reboot_closed", after)):

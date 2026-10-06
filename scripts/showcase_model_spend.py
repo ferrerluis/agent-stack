@@ -19,6 +19,7 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from showcase_cleanup import scope
 from showcase_models import ORIGINS, NoRedirect, selected_models, strict_json
+from showcase_model_completion import completion
 from showcase_preflight import PreflightError
 from showcase_policy import PolicyError, money, require, secret_ref, validate_model_policy as validate_policy, validate_model_account as validate_account
 
@@ -117,7 +118,7 @@ class ModelSpend:
             require(len(holds) == 1 and holds[0]["status"] == "uncertain", "model_request_not_pending")
         self.ledger.operate(check)
 
-    def received(self, role, request_sha256):
+    def received(self, role, request_sha256, proof=None):
         def update(state):
             # Cleanup can close the attempt while an admitted response arrives.
             # Keep its hold unchanged; never turn this into new spending authority.
@@ -126,6 +127,9 @@ class ModelSpend:
             holds = [h for h in rows[0]["model_requests"] if h["role"] == role and h["request_sha256"] == request_sha256]
             require(len(holds) == 1 and holds[0]["status"] == "uncertain", "model_request_not_pending")
             holds[0]["status"] = "response_received"
+            if proof is not None:
+                holds[0]["completion"] = copy.deepcopy(proof)
+            validate_account(rows[0])
         self.ledger.operate(update)
 
 
@@ -173,6 +177,11 @@ def prepare_request(policy, role, path, raw):
     if path == "/v1/chat/completions":
         require(type(value.get("n", 1)) is int and value.get("n", 1) == 1, "model_paid_feature_refused")
         require(not ("max_tokens" in value and "max_completion_tokens" in value), "invalid_model_request")
+        if value.get("stream", False):
+            options = value.get("stream_options", {})
+            require(isinstance(options, dict) and not options.keys() - {"include_usage", "include_obfuscation"}
+                    and all(type(item) is bool for item in options.values()), "invalid_model_request")
+            value["stream_options"] = options | {"include_usage": True}
     require(value.get("service_tier") in (None, "auto", "default", "standard_only"), "model_paid_feature_refused")
     value["service_tier"] = "standard_only" if provider == "anthropic" else "default"
     for key in ("input", "messages", "system"):
@@ -235,9 +244,10 @@ class RequestGate:
                         break
                     received_bytes += len(chunk)
                     require(received_bytes <= MAX_RESPONSE, "model_response_too_large")
-                    if sink is None:
-                        result.extend(chunk)
-                    else:
+                    # Keep the existing bounded wire delivery incremental.
+                    # Observe the same bytes privately for completion proof.
+                    result.extend(chunk)
+                    if sink is not None:
                         sink.write(chunk)
             require(0 <= self.now() - began < timeout, "model_request_timeout")
         except HTTPError as error:
@@ -249,7 +259,9 @@ class RequestGate:
         except BaseException:
             # The admission remains uncertain and charged at its whole bound.
             raise PolicyError("model_request_failed") from None
-        self.spend.received(role, request_hash)
+        terms = self.spend.policy["roles"][role]
+        proof = completion(provider, terms["model"], path, response_type, bytes(result), strict_json(body), terms)
+        self.spend.received(role, request_hash, proof)
         if sink is not None:
             sink.complete()
-        return response_type, bytes(result)
+        return response_type, bytes(result) if sink is None else b""

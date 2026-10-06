@@ -432,7 +432,7 @@ class GatewayStartTest(unittest.TestCase):
         fixture.reader.assert_not_called(); fixture.opener.open.assert_not_called()
         started = fixture.models.begin_task("codex")
         self.assertEqual(helper.request(fixture), 200)
-        self.assertEqual(fixture.models.task_receipt("codex", started)["status"], "gateway_responses_received")
+        self.assertEqual(fixture.models.task_receipt("codex", started)["status"], "provider_completions_verified")
         with self.assertRaises(PolicyError): fixture.models.gateway.authorize_role("codex")
 
     def test_runtime_nonce_before_task_start_uses_actual_http_without_hold_key_or_authorization(self):

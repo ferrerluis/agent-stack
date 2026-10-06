@@ -5,10 +5,12 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "showcase_policy.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("showcase_policy", SCRIPT)
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)

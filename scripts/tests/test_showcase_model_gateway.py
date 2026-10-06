@@ -23,6 +23,7 @@ import showcase_model_spend as spend
 from showcase_policy import PolicyError, Reservations
 from test_showcase_policy import config, quote, NOW
 import test_showcase_model_spend as fixtures
+import showcase_model_completion_fixtures as completions
 
 PRIVATE = "fixture-upstream-key-never-to-client-or-output"
 RUN = "as7-fixture01"
@@ -108,6 +109,32 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(len(account["model_requests"]), 4)
         self.assertTrue(all(row["status"] == "response_received" for row in account["model_requests"]))
         self.assertNotIn(PRIVATE, json.dumps(account)); self.assertTrue(all(token not in json.dumps(account) for token in tokens))
+
+    def test_complete_sse_is_forwarded_incrementally_unchanged_and_recorded_after_terminal(self):
+        frames = [completions.frame(row) for row in completions.stream_rows(completions.response())]
+        waiting, release = threading.Event(), threading.Event()
+        def final():
+            waiting.set(); self.assertTrue(release.wait(3)); return frames[-1]
+        self.opener.open.side_effect = lambda *args, **kwargs: Response(frames[:-1] + [final], "text/event-stream")
+        connection = HTTPConnection("127.0.0.1", self.gateway.server.server_port, timeout=3)
+        try:
+            connection.request("POST", "/codex/v1/responses", body(), self.headers("codex"))
+            response = connection.getresponse(); first = response.read1(len(frames[0]))
+            self.assertEqual(first, frames[0]); self.assertTrue(waiting.wait(1))
+            hold = self.account()["model_requests"][0]; self.assertEqual(hold["status"], "uncertain"); self.assertNotIn("completion", hold)
+            release.set(); self.assertEqual(first + response.read(), b"".join(frames))
+        finally: release.set(); connection.close()
+        hold = self.account()["model_requests"][0]
+        self.assertEqual(hold["completion"]["kind"], "text"); self.assertEqual(hold["held_usd"], "0.020640000")
+
+    def test_failed_http200_sse_preserves_original_wire_bytes_without_completion_or_refund(self):
+        raw = completions.frame({"type": "error", "error": {"type": "overloaded_error", "message": "fixture provider failure"}})
+        self.opener.open.side_effect = lambda *args, **kwargs: Response([raw[:17], raw[17:]], "text/event-stream")
+        status, _, actual = self.request()
+        self.assertEqual(status, 200); self.assertEqual(actual, raw)
+        hold = self.account()["model_requests"][0]
+        self.assertEqual(hold["status"], "response_received"); self.assertNotIn("completion", hold)
+        self.assertEqual(hold["held_usd"], "0.020640000"); self.assertEqual(self.opener.open.call_count, 1)
 
     def test_incremental_sse_reaches_actual_client_before_upstream_finishes_and_preserves_terminal_event(self):
         allow_finish, waiting = threading.Event(), threading.Event()

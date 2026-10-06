@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 from urllib.parse import urlparse
+from showcase_model_completion import validate_proof
 
 PROVIDERS = ("aws", "digitalocean", "gcp", "hetzner")
 RESOURCE_TYPES = {
@@ -251,15 +252,24 @@ def validate_model_account(row):
             "invalid_model_spend_account")
     holds = row["model_requests"]
     require(isinstance(holds, list) and len(holds) <= 128, "invalid_model_spend_account")
-    seen, counts, total = set(), dict.fromkeys(MODEL_ROLES, 0), Decimal(0)
+    seen, completions, counts, total = set(), set(), dict.fromkeys(MODEL_ROLES, 0), Decimal(0)
     for hold in holds:
-        object_fields(hold, ("role", "request_sha256", "held_usd", "started_at", "status"))
+        object_fields(hold, ("role", "request_sha256", "held_usd", "started_at", "status"), ("completion",))
         require(hold["role"] in MODEL_ROLES and isinstance(hold["request_sha256"], str) and re.fullmatch(MODEL_HASH, hold["request_sha256"]), "invalid_model_spend_account")
         key = (hold["role"], hold["request_sha256"])
         require(key not in seen and money(hold["held_usd"]) == costs[hold["role"]]
                 and type(hold["started_at"]) in (int, float) and math.isfinite(hold["started_at"])
                 and row["started_at"] <= hold["started_at"] < row["work_deadline"]
                 and hold["status"] in ("uncertain", "response_received"), "invalid_model_spend_account")
+        if "completion" in hold:
+            require(hold["status"] == "response_received", "invalid_model_spend_account")
+            try:
+                validate_proof(hold["completion"], row["model_policy"]["roles"][hold["role"]])
+            except (ValueError, TypeError, KeyError):
+                raise PolicyError("invalid_model_completion_account") from None
+            proof_key = (hold["completion"]["provider"], hold["completion"]["response_id_sha256"])
+            require(proof_key not in completions, "model_completion_already_recorded")
+            completions.add(proof_key)
         seen.add(key); counts[hold["role"]] += 1; total += costs[hold["role"]]
     require(all(counts[role] <= row["model_policy"]["roles"][role]["max_requests"] for role in MODEL_ROLES)
             and total <= money(row["model_usd"]), "invalid_model_spend_account")

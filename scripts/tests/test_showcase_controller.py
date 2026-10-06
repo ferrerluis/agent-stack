@@ -323,6 +323,23 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(len(value.calls), before)
         self.assertEqual(value.controller.reservation()["reserved_usd"], "2.00")
 
+    def test_http_only_matching_ledger_and_client_receipts_cannot_pass_verdict(self):
+        value = self.make(); self.assertEqual(value.controller.run_attempt(value.readiness, quote())["status"], "pass")
+        observed = copy.deepcopy(cleanup.private_read(value.controller.path)["acceptance"]["observed"])
+        evidence = cleanup.private_read(value.checks.path)
+        def erase(state):
+            for hold in state["attempts"][0]["model_requests"]: hold.pop("completion", None)
+        value.ledger.operate(erase)
+        holds = value.controller.reservation()["model_requests"]
+        for role in ("openclaw", "hermes", "codex", "claude"):
+            observed[role]["gateway_receipt"]["requests"] = [hold for hold in holds if hold["role"] == role]
+            evidence["agents" if role in ("openclaw", "hermes") else "tasks"][role]["gateway_receipt"] = copy.deepcopy(observed[role]["gateway_receipt"])
+        for status in ("provider_completions_verified", "gateway_responses_received"):
+            observed["openclaw"]["gateway_receipt"]["status"] = status
+            evidence["agents"]["openclaw"]["gateway_receipt"] = copy.deepcopy(observed["openclaw"]["gateway_receipt"])
+            with self.assertRaisesRegex(terraform.PolicyError, "model_task_receipt_unverified"):
+                value.controller.verdict(observed, evidence)
+
     def test_changed_evidence_or_step_receipt_cannot_restore_acceptance(self):
         for kind in ("evidence", "step"):
             value = self.make(); value.fail_destroy = True

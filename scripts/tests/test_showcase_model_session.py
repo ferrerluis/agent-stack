@@ -26,6 +26,7 @@ from showcase_policy import Reservations
 import tempfile
 from test_showcase_model_gateway import Response, body, PRIVATE
 from showcase_model_session_fixtures import FixtureGateway, FixtureTransport, FixtureSession, CAPABILITY
+import showcase_model_completion_fixtures as completions
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -123,7 +124,12 @@ class OriginalAccountSessionTest(unittest.TestCase):
         fixture.checks.bootstrap()
         if real_gateway:
             fixture.reader = Mock(return_value=PRIVATE)
-            fixture.opener = SimpleNamespace(open=Mock(return_value=Response()))
+            def reply(request, **kwargs):
+                api = "messages" if request.full_url.endswith("/messages") else "responses"
+                value = completions.response(api, response_id="fixture_" + hashlib.sha256(request.data).hexdigest())
+                streaming = json.loads(request.data).get("stream", False)
+                return Response([completions.encoded(value, streaming)], "text/event-stream" if streaming else "application/json")
+            fixture.opener = SimpleNamespace(open=Mock(side_effect=reply))
             def factory(spend, reader): return gateway.BudgetGateway(spend, fixture.reader, fixture.opener)
             fixture.models = session.ModelSession(fixture.checks, fixture.models.policy, factory, FixtureTransport)
             fixture.checks.models = None
@@ -131,12 +137,12 @@ class OriginalAccountSessionTest(unittest.TestCase):
         fixture.models.start("before_reboot")
         return fixture
 
-    def request(self, fixture, role="codex"):
+    def request(self, fixture, role="codex", raw=None):
         bundle = fixture.models.gateway.client(role)
         path = "/v1/responses" if bundle["provider"] == "openai" else "/v1/messages"
         connection = HTTPConnection("127.0.0.1", fixture.models.gateway.server.server_port, timeout=3)
         try:
-            connection.request("POST", "/" + role + path, body(path),
+            connection.request("POST", "/" + role + path, body(path) if raw is None else raw,
                                {"Content-Type": "application/json", "Authorization": "Bearer " + bundle["credential"]})
             response = connection.getresponse(); response.read(); return response.status
         finally: connection.close()
@@ -153,7 +159,7 @@ class OriginalAccountSessionTest(unittest.TestCase):
         self.assertEqual(receipt["requests"], account["model_requests"])
         self.assertEqual(receipt["quote_sha256"], account["quote_sha256"])
         self.assertEqual(receipt["source_revision"], fixture.prepared["source_revision"])
-        self.assertEqual(receipt["status"], "gateway_responses_received")
+        self.assertEqual(receipt["status"], "provider_completions_verified")
         self.assertEqual(account["model_usd"], "1.00")
         self.assertEqual(account["model_requests"][0]["held_usd"], "0.020640000")
         self.assertNotIn(PRIVATE, json.dumps(receipt)); fixture.reader.assert_called_once()
@@ -182,8 +188,43 @@ class OriginalAccountSessionTest(unittest.TestCase):
                         {"policy_sha256": "b" * 64}, {"extra": True}):
             with self.assertRaisesRegex(PolicyError, "model_task_receipt_unverified"):
                 fresh.models.task_receipt("codex", start | changes)
-        self.assertEqual(fresh.models.task_receipt("codex", start)["status"], "gateway_responses_received")
+        self.assertEqual(fresh.models.task_receipt("codex", start)["status"], "provider_completions_verified")
         with self.assertRaises(PolicyError): fresh.models.task_receipt("codex", start)
+
+    def test_http_ok_without_completion_seals_role_rejects_receipt_and_retains_full_hold(self):
+        fixture = self.make(real_gateway=True); start = fixture.models.begin_task("codex")
+        fixture.opener.open.side_effect = lambda *args, **kwargs: Response()
+        self.assertEqual(self.request(fixture), 200)
+        with self.assertRaisesRegex(PolicyError, "model_task_completion_unverified"):
+            fixture.models.task_receipt("codex", start)
+        hold = self.account(fixture)["model_requests"][0]
+        self.assertEqual(hold["status"], "response_received"); self.assertNotIn("completion", hold)
+        self.assertEqual(hold["held_usd"], "0.020640000")
+        with self.assertRaises(PolicyError): fixture.models.gateway.client("codex")
+        with self.assertRaises(PolicyError): fixture.models.begin_task("codex")
+        self.assertEqual(fixture.opener.open.call_count, 1)
+
+    def test_verified_tool_only_completion_cannot_be_a_completed_task_receipt(self):
+        fixture = self.make(); start = fixture.models.begin_task("codex")
+        fixture.models.fake_response("codex", b"fixture tool-only response")
+        def mutate(state):
+            state["attempts"][0]["model_requests"][0]["completion"]["kind"] = "tool_call"
+        fixture.ledger.operate(mutate)
+        with self.assertRaisesRegex(PolicyError, "model_task_completion_unverified"):
+            fixture.models.task_receipt("codex", start)
+        self.assertEqual(self.account(fixture)["model_requests"][0]["held_usd"], "0.020640000")
+
+    def test_real_loopback_tool_then_final_answer_has_two_verified_unrefunded_holds(self):
+        fixture = self.make(real_gateway=True); start = fixture.models.begin_task("codex")
+        replies = iter((completions.response(tool_call=True, response_id="fixture_tool"), completions.response(response_id="fixture_final")))
+        fixture.opener.open.side_effect = lambda *args, **kwargs: Response([completions.encoded(next(replies), True)], "text/event-stream")
+        tools = [{"type": "function", "name": "write_file", "parameters": {"type": "object"}}]
+        self.assertEqual(self.request(fixture, raw=body(text="first request", tools=tools)), 200)
+        self.assertEqual(self.request(fixture, raw=body(text="tool result then final", tools=tools)), 200)
+        receipt = fixture.models.task_receipt("codex", start)
+        self.assertEqual([hold["completion"]["kind"] for hold in receipt["requests"]], ["tool_call", "text"])
+        self.assertEqual([hold["held_usd"] for hold in receipt["requests"]], ["0.020640000"] * 2)
+        self.assertEqual(fixture.opener.open.call_count, 2); fixture.reader.assert_called_once()
 
     def test_workspace_route_proof_is_independent_of_the_probe_echo_and_never_stores_capability(self):
         fixture = self.make()
