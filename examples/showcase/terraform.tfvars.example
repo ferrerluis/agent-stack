@@ -19,3 +19,4 @@ public_domain_enabled               = false
 vpn_enabled                         = false
 host_codex_cli_enabled              = false
 generate_repo_ssh_config            = true
+gcp_pin_boot_image                 = true

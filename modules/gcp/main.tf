@@ -18,6 +18,14 @@ locals {
   })
 }
 
+# Only the named showcase opts in. The saved plan then contains a specific
+# image URI instead of resolving a moving family during apply.
+data "google_compute_image" "boot" {
+  count   = var.gcp_pin_boot_image ? 1 : 0
+  project = "ubuntu-os-cloud"
+  family  = "ubuntu-2204-lts"
+}
+
 resource "google_compute_network" "this" {
   project                 = var.gcp_project_id
   name                    = "${var.project_name}-network"
@@ -89,7 +97,7 @@ resource "google_compute_instance" "this" {
 
   boot_disk {
     initialize_params {
-      image = var.gcp_image
+      image = var.gcp_pin_boot_image ? one(data.google_compute_image.boot[*].self_link) : var.gcp_image
       size  = var.gcp_boot_disk_size_gb
       type  = "pd-balanced"
     }

@@ -1099,6 +1099,15 @@ variable "gcp_image" {
   type        = string
   default     = "ubuntu-os-cloud/ubuntu-2204-lts"
 }
+variable "gcp_pin_boot_image" {
+  description = "Resolve the standard Ubuntu family during planning so the saved showcase plan uses that exact image."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.gcp_pin_boot_image || var.gcp_image == "ubuntu-os-cloud/ubuntu-2204-lts"
+    error_message = "gcp_pin_boot_image requires the standard ubuntu-os-cloud/ubuntu-2204-lts family."
+  }
+}
 variable "gcp_disk_size_gb" {
   description = "Size of the separate persistent data disk."
   type        = number

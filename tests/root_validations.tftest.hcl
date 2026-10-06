@@ -565,6 +565,14 @@ run "rejects_wrong_gcp_zone" {
   }
   expect_failures = [var.gcp_zone]
 }
+run "rejects_pinned_nonstandard_gcp_image" {
+  command = plan
+  variables {
+    gcp_pin_boot_image = true
+    gcp_image          = "foreign-project/image"
+  }
+  expect_failures = [var.gcp_pin_boot_image]
+}
 run "rejects_unpinned_claude" {
   command = plan
   variables {

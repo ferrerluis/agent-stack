@@ -36,7 +36,7 @@ def plan():
 
 def image():
     name = "ubuntu-2204-jammy-v20261001"
-    return {"name": name, "family": "ubuntu-2204-lts", "status": "READY", "architecture": "X86_64",
+    return {"name": name, "id": "1234567890123456789", "family": "ubuntu-2204-lts", "status": "READY", "architecture": "X86_64",
             "licenses": [prices.LICENSE], "selfLink": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/" + name}
 
 
@@ -101,7 +101,7 @@ class PriceTest(unittest.TestCase):
         self.assertEqual(result["source_revision"], "a" * 40); self.assertEqual(result["plan_sha256"], "b" * 64)
         self.assertFalse(result["complete_quote"]); self.assertEqual(result["launch_gate"], "unverified")
         self.assertNotIn(PRIVATE, json.dumps(result))
-        self.adapter.http.request.assert_called_once_with(prices.IMAGE_ENDPOINT, "Bearer " + PRIVATE)
+        self.adapter.http.request.assert_called_once_with(prices.IMAGE_ENDPOINT + image()["name"], "Bearer " + PRIVATE)
         with self.assertRaises(PolicyError): reserve_amount(result, "gcp", 14400, NOW)
 
     def test_changed_scope_unknown_values_extra_disks_spot_gpu_or_foreign_network_fail_before_reads(self):
@@ -153,11 +153,56 @@ class PriceTest(unittest.TestCase):
                          {"licenses": [PRIVATE]}, {"selfLink": "https://foreign.invalid/image"}):
             self.adapter.http.request.return_value = {**image(), **mutation}
             with self.subTest(mutation=mutation), self.assertRaisesRegex(PolicyError, "gcp_price_ubuntu_image_required"): self.measure()
-            self.assertEqual(self.http.calls, [])
+        self.assertEqual(self.http.calls, [])
+
+    def test_family_or_different_immutable_boot_image_refused_before_cloud_reads(self):
+        for selected in ("ubuntu-os-cloud/ubuntu-2204-lts", prices.IMAGE_LINK + "ubuntu-2204-jammy-v20261002",
+                         "https://foreign.invalid/" + image()["name"]):
+            self.plan = plan()
+            vm = next(row["change"]["after"] for row in self.plan["resource_changes"] if row["type"] == "google_compute_instance")
+            vm["boot_disk"][0]["initialize_params"][0]["image"] = selected
+            with self.subTest(selected=selected), self.assertRaises(PolicyError): self.measure()
+        self.adapter.get.assert_not_called(); self.adapter.http.request.assert_not_called(); self.assertEqual(self.http.calls, [])
+
+    def test_missing_duplicate_unresolved_or_foreign_planned_image_refused_before_reads(self):
+        changes = (
+            lambda p: p.pop("planned_values"),
+            lambda p: p["planned_values"]["root_module"]["child_modules"].append(copy.deepcopy(p["planned_values"]["root_module"]["child_modules"][0])),
+            lambda p: p["planned_values"]["root_module"]["child_modules"][0].update(address="module.foreign[0]"),
+            lambda p: p["planned_values"]["root_module"]["child_modules"][0]["resources"].append(copy.deepcopy(p["planned_values"]["root_module"]["child_modules"][0]["resources"][0])),
+        )
+        for change in changes:
+            self.plan = plan(); change(self.plan)
+            with self.subTest(change=change), self.assertRaisesRegex(PolicyError, "gcp_resolved_image_plan_required"): self.measure()
+        for mutation in ({"project": "foreign-project"}, {"family": "paid-pro-family"}, {"status": "PENDING"},
+                         {"image_id": None}, {"image_id": True}, {"image_id": "0"}, {"image_id": str(2 ** 64)},
+                         {"self_link": "https://foreign.invalid/image"}, {"licenses": [PRIVATE]}):
+            self.plan = plan()
+            self.plan["planned_values"]["root_module"]["child_modules"][0]["resources"][0]["values"].update(mutation)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(PolicyError, "gcp_resolved_image_plan_required"): self.measure()
+        self.plan = plan()
+        data = self.plan["planned_values"]["root_module"]["child_modules"][0]["resources"][0]
+        self.plan["resource_changes"].append({key: data[key] for key in ("address", "mode", "type")} | {
+            "change": {"actions": ["read"], "after": data["values"], "after_unknown": {"image_id": True}}})
+        with self.assertRaisesRegex(PolicyError, "gcp_resolved_image_plan_required"): self.measure()
+        self.adapter.get.assert_not_called(); self.adapter.http.request.assert_not_called(); self.assertEqual(self.http.calls, [])
+
+    def test_exact_named_image_id_and_availability_rechecked_without_family_lookup(self):
+        for mutation in ({"name": "ubuntu-2204-jammy-v20261002"}, {"id": "987654321"}, {"id": 1234567890123456789},
+                         {"deprecated": {"state": "DEPRECATED"}}, {"deprecated": {"state": "ACTIVE", "obsolete": "2099-01-01T00:00:00Z"}}):
+            self.adapter.http.request.return_value = image() | mutation
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(PolicyError, "gcp_price_ubuntu_image_required"): self.measure()
+        self.assertEqual(self.http.calls, [])
+        self.adapter.http.request.return_value = image()
+        result = self.measure()
+        self.assertEqual(result["selection"]["image_id"], image()["id"])
+        self.assertEqual(result["selection"]["image_self_link"], image()["selfLink"])
+        self.assertNotIn("resolved_image_plan_binding", result["not_verified"])
+        self.assertTrue(all(call.args[0] == prices.IMAGE_ENDPOINT + image()["name"] for call in self.adapter.http.request.call_args_list))
 
     def test_changed_model_cost_network_cleanup_and_image_binding_stay_pending(self):
         result = self.measure()
-        for code in ("model_execution_cost_bound", "egress_unit_price_and_volume_bound", "cleanup_deadline_enforcement", "resolved_image_plan_binding"):
+        for code in ("model_execution_cost_bound", "egress_unit_price_and_volume_bound", "cleanup_deadline_enforcement"):
             self.assertIn(code, result["not_verified"])
 
     def test_expired_measurement_cannot_receive_receipt(self):

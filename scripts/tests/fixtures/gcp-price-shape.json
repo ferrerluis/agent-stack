@@ -79,7 +79,7 @@
               "initialize_params": [
                 {
                   "enable_confidential_compute": null,
-                  "image": "ubuntu-os-cloud/ubuntu-2204-lts",
+                  "image": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20261001",
                   "replica_zones": null,
                   "resource_manager_tags": null,
                   "size": 40,
@@ -217,5 +217,32 @@
         "after_unknown": {}
       }
     }
-  ]
+  ],
+  "planned_values": {
+    "root_module": {
+      "child_modules": [
+        {
+          "address": "module.gcp[0]",
+          "resources": [
+            {
+              "address": "module.gcp[0].data.google_compute_image.boot[0]",
+              "mode": "data",
+              "type": "google_compute_image",
+              "values": {
+                "name": "ubuntu-2204-jammy-v20261001",
+                "image_id": "1234567890123456789",
+                "family": "ubuntu-2204-lts",
+                "project": "ubuntu-os-cloud",
+                "status": "READY",
+                "licenses": [
+                  "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/licenses/ubuntu-2204-lts"
+                ],
+                "self_link": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20261001"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
 }

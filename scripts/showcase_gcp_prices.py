@@ -15,7 +15,9 @@ from showcase_prices import Decimal, NoRedirect, dollars
 
 SERVICE = "services/6F81-5844-456A"
 ENDPOINT = "https://cloudbilling.googleapis.com/v1/" + SERVICE + "/skus"
-IMAGE_ENDPOINT = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts"
+IMAGE_ENDPOINT = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/"
+IMAGE_LINK = "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/"
+IMAGE_ADDRESS = "module.gcp[0].data.google_compute_image.boot[0]"
 LICENSE = "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/licenses/ubuntu-2204-lts"
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 MAX_PAGES = 200
@@ -179,8 +181,34 @@ class GCPCatalog:
         raise PolicyError("gcp_price_pagination_limit")
 
 
+def planned_image(plan):
+    """Require the actual resolved data value, never a caller-supplied image hint."""
+    root = plan.get("planned_values", {}).get("root_module", {})
+    modules = root.get("child_modules", [])
+    require(isinstance(modules, list) and all(isinstance(item, dict) for item in modules), "gcp_resolved_image_plan_required")
+    selected = [item for item in modules if item.get("address") == "module.gcp[0]"]
+    require(len(selected) == 1 and isinstance(selected[0].get("resources"), list)
+            and all(isinstance(item, dict) for item in selected[0]["resources"]), "gcp_resolved_image_plan_required")
+    images = [item for item in selected[0]["resources"] if item.get("type") == "google_compute_image"]
+    require(len(images) == 1 and images[0].get("address") == IMAGE_ADDRESS and images[0].get("mode") == "data"
+            and isinstance(images[0].get("values"), dict), "gcp_resolved_image_plan_required")
+    value = images[0]["values"]
+    name, identifier = value.get("name"), value.get("image_id")
+    require(isinstance(name, str) and re.fullmatch(r"ubuntu-2204-jammy-v[0-9]+", name)
+            and isinstance(identifier, str) and re.fullmatch(r"[1-9][0-9]{0,19}", identifier) and int(identifier) < 2 ** 64
+            and value.get("project") == "ubuntu-os-cloud" and value.get("family") == "ubuntu-2204-lts"
+            and value.get("status") == "READY" and value.get("licenses") == [LICENSE]
+            and value.get("self_link") == IMAGE_LINK + name, "gcp_resolved_image_plan_required")
+    changes = [item for item in plan["resource_changes"] if item.get("address") == IMAGE_ADDRESS]
+    require(len(changes) <= 1 and all(item.get("mode") == "data" and item.get("type") == "google_compute_image"
+            and item["change"].get("actions") == ["no-op"] and item["change"].get("after") == value
+            and item["change"].get("after_unknown", {}) == {} for item in changes), "gcp_resolved_image_plan_required")
+    return {"image": name, "image_id": identifier, "image_self_link": value["self_link"]}
+
+
 def plan_selection(plan, cloud, prefix, run):
     validate_fresh_plan(plan, "gcp", prefix, run)
+    image = planned_image(plan)
     rows = {}
     for resource in plan["resource_changes"]:
         if resource.get("mode") == "data" or resource["type"] in ("random_password", "terraform_data", "local_file"):
@@ -207,7 +235,7 @@ def plan_selection(plan, cloud, prefix, run):
     root = roots[0]; params = root.get("initialize_params")
     require(isinstance(params, list) and len(params) == 1 and isinstance(params[0], dict), "gcp_price_plan_disk_changed")
     boot = params[0]
-    require(boot.get("image") == "ubuntu-os-cloud/ubuntu-2204-lts" and boot.get("type") == "pd-balanced"
+    require(boot.get("image") == image["image_self_link"] and boot.get("type") == "pd-balanced"
             and type(boot.get("size")) is int and 20 <= boot["size"] <= 65536
             and disk.get("type") == "pd-balanced" and type(disk.get("size")) is int and 10 <= disk["size"] <= 65536,
             "gcp_price_plan_disk_changed")
@@ -232,7 +260,7 @@ def plan_selection(plan, cloud, prefix, run):
     require(isinstance(boot_unknown, list) and len(boot_unknown) == 1 and isinstance(boot_unknown[0], dict)
             and not any(boot_unknown[0].get(key) for key in ("image", "size", "type")), "gcp_price_plan_values_unknown")
     return {"boot_volume_gib": boot["size"], "data_volume_gib": disk["size"], "vcpus": int(family[2]),
-            "ram_gib_per_vcpu": {"standard": 4, "highmem": 8, "highcpu": 1}[family[1]]}
+            "ram_gib_per_vcpu": {"standard": 4, "highmem": 8, "highcpu": 1}[family[1]], **image}
 
 
 def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, catalog=None, now=time.time):
@@ -247,11 +275,12 @@ def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, c
             and type(machine.get("guestCpus")) is int and machine["guestCpus"] == selection["vcpus"] and 2 <= selection["vcpus"] <= 32
             and type(machine.get("memoryMb")) is int and machine["memoryMb"] == ram * 1024 and ram >= 8,
             "gcp_price_vm_size_unavailable")
-    image = adapter.http.request(IMAGE_ENDPOINT, "Bearer " + adapter.access_token())
+    image = adapter.http.request(IMAGE_ENDPOINT + selection["image"], "Bearer " + adapter.access_token())
     require(isinstance(image, dict) and image.get("family") == "ubuntu-2204-lts" and image.get("architecture") == "X86_64"
             and image.get("status") == "READY" and image.get("licenses") == [LICENSE]
-            and isinstance(image.get("name"), str) and re.fullmatch(r"ubuntu-2204-jammy-v[0-9]+", image["name"])
-            and image.get("selfLink") == "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/" + image["name"],
+            and image.get("name") == selection["image"] and image.get("id") == selection["image_id"]
+            and image.get("selfLink") == selection["image_self_link"]
+            and image.get("deprecated") in (None, {}),
             "gcp_price_ubuntu_image_required")
     catalog = GCPCatalog(adapter, now=now) if catalog is None else catalog
     rates, sources = catalog.selected(cloud["region"])
@@ -261,7 +290,7 @@ def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, c
     disk_rate = rates["disk"] / 672
     return {"schema": 1, "provider": "gcp", "status": "resource_unit_prices_measured", "currency": "USD", "run_id": prefix,
         "source_revision": source_revision, "plan_sha256": plan_sha256, "verified_at": datetime.fromtimestamp(finished, timezone.utc).isoformat(),
-        "selection": {key: cloud[key] for key in ("account_id", "project_id", "region", "zone", "size")} | selection | {"ram_gib": ram, "image": image["name"]},
+        "selection": {key: cloud[key] for key in ("account_id", "project_id", "region", "zone", "size")} | selection | {"ram_gib": ram},
         "vcpu_hourly_usd_upper_bound": dollars(rates["cpu"]), "ram_gib_hourly_usd_upper_bound": dollars(rates["ram"]),
         "vm_hourly_usd_upper_bound": dollars(vm_rate), "balanced_disk_gib_monthly_usd_upper_bound": dollars(rates["disk"]),
         "balanced_disk_gib_hourly_usd_upper_bound": dollars(disk_rate), "external_ipv4_count": 1,
@@ -270,4 +299,4 @@ def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, c
         "sources": sources | {"machine_sha256": digest(machine), "image_sha256": digest(image)},
         "launch_gate": "unverified", "complete_quote": False,
         "not_verified": ["model_execution_cost_bound", "egress_unit_price_and_volume_bound", "cleanup_deadline_enforcement",
-                         "tax_and_account_adjustments", "resolved_image_plan_binding", "disk_network_and_scheduling_defaults", "remaining_resource_charges"]}
+                         "tax_and_account_adjustments", "disk_network_and_scheduling_defaults", "remaining_resource_charges"]}

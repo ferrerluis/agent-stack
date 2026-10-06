@@ -384,6 +384,7 @@ module "gcp" {
   gcp_zone              = var.gcp_zone
   gcp_machine_type      = var.gcp_machine_type
   gcp_image             = var.gcp_image
+  gcp_pin_boot_image    = var.gcp_pin_boot_image
   gcp_disk_size_gb      = var.gcp_disk_size_gb
   gcp_boot_disk_size_gb = var.gcp_boot_disk_size_gb
   tailscale_enabled     = var.tailscale_enabled
