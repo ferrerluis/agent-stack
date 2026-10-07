@@ -214,8 +214,10 @@ def prepare_request(policy, role, path, raw):
             value["reasoning_effort"] = "none"
         else:
             value["reasoning"] = {"effort": "none"}
-    if terms["model"] == "claude-haiku-4-5-20251001":
+    if terms["model"] in ("claude-haiku-4-5-20251001", "claude-haiku-5-5"):
         value["thinking"] = {"type": "disabled"}
+        if terms["model"] == "claude-haiku-5-5":
+            value["output_config"] = {"effort": "low"}
     return ORIGINS[provider] + path, json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 

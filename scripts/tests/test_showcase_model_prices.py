@@ -105,7 +105,8 @@ class TermsTest(unittest.TestCase):
 
     def tiered_haiku(self):
         self.config["models"].update(hermes="anthropic/claude-haiku-5-5", claude="claude-haiku-5-5")
-        self.http.responses["claude-haiku-5-5"] = {"type": "model", "id": "claude-haiku-5-5", "max_input_tokens": 1000000, "max_tokens": 128000}
+        self.http.responses["claude-haiku-5-5"] = {"type": "model", "id": "claude-haiku-5-5", "max_input_tokens": 1000000, "max_tokens": 128000,
+            "capabilities": {"thinking": {"types": {"disabled": {"supported": True}}}, "effort": {"low": {"supported": True}}}}
         self.public.documents.update(anthropic_models=HAIKU_OVERVIEW, anthropic_prices=HAIKU_PRICES)
 
     def test_haiku_prompt_length_tiers_bound_highest_input_output_and_cache_rates(self):
@@ -128,6 +129,13 @@ class TermsTest(unittest.TestCase):
     def test_simple_price_row_with_unbound_continuation_refuses(self):
         self.public.documents['anthropic_prices'] = ANTHROPIC_DOCUMENT.replace('<tr><td>Claude Sonnet', HAIKU_TIERS.split('\n')[1] + '<tr><td>Claude Sonnet')
         with self.assertRaisesRegex(PolicyError, 'model_terms_price_unsupported'): self.measure()
+
+    def test_haiku_cannot_use_unverified_thinking_and_effort_settings(self):
+        for capabilities in (None, {}, {'thinking': {'types': {'disabled': {'supported': False}}}, 'effort': {'low': {'supported': True}}},
+                             {'thinking': {'types': {'disabled': {'supported': True}}}, 'effort': {'low': {'supported': False}}},
+                             {'thinking': {'types': {'disabled': {'supported': 1}}}, 'effort': {'low': {'supported': True}}}):
+            self.tiered_haiku(); self.http.responses['claude-haiku-5-5']['capabilities'] = capabilities
+            with self.subTest(capabilities=capabilities), self.assertRaisesRegex(PolicyError, 'model_terms_capabilities_changed'): self.measure()
 
     def test_openai_dated_snapshot_is_bound_to_page_without_changing_requested_id(self):
         model = "gpt-6.1-sol-2026-09-24"

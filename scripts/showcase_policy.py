@@ -172,8 +172,11 @@ def validate_inputs(config, provider):
 
 
 def models_approved(models):
-    return models == {"openclaw": "openai/gpt-6-luna", "hermes": "anthropic/claude-haiku-4-5-20251001",
-                      "codex": "gpt-6-luna", "claude": "claude-haiku-4-5-20251001"}
+    # The user requested cheaper future tests within the same cash cap.
+    # Keep the older selection valid for immutable cleanup records.
+    return any(models == {"openclaw": "openai/gpt-6-luna", "hermes": "anthropic/" + model,
+                          "codex": "gpt-6-luna", "claude": model}
+               for model in ("claude-haiku-4-5-20251001", "claude-haiku-5-5"))
 
 
 def validate_fresh_plan(plan, provider, resource_prefix, run_dir):

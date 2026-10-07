@@ -121,6 +121,21 @@ class PrepaidTest(unittest.TestCase):
             elif role=='codex':self.assertEqual(actual['reasoning'],{'effort':'none'})
             else:self.assertEqual(actual['reasoning_effort'],'none')
 
+    def test_cheaper_haiku_is_allowed_with_unchanged_cash_and_prepaid_limits(self):
+        self.config['models'].update(hermes='anthropic/claude-haiku-5-5', claude='claude-haiku-5-5')
+        validate_inputs(self.config, 'aws')
+        p=policy(self.config)
+        for role in ('hermes', 'claude'):
+            value={'model':'claude-haiku-5-5', 'messages':[{'role':'user','content':'fixture'}],
+                   'thinking':{'type':'adaptive'}, 'output_config':{'effort':'max'}, 'max_tokens':1000}
+            _,raw=prepare_request(p,role,'/v1/messages',json.dumps(value).encode());actual=json.loads(raw)
+            self.assertEqual(actual['thinking'], {'type':'disabled'})
+            self.assertEqual(actual['output_config'], {'effort':'low'})
+            self.assertEqual(actual['max_tokens'], 128)
+            self.assertEqual(actual['service_tier'], 'standard_only')
+        self.config['models']['claude']='claude-haiku-4-5-20251001'
+        with self.assertRaisesRegex(PolicyError, 'approved_models_required'): validate_inputs(self.config, 'aws')
+
     def test_only_verified_usage_tightens_prepaid_bound_original_hold_is_preserved(self):
         terms=policy(self.config)['roles']['claude']
         hold={'held_usd':'0.50','status':'response_received'}

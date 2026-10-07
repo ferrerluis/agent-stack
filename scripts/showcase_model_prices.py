@@ -158,6 +158,16 @@ def anthropic_terms(documents, model, metadata):
     require(type(metadata.get("max_input_tokens")) is int and type(metadata.get("max_tokens")) is int
             and metadata["max_input_tokens"] == context and metadata["max_tokens"] == output,
             "model_terms_metadata_limits_changed")
+    if model == "claude-haiku-5-5":
+        capabilities = metadata.get("capabilities")
+        require(isinstance(capabilities, dict), "model_terms_capabilities_changed")
+        thinking, effort = capabilities.get("thinking"), capabilities.get("effort")
+        require(isinstance(thinking, dict) and isinstance(thinking.get("types"), dict)
+                and isinstance(thinking["types"].get("disabled"), dict)
+                and thinking["types"]["disabled"].get("supported") is True
+                and isinstance(effort, dict) and isinstance(effort.get("low"), dict)
+                and effort["low"].get("supported") is True,
+                "model_terms_capabilities_changed")
     parsed, pricing = visible(documents["anthropic_prices"])
     prices = one([table for table in parsed.tables if len(table) >= 2 and table[1] ==
                   ["Name", "Input", "Output", "5m writes", "1h writes", "Hits and refreshes"]], "model_terms_price_unsupported")
@@ -240,7 +250,7 @@ def measure_model_terms(config, provider, revision, plan_sha256, secret_reader, 
             measured = anthropic_terms({name: documents[url] for name, url in SOURCES.items()}, model, raw)
         metadata[(model_provider, model)] = raw
         terms[(model_provider, model)] = {"provider": model_provider, "model": model, **measured,
-            "metadata_sha256": digest({key: raw[key] for key in ("id", "max_input_tokens", "max_tokens", "shutdown_date") if key in raw})}
+            "metadata_sha256": digest({key: raw[key] for key in ("id", "max_input_tokens", "max_tokens", "shutdown_date", "capabilities") if key in raw})}
     finished = now()
     require(binding == {"scope": scope(config, provider), "models": config["models"],
                        "refs": {name: config["secret_refs"][name] for name in ("openai_api_key", "anthropic_api_key")},
