@@ -23,7 +23,7 @@ import sys
 import tarfile
 import time
 
-from showcase_policy import PROVIDERS, PolicyError, require, validate_inputs
+from showcase_policy import PROVIDERS, PolicyError, require, validate_inputs, trial_egress_cap
 from showcase_preflight import PreflightError, read_secret
 from showcase_cleanup import private_read, private_write, scope
 
@@ -171,7 +171,7 @@ def settings(config, provider, prefix, public_key, profile_source):
     if "funding" in config:
         values["showcase_trial_limits"] = {
             "deadline_utc": datetime.fromtimestamp(time.time() + config["attempt_seconds"], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "egress_cap_bytes": 1073741824}
+            "egress_cap_bytes": trial_egress_cap(config)}
         if provider == "aws":
             require(cloud.get("ami_id") == "ami-062944a84867f2386", "approved_image_required")
             values["aws_ami_id"] = cloud["ami_id"]

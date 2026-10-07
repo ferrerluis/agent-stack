@@ -15,6 +15,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 import showcase_attempt as attempt
 from test_showcase_policy import config, REF
+from test_showcase_prepaid import funded
 
 
 def archive(files, extra=None):
@@ -67,6 +68,15 @@ class IsolationTest(unittest.TestCase):
                         profile.replace("gcp_showcase_cost_controls         = true", "gcp_showcase_cost_controls         = false")):
             with self.assertRaises(attempt.PolicyError):
                 attempt.settings(config(), "aws", "as7-fixture01", "ssh-ed25519 fixture", changed)
+
+    def test_funded_guest_settings_enforce_the_selected_trial_egress_cap(self):
+        value=funded()
+        profile=(attempt.ROOT/'examples/showcase/terraform.tfvars.example').read_text()
+        ordinary=attempt.settings(value,'digitalocean','as7-fixture01','ssh-ed25519 fixture',profile)
+        self.assertEqual(ordinary['showcase_trial_limits']['egress_cap_bytes'],1073741824)
+        value['trial_egress_cap_bytes']=536870912
+        bounded=attempt.settings(value,'digitalocean','as7-fixture01','ssh-ed25519 fixture',profile)
+        self.assertEqual(bounded['showcase_trial_limits']['egress_cap_bytes'],536870912)
 
     def test_environment_ignores_personal_credentials_tf_cli_overrides_proxies_and_agents(self):
         poisoned = {key: "must-not-inherit" for key in ("TF_VAR_gateway_token", "TF_LOG", "TF_CLI_ARGS", "AWS_PROFILE", "AWS_ACCESS_KEY_ID",

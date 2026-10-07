@@ -17,7 +17,7 @@ from showcase_attempt import ROOT, verify_prepared
 from showcase_cleanup import private_read, private_write, scope
 from showcase_controller import RunController, prepare_container_deferral, proof_hash
 from showcase_model_session import ModelSession
-from showcase_policy import PolicyError, require, money
+from showcase_policy import PolicyError, require, money, trial_egress_cap, Reservations
 from showcase_terraform import LAUNCH_CHECKS
 
 RATES = {"aws": "vm_cpu_disks_ipv4_hourly_usd_upper_bound", "digitalocean": "vm_and_disk_hourly_usd",
@@ -27,7 +27,8 @@ RATES = {"aws": "vm_cpu_disks_ipv4_hourly_usd_upper_bound", "digitalocean": "vm_
 def trial(attempt):
     settings = private_read(attempt.checkout / "terraform.tfvars.json")
     value = settings.get("showcase_trial_limits")
-    require(isinstance(value, dict) and value.get("egress_cap_bytes") == 1073741824,
+    require(isinstance(value, dict) and type(value.get("egress_cap_bytes")) is int
+            and value.get("egress_cap_bytes") == trial_egress_cap(attempt.config),
             "trial_cost_controls_required")
     try:
         deadline = datetime.strptime(value["deadline_utc"], "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc).timestamp()
@@ -80,7 +81,15 @@ def check_peer_lifetime(attempt):
         deadline = datetime.fromisoformat(peer["deadline_utc"]).timestamp()
     except (ValueError, KeyError, TypeError):
         raise PolicyError("peer_lifetime_unverified") from None
-    require(peer.get("compute_created") is True and peer.get("reserve_usd") == "1.00"
+    funded = peer.get("name") == "as7-peer-3bc66e" and peer.get("reserve_usd") == "1.00"
+    if not funded:
+        def binding(state):
+            matches = [row for row in state.get("peer_reservations", []) if row["name"] == peer.get("name")]
+            require(len(matches) == 1 and matches[0]["reserved_usd"] == peer.get("reserve_usd")
+                    and abs(matches[0]["deadline"] - deadline) <= 0.00001, "peer_funding_unverified")
+        Reservations(attempt.run.parent.parent, attempt.config).operate(binding)
+        funded = True
+    require(peer.get("compute_created") is True and funded
             and attempt.now() + attempt.config["attempt_seconds"] < deadline,
             "peer_lifetime_insufficient")
     return deadline
@@ -95,23 +104,24 @@ def complete_quote(attempt, resource):
     currency = resource.get("currency")
     require(currency == "USD", "usd_account_prices_required")
     # Actual unit reads plus a deliberately generous 100% account adjustment.
-    # A 4-GiB allowance conservatively covers the shared 1-GiB routing counters
-    # across exactly two boots, including framing/measurement differences.
+    # Two boots and a further 2x framing/measurement margin cover the actual
+    # per-boot quota. Retain the separate account adjustment below.
     # No transfer pool or CPU-credit allowance is subtracted.
     hourly = money(resource[RATES[attempt.provider]]) * 2
+    traffic_gib = Decimal(trial_egress_cap(attempt.config) * 4) / 1073741824
     fixed = Decimal("0.50")
     if attempt.provider == "digitalocean":
-        fixed = max(fixed, money(resource["outbound_gib_usd"]) * 4 * 2 + money(resource["vm_minimum_usd"]) * 2)
+        fixed = max(fixed, money(resource["outbound_gib_usd"]) * traffic_gib * 2 + money(resource["vm_minimum_usd"]) * 2)
     elif attempt.provider == "hetzner":
-        fixed = max(fixed, money(resource["outbound_tb_upper_bound"]) * Decimal(4 * 1073741824) / 1000000000000 * 2)
+        fixed = max(fixed, money(resource["outbound_tb_upper_bound"]) * traffic_gib * 1073741824 / 1000000000000 * 2)
         hourly *= 2  # whole-hour server rounding within a noninteger lifetime
     else:
-        # $0.50 reserves up to $0.0625/GiB after account adjustment. A fresh
-        # unit-price check below replaces this with the actual higher bound.
+        # Retain a minimum fixed reserve even when the measured quota-bound
+        # transfer cost is lower; fresh unit prices may raise this bound.
         from showcase_network_prices import measure_network
         network = measure_network(attempt)
         private_write(attempt.run / "network-prices.json", network)
-        fixed = max(fixed, money(network["usd_per_gib_upper_bound"]) * 4 * 2)
+        fixed = max(fixed, money(network["usd_per_gib_upper_bound"]) * traffic_gib * 2)
     source = {"aws":"https://aws.amazon.com/ec2/pricing/on-demand/",
               "digitalocean":"https://www.digitalocean.com/pricing/droplets",
               "gcp":"https://cloud.google.com/vpc/pricing",

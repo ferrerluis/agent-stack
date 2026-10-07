@@ -72,6 +72,12 @@ def digitalocean_showcase_cidr(prefix):
     return "10.247." + str(int(hashlib.sha256(prefix.encode()).hexdigest()[:2], 16)) + ".0/24"
 
 
+def trial_egress_cap(config):
+    value = config.get("trial_egress_cap_bytes", 1073741824)
+    require(type(value) is int and value in (536870912, 1073741824), "trial_egress_cap_invalid")
+    return value
+
+
 def secret_ref(value):
     # Require field-level references; never accept values, CLI commands or
     # item exports that could include unrelated secrets.
@@ -82,7 +88,8 @@ def secret_ref(value):
 
 def validate_inputs(config, provider):
     require(provider in PROVIDERS, "invalid_provider")
-    object_fields(config, ("schema", "profile", "owner", "budget_usd", "attempt_seconds", "max_attempts", "runner", "pins", "models", "secret_refs", "tailnet", "providers"), ("funding",))
+    object_fields(config, ("schema", "profile", "owner", "budget_usd", "attempt_seconds", "max_attempts", "runner", "pins", "models", "secret_refs", "tailnet", "providers"), ("funding", "trial_egress_cap_bytes"))
+    trial_egress_cap(config)
     require(type(config["schema"]) is int and config["schema"] == 1 and config["profile"] == "showcase", "invalid_profile")
     require(text(config["owner"]), "owner_required")
     require(0 < money(config["budget_usd"]) <= 25, "budget_exceeds_approval")
@@ -410,6 +417,18 @@ class Reservations:
                 require(attempt["status"] in ("active", "cleaned") and attempt["provider"] in PROVIDERS, "ledger_unreadable")
                 money(attempt["reserved_usd"])
                 validate_model_account(attempt)
+            peers = state.get("peer_reservations", [])
+            require(isinstance(peers, list), "ledger_unreadable")
+            names = set()
+            for peer in peers:
+                object_fields(peer, ("name", "reserved_usd", "started_at", "deadline", "quote"))
+                require(isinstance(peer["name"], str) and re.fullmatch(r"as7-peer-[a-z0-9-]{8,30}", peer["name"])
+                        and peer["name"] not in names and 0 < money(peer["reserved_usd"]) <= 2
+                        and type(peer["started_at"]) in (int, float) and math.isfinite(peer["started_at"])
+                        and type(peer["deadline"]) in (int, float) and math.isfinite(peer["deadline"])
+                        and 0 < peer["deadline"] - peer["started_at"] <= 14400, "ledger_unreadable")
+                require(money(peer["reserved_usd"]) == self.peer_amount(peer["quote"], peer["deadline"] - peer["started_at"]), "ledger_unreadable")
+                names.add(peer["name"])
             result = update(state)
             with tempfile.NamedTemporaryFile(mode="w", dir=self.directory, delete=False) as file:
                 temporary = Path(file.name)
@@ -428,6 +447,46 @@ class Reservations:
                     temporary.unlink(missing_ok=True)
             return result
 
+    @staticmethod
+    def peer_amount(quote, seconds):
+        object_fields(quote, ("source", "verified_at", "hourly_usd", "fixed_usd", "cleanup_usd"))
+        require(quote["source"] == "https://aws.amazon.com/ec2/pricing/on-demand/"
+                and type(quote["verified_at"]) in (int, float) and math.isfinite(quote["verified_at"])
+                and 0 < money(quote["hourly_usd"]) and money(quote["fixed_usd"]) >= money("0.40")
+                and money(quote["cleanup_usd"]) >= money("0.10"), "peer_quote_invalid")
+        return (money(quote["hourly_usd"]) * Decimal(str(seconds)) / 3600
+                + money(quote["fixed_usd"]) + money(quote["cleanup_usd"])).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+    def reserve_peer(self, name, quote, seconds, now=None):
+        """Charge a replacement peer before creation, preserving all history.
+
+        Requires independent native identity, price and fresh-prefix checks.
+        This cost record does not itself authorize a cloud operation.
+        """
+        validate_inputs(self.config, "aws")
+        now = time.time() if now is None else now
+        require("funding" in self.config and type(seconds) is int and 3600 <= seconds <= 14400
+                and isinstance(name, str) and re.fullmatch(r"as7-peer-[a-z0-9-]{8,30}", name)
+                and type(now) in (int, float) and math.isfinite(now), "peer_reservation_invalid")
+        amount = self.peer_amount(quote, seconds)
+        require(now - 300 <= quote["verified_at"] <= now + 60 and amount <= 2, "peer_quote_invalid")
+        def update(state):
+            require(not any(row["status"] == "active" for row in state["attempts"]), "cleanup_required_before_launch")
+            peers = state.setdefault("peer_reservations", [])
+            require(not any(row["name"] == name for row in peers), "peer_name_already_reserved")
+            require(self.committed_cash(state) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
+            row = {"name": name, "reserved_usd": str(amount), "started_at": now, "deadline": now + seconds,
+                   "quote": json.loads(json.dumps(quote))}
+            peers.append(row)
+            return dict(row)
+        return self.operate(update)
+
+    def committed_cash(self, state):
+        funding = self.config.get("funding", {})
+        return (money(funding.get("purchased_usd", "0")) + money(funding.get("peer_reserved_usd", "0"))
+                + sum((money(row["reserved_usd"]) for row in state["attempts"]), Decimal(0))
+                + sum((money(row["reserved_usd"]) for row in state.get("peer_reservations", [])), Decimal(0)))
+
     def reserve(self, provider, run_id, quote, now=None):
         now = time.time() if now is None else now
         validate_inputs(self.config, provider)
@@ -439,9 +498,7 @@ class Reservations:
             require(not any(item["status"] == "active" for item in attempts), "cleanup_required_before_launch")
             require(not any(item["run_id"] == run_id for item in attempts), "run_id_already_used")
             require(sum(item["provider"] == provider for item in attempts) < self.config["max_attempts"], "attempt_limit_reached")
-            funding = self.config.get("funding", {})
-            committed = money(funding.get("purchased_usd", "0")) + money(funding.get("peer_reserved_usd", "0"))
-            require(committed + sum((money(item["reserved_usd"]) for item in attempts), Decimal(0)) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
+            require(self.committed_cash(state) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
             cloud = self.config["providers"][provider]
             binding = {"account_id": cloud["account_id"], "project_id": cloud.get("project_id", ""),
                        "region": cloud["region"], "zone": cloud.get("zone", "")}

@@ -1,6 +1,8 @@
 # TODO #7 showcase
 
-Current work: TODO #7 is active. Both allowed AWS and DigitalOcean attempts failed and all owned resources have independently verified cleanup. The latest DigitalOcean guest log identifies a fresh-volume workspace link with a missing target; that repair is implemented and being verified. All 24 live cells remain unverified. Another fresh AWS or DigitalOcean deployment requires Luis’s approval.
+Current work: TODO #7 is active. Both allowed AWS and DigitalOcean attempts failed; independent cleanup is confirmed. The latest DigitalOcean failure identified a missing workspace target, now repaired. Full verification of that repair and trial cost controls is underway before GCP testing. All 24 live cells remain unverified; further AWS/DigitalOcean attempts require Luis’s approval.
+
+Funded trial controls: optional `trial_egress_cap_bytes` accepts 512 MiB or 1 GiB per boot and defaults to 1 GiB. Guest enforcement must match pricing across both allowed boots and all margins. A replacement browser peer requires a new name, fresh credentials, a fixed deadline and an additional measured cash reservation; original peer and failed-attempt costs remain charged. Current committed cash is $17.78 of $25, and focused checks pass; full source and native acceptance remain pending.
 
 One fresh VM runs OpenClaw, Hermes and a workspace containing Claude Code and Codex. This is the live acceptance profile; the repository's normal deployment defaults remain unchanged.
 

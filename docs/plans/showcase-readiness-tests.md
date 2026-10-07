@@ -1,6 +1,8 @@
 # AgentStack showcase readiness: agent-first test plan
 
-Current work: TODO #7 is active. Both allowed AWS and DigitalOcean attempts failed and all owned resources have independently verified cleanup. The latest DigitalOcean guest log identifies a fresh-volume workspace link with a missing target; that repair is implemented and being verified. All 24 live cells remain unverified. Another fresh AWS or DigitalOcean deployment requires Luis’s approval.
+Current work: TODO #7 is active. Both allowed AWS and DigitalOcean attempts failed; independent cleanup is confirmed. The latest DigitalOcean failure identified a missing workspace target, now repaired. Full verification of that repair and trial cost controls is underway before GCP testing. All 24 live cells remain unverified; further AWS/DigitalOcean attempts require Luis’s approval.
+
+Remaining-budget verification, 2026-10-07: focused tests pass for generated 512 MiB guest controls, matching two-boot price bounds, refusal of mismatched quotas, immutable replacement-peer amount/deadline binding, corrupt cost history, duplicate charges and preservation of all original cash reservations. The original two-attempt limit remains enforced. Full source verification, a newly funded browser peer and native GCP acceptance are next; current committed cash is $17.78 of $25.
 
 Status: Approved for implementation on 2026-10-05; live runs remain gated on checked execution inputs. Based on revision `648522add8c662f8c238c87ef899a7c0b6c8afb7`, reviewed 2026-10-05.
 

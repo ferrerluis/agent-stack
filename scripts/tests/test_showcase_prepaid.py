@@ -46,6 +46,53 @@ class PrepaidTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, 'approved_models_required'):
             validate_inputs(self.config,'aws')
 
+    def peer_quote(self, **changes):
+        return {'source':'https://aws.amazon.com/ec2/pricing/on-demand/','verified_at':NOW,
+                'hourly_usd':'0.18','fixed_usd':'0.40','cleanup_usd':'0.10'} | changes
+
+    def test_replacement_peer_counts_alongside_original_peer_and_matrix_history(self):
+        peer=self.ledger.reserve_peer('as7-peer-fixture01',self.peer_quote(),14400,NOW)
+        self.assertEqual(peer['reserved_usd'],'1.22')
+        q=quote();q['model_prepaid']=True;q['model_usd']='2.00'
+        self.ledger.reserve('aws','as7-fixture01',q,NOW)
+        state=json.loads((self.ledger.directory/'reservations.json').read_text())
+        self.assertEqual(str(self.ledger.committed_cash(state)),'13.52')
+        self.assertEqual(state['funding']['peer_reserved_usd'],'1.00')
+        self.assertEqual(len(state['attempts']),1)
+        with self.assertRaisesRegex(PolicyError,'cleanup_required_before_launch'):
+            self.ledger.reserve_peer('as7-peer-fixture02',self.peer_quote(),14400,NOW)
+
+    def test_replacement_peer_cannot_reset_budget_or_duplicate_its_charge(self):
+        self.ledger.reserve_peer('as7-peer-fixture01',self.peer_quote(),14400,NOW)
+        with self.assertRaisesRegex(PolicyError,'peer_name_already_reserved'):
+            self.ledger.reserve_peer('as7-peer-fixture01',self.peer_quote(),14400,NOW)
+        self.config['budget_usd']='12.00'
+        with self.assertRaisesRegex(PolicyError,'insufficient_budget'):
+            self.ledger.reserve('gcp','as7-fixture01',quote('gcp')|{'model_prepaid':True},NOW)
+        state=json.loads((self.ledger.directory/'reservations.json').read_text())
+        self.assertEqual(len(state['peer_reservations']),1)
+        self.assertEqual(state['attempts'],[])
+
+    def test_unverified_peer_quotes_and_invalid_quota_never_reduce_cash_checks(self):
+        for changes in ({'source':'https://example.test/'},{'verified_at':NOW-301},
+                        {'hourly_usd':'0'},{'fixed_usd':'0.39'},{'cleanup_usd':'0.09'}):
+            with self.subTest(changes=changes), self.assertRaises(PolicyError):
+                self.ledger.reserve_peer('as7-peer-fixture01',self.peer_quote(**changes),14400,NOW)
+        for cap in (True,0,1073741825,'536870912'):
+            self.config['trial_egress_cap_bytes']=cap
+            with self.subTest(cap=cap),self.assertRaisesRegex(PolicyError,'trial_egress_cap_invalid'):
+                validate_inputs(self.config,'aws')
+        self.config['trial_egress_cap_bytes']=536870912
+        validate_inputs(self.config,'aws')
+
+    def test_changed_peer_amount_cannot_reduce_its_committed_cost(self):
+        self.ledger.reserve_peer('as7-peer-fixture01',self.peer_quote(),14400,NOW)
+        path=self.ledger.directory/'reservations.json'
+        state=json.loads(path.read_text());state['peer_reservations'][0]['reserved_usd']='0.01'
+        path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(PolicyError,'ledger_unreadable'):
+            self.ledger.operate(lambda state: None)
+
     def test_global_provider_cap_retains_uncertain_holds_and_covers_all_roles(self):
         q=quote(); q['model_prepaid']=True; q['model_usd']='2.00'
         self.ledger.reserve('aws','as7-fixture01',q,NOW)
