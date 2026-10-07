@@ -22,7 +22,9 @@ Keep private inputs outside Git with mode 0600. `terraform.tfvars`, state, gatew
 
 ## Bounded execution
 
-The approved ceiling is $25 total cloud/model spend, at most two fresh attempts per cloud, and four hours per attempt. The cost-reduced private inputs use 70 minutes and 512 MiB of outbound traffic per boot; 1 GiB remains the default. Incoming image downloads do not consume the outbound allowance, and internal Docker traffic must not consume it.
+The approved ceiling is $25 total cloud/model spend, at most two fresh attempts per cloud, and four hours per attempt. The cost-reduced private inputs use a two-hour maximum and 512 MiB of outbound traffic per boot; 1 GiB remains the default. Delete resources immediately after success or failure. Incoming image downloads do not consume the outbound allowance, and internal Docker traffic must not consume it.
+
+A proposed 70-minute maximum leaves only 55 minutes before cleanup, less than the container phase's required 3,400-second window even before deployment. Two hours allows the 30-minute apply timeout followed by that check. Refresh the complete quote for the chosen duration; Hetzner rounds both 70-minute and two-hour VM usage to two hours.
 
 Run one deployment at a time. Every launch needs an exact committed export, matching local test receipt, native account/project and capacity reads, fresh plan-bound resource/model terms, enough peer lifetime, a durable reservation, and independent guest/controller cleanup deadlines. A price-read receipt or a caller-written readiness file cannot authorize a launch.
 
@@ -70,6 +72,8 @@ The first Hetzner trial built the workspace and ran all three services healthy, 
 
 The read-only samples showed roughly 2.5 GiB of busiest observed memory use. Native pricing offered an available CX23 with 4 GiB / two CPUs at $0.0104/hour in fsn1, making it a cheaper candidate for the remaining Hetzner attempt. Full task, container, browser and reboot acceptance remains required for that machine.
 
-A broader regional AWS comparison priced all 49 eligible x86_64, non-accelerator, 8 GiB On-Demand candidates after retries. R7a.medium was the lowest fixed full-CPU price found in that set; native availability and quota checks passed, and the fresh VM/disk/IPv4 bound was $0.089413334/hour. One-core build performance and smaller candidates remain separate checks. The selected GCP size was cheapest among supported predefined E2 candidates checked; DigitalOcean's earlier comparison covered all available regional 8 GiB candidates.
+A broader regional AWS comparison priced all 73 eligible x86_64, non-accelerator, 4/8 GiB On-Demand candidates after retries. M7a.medium was the lowest price found with full CPU accounted for, at $0.05796/hour; its complete VM/disk/IPv4 unit bound was $0.071293334/hour. DigitalOcean's 18 available regional candidates at or above 4 GiB yielded s-2vcpu-4gb at $0.035714286/hour. Both native scope and quota checks passed; build performance and full acceptance remain pending.
+
+GCP e2-standard-2 remained cheapest among the supported predefined, non-shared E2 sizes checked at or above 4 GiB; its 8 GiB selection costs less than the 4 GiB high-CPU choice. Fresh complete planning quotes forecast $1.29 for AWS, $1.16 for DigitalOcean and $1.77 for GCP at a two-hour maximum, with account/rounding margins, disk/IP, transfer and cleanup reserves included. These forecasts create no resources or spending reservation; every actual launch repeats the checks. Use the free peer and the CX23 candidate to keep the remaining forecast within $25.
 
 AWS, DigitalOcean and GCP used both originally approved attempts. Further trials need explicit approval of the retry count within the existing $25 cap. Hetzner's first attempt used one; all 24 final-revision live cells were still unverified at this checkpoint.
