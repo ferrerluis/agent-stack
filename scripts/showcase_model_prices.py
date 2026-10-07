@@ -161,23 +161,44 @@ def anthropic_terms(documents, model, metadata):
     parsed, pricing = visible(documents["anthropic_prices"])
     prices = one([table for table in parsed.tables if len(table) >= 2 and table[1] ==
                   ["Name", "Input", "Output", "5m writes", "1h writes", "Hits and refreshes"]], "model_terms_price_unsupported")
-    matches = [row for row in prices[2:] if row and re.match(re.escape(label[1]) + r"(?: |$)", row[0])]
-    row = one(matches, "model_terms_price_unsupported")
+    index = one([index for index, row in enumerate(prices[2:], 2)
+                 if row and re.match(re.escape(label[1]) + r"(?: |$)", row[0])], "model_terms_price_unsupported")
+    row = prices[index]
     require(len(row) == 6, "model_terms_price_unsupported")
+    tiers = [row[1:]]
+    tier = re.fullmatch(r"\$([0-9.]+) / MTok for prompts up to ([0-9,]+) tokens", row[1])
+    if tier:
+        # Haiku 5.5's model-name cell spans both rows. Never price its full
+        # context at the first tier or silently ignore another continuation.
+        require(model == "claude-haiku-5-5" and 16 <= int(tier[2].replace(",", "")) < context
+                and index + 1 < len(prices), "model_terms_price_unsupported")
+        higher = prices[index + 1]
+        require(len(higher) == 5, "model_terms_price_unsupported")
+        upper = re.fullmatch(r"\$([0-9.]+) / MTok for prompts over " + re.escape(tier[2]) + r" tokens", higher[0])
+        require(upper is not None and (index + 2 == len(prices) or len(prices[index + 2]) in (1, 6)),
+                "model_terms_price_unsupported")
+        require("Claude Haiku 5.5 is priced by prompt length: a prompt of over " + tier[2]
+                + " tokens pays higher prices." in pricing, "model_terms_price_unsupported")
+        tiers = [["$" + tier[1] + " / MTok", *row[2:]], ["$" + upper[1] + " / MTok", *higher[1:]]]
+    else:
+        require(index + 1 == len(prices) or len(prices[index + 1]) in (1, 6), "model_terms_price_unsupported")
     values = []
-    for cell in row[1:]:
-        match = re.fullmatch(r"\$([0-9.]+) / MTok", cell)
-        require(match is not None, "model_terms_rate_unsupported")
-        values.append(rate(match[1]))
+    for cells in tiers:
+        amounts = []
+        for cell in cells:
+            match = re.fullmatch(r"\$([0-9.]+) / MTok", cell)
+            require(match is not None, "model_terms_rate_unsupported")
+            amounts.append(rate(match[1]))
+        values.append(amounts)
     require("incurs a 1.1x multiplier on all token pricing categories" in pricing
             and "Global routing (the default) uses standard pricing." in pricing, "model_terms_price_unsupported")
     if context > 200000:
         version = tuple(int(part) for part in label[1].rsplit(" ", 1)[1].split("."))
-        require("include the full 1M token context window at standard pricing." in pricing
+        require((len(tiers) == 2 or "include the full 1M token context window at standard pricing." in pricing)
                 and version >= (4, 6) and not re.search(r"-20[0-9]{6}$", model), "model_terms_price_unsupported")
     return {"context_tokens_upper_bound": context, "published_max_output_tokens": output,
-            "input_usd_per_million_upper_bound": dollars(max(values[0], *values[2:]) * Decimal("1.1")),
-            "output_usd_per_million_upper_bound": dollars(values[1] * Decimal("1.1"))}
+            "input_usd_per_million_upper_bound": dollars(max(amount for amounts in values for amount in [amounts[0], *amounts[2:]]) * Decimal("1.1")),
+            "output_usd_per_million_upper_bound": dollars(max(amounts[1] for amounts in values) * Decimal("1.1"))}
 
 
 def measure_model_terms(config, provider, revision, plan_sha256, secret_reader, http=None, public=None, now=time.time):

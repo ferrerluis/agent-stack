@@ -39,6 +39,10 @@ ANTHROPIC_DOCUMENT = '''<table><tr><th>Model</th><th>Base tokens</th><th>Prompt 
 <p>Global routing (the default) uses standard pricing.</p><p>Current versions include the full 1M token context window at standard pricing.</p>'''
 VERSIONING = '''<p>Each Claude model ID identifies a pinned version of the model.</p>
 <p>For the 4.6 generation and later, the dateless ID is the canonical model ID for that release.</p>'''
+HAIKU_OVERVIEW = OVERVIEW.replace("Haiku 4.5", "Haiku 5.5").replace(ANTHROPIC, "claude-haiku-5-5").replace("200K tokens", "1M tokens").replace("64K tokens", "128K tokens")
+HAIKU_TIERS = '''<tr><td rowspan="2">Claude Haiku 5.5 Summary</td><td>$0.10 / MTok for prompts up to 100,000 tokens</td><td>$0.50 / MTok</td><td>$0.125 / MTok</td><td>$0.20 / MTok</td><td>$0.01 / MTok</td></tr>
+<tr><td>$0.50 / MTok for prompts over 100,000 tokens</td><td>$2.50 / MTok</td><td>$0.625 / MTok</td><td>$1 / MTok</td><td>$0.05 / MTok</td></tr>'''
+HAIKU_PRICES = ANTHROPIC_DOCUMENT.replace(ANTHROPIC_DOCUMENT[ANTHROPIC_DOCUMENT.index('<tr><td>Claude Haiku'):ANTHROPIC_DOCUMENT.index('<tr><td>Claude Sonnet')], HAIKU_TIERS).replace("Current versions include the full 1M token context window at standard pricing.", "Claude Haiku 5.5 is priced by prompt length: a prompt of over 100,000 tokens pays higher prices.")
 
 
 def inputs():
@@ -98,6 +102,32 @@ class TermsTest(unittest.TestCase):
         result = self.measure(); self.assertEqual(len(self.http.calls), 3)
         self.assertEqual(result["roles"]["claude"]["input_usd_per_million_upper_bound"], "4.400000000")
         self.assertEqual(result["roles"]["claude"]["model"], "claude-sonnet-5-5")
+
+    def tiered_haiku(self):
+        self.config["models"].update(hermes="anthropic/claude-haiku-5-5", claude="claude-haiku-5-5")
+        self.http.responses["claude-haiku-5-5"] = {"type": "model", "id": "claude-haiku-5-5", "max_input_tokens": 1000000, "max_tokens": 128000}
+        self.public.documents.update(anthropic_models=HAIKU_OVERVIEW, anthropic_prices=HAIKU_PRICES)
+
+    def test_haiku_prompt_length_tiers_bound_highest_input_output_and_cache_rates(self):
+        self.tiered_haiku(); result = self.measure()
+        self.assertEqual(result["roles"]["claude"]["input_usd_per_million_upper_bound"], "1.100000000")
+        self.assertEqual(result["roles"]["claude"]["output_usd_per_million_upper_bound"], "2.750000000")
+        self.assertEqual(result["roles"]["claude"]["context_tokens_upper_bound"], 1000000)
+        self.assertEqual(result["roles"]["hermes"]["model"], "claude-haiku-5-5")
+
+    def test_missing_mismatched_extra_or_unbounded_prompt_tier_refuses(self):
+        for doc in (HAIKU_PRICES.replace(HAIKU_TIERS.split('\n')[1], ''),
+                    HAIKU_PRICES.replace('prompts over 100,000', 'prompts over 200,000'),
+                    HAIKU_PRICES.replace('prompts up to 100,000', 'prompts up to 1,000,000'),
+                    HAIKU_PRICES.replace('$0.625 / MTok', '$NaN / MTok'),
+                    HAIKU_PRICES.replace(HAIKU_TIERS, HAIKU_TIERS + '\n' + HAIKU_TIERS.split('\n')[1]),
+                    HAIKU_PRICES.replace('tokens pays higher prices.', 'tokens has unknown prices.')):
+            self.tiered_haiku(); self.public.documents['anthropic_prices'] = doc
+            with self.subTest(document=doc[:80]), self.assertRaises(PolicyError): self.measure()
+
+    def test_simple_price_row_with_unbound_continuation_refuses(self):
+        self.public.documents['anthropic_prices'] = ANTHROPIC_DOCUMENT.replace('<tr><td>Claude Sonnet', HAIKU_TIERS.split('\n')[1] + '<tr><td>Claude Sonnet')
+        with self.assertRaisesRegex(PolicyError, 'model_terms_price_unsupported'): self.measure()
 
     def test_openai_dated_snapshot_is_bound_to_page_without_changing_requested_id(self):
         model = "gpt-6.1-sol-2026-09-24"
