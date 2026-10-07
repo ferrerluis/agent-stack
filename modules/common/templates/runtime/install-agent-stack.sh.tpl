@@ -546,10 +546,27 @@ wait_agent_stack_initial_restart() {
   return 1
 }
 
+prefetch_runtime_images() {
+  local pull_seconds="$${1:-600}" service_list service
+  local -a pull_services=()
+  [[ "$pull_seconds" =~ ^[1-9][0-9]{0,3}$ ]] || return 2
+  service_list="$(timeout --kill-after=5s 30s docker compose --env-file "$staging/.env" -f "$staging/docker-compose.yml" config --services)" || return 1
+  while IFS= read -r service; do
+    # The workspace image is built locally; pulling it can cancel the remote
+    # image downloads before the initial health-check clock starts.
+    [ -n "$service" ] && [ "$service" != workspace ] && pull_services+=("$service")
+  done <<< "$service_list"
+  if [ "$${#pull_services[@]}" -gt 0 ]; then
+    echo "[runtime] Downloading selected runtime images before startup checks..."
+    timeout --kill-after=5s "$${pull_seconds}s" docker compose --env-file "$staging/.env" -f "$staging/docker-compose.yml" pull --quiet --ignore-buildable "$${pull_services[@]}"
+  fi
+}
+
 configure_caddyfile
 configure_swap
 install_openclaw_runtime_patches
 docker compose --env-file "$staging/.env" -f "$staging/docker-compose.yml" config >/dev/null
+prefetch_runtime_images || fail "runtime image download failed before applying runtime files"
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"

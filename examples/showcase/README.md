@@ -22,9 +22,9 @@ Keep private inputs outside Git with mode 0600. `terraform.tfvars`, state, gatew
 
 ## Bounded execution
 
-The approved ceiling is $25 total cloud/model spend, at most two fresh attempts per cloud, and four hours per attempt. The cost-reduced private inputs use a two-hour maximum and 512 MiB of outbound traffic per boot; 1 GiB remains the default. Delete resources immediately after success or failure. Incoming image downloads do not consume the outbound allowance, and internal Docker traffic must not consume it.
+The approved ceiling is $25 total cloud/model spend, at most two fresh attempts per cloud, and four hours per attempt. The cost-reduced private inputs use a 105-minute maximum and 512 MiB of outbound traffic per boot; 1 GiB remains the default. Delete resources immediately after success or failure. Incoming image downloads do not consume the outbound allowance, and internal Docker traffic must not consume it.
 
-A proposed 70-minute maximum leaves only 55 minutes before cleanup, less than the container phase's required 3,400-second window even before deployment. Two hours allows the 30-minute apply timeout followed by that check. Refresh the complete quote for the chosen duration; Hetzner rounds both 70-minute and two-hour VM usage to two hours.
+A proposed 70-minute maximum leaves only 55 minutes before cleanup, less than the container phase's required 3,400-second window even before deployment. The chosen maximum allows the 30-minute apply timeout followed by that window, with 15 minutes reserved for cleanup. Refresh the complete quote for the chosen duration; Hetzner rounds a full 105-minute VM lifetime to two hours.
 
 Run one deployment at a time. Every launch needs an exact committed export, matching local test receipt, native account/project and capacity reads, fresh plan-bound resource/model terms, enough peer lifetime, a durable reservation, and independent guest/controller cleanup deadlines. A price-read receipt or a caller-written readiness file cannot authorize a launch.
 
@@ -77,3 +77,9 @@ A broader regional AWS comparison priced all 73 eligible x86_64, non-accelerator
 GCP e2-standard-2 remained cheapest among the supported predefined, non-shared E2 sizes checked at or above 4 GiB; its 8 GiB selection costs less than the 4 GiB high-CPU choice. Fresh complete planning quotes forecast $1.29 for AWS, $1.16 for DigitalOcean and $1.77 for GCP at a two-hour maximum, with account/rounding margins, disk/IP, transfer and cleanup reserves included. These forecasts create no resources or spending reservation; every actual launch repeats the checks. Use the free peer and the CX23 candidate to keep the remaining forecast within $25.
 
 AWS, DigitalOcean and GCP used both originally approved attempts. Further trials need explicit approval of the retry count within the existing $25 cap. Hetzner's first attempt used one; all 24 final-revision live cells were still unverified at this checkpoint.
+
+The second/final authorized Hetzner trial used the CX23 at revision `61d3b08`, after all 848 Python tests and 64 Terraform checks passed. It failed during startup: remote images were still arriving while the three-minute readiness window counted down, and the last sample showed OpenClaw/Hermes starting with the workspace healthy. No paid model request ran, and every owned resource was independently confirmed deleted after roughly 11 minutes. Its $1.14 allowance tightened to a $0.57 closed bound, leaving a $19.71 conservative total.
+
+The installer now downloads selected remote images before applying runtime files or starting health checks, with a ten-minute bound and forced-stop grace. It excludes the locally built workspace image. The existing health requirements and three-minute readiness window remain intact; failed downloads stop before applying runtime files.
+
+At a 105-minute maximum, the next four planning allowances are AWS $1.25, DigitalOcean $1.14, GCP $1.72 and Hetzner $1.12: $5.23 combined, or $24.94 including the current bound. These forecasts preserve the original native price timestamps; every actual launch refreshes its prices and refuses to exceed $25. All four providers have now used both originally approved attempts; additional trials require retry-count approval. All 24 live cells remain unverified.
