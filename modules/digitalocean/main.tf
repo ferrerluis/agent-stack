@@ -29,6 +29,7 @@ locals {
     provider_type                        = "digitalocean"
     gcp_device_name                      = ""
     project_name                         = var.project_name
+    showcase_trial_limits                = var.showcase_trial_limits
     admin_username                       = var.admin_username
     admin_ssh_public_key                 = var.ssh_public_key
     ebs_volume_id                        = ""

@@ -193,6 +193,46 @@ def planned_image(plan):
     return {"image": name, "image_id": identifier, "image_self_link": value["self_link"]}
 
 
+def known_shape(value):
+    """A Terraform unknown mask may contain only false leaves here."""
+    if value is False:
+        return True
+    if isinstance(value, dict):
+        return all(known_shape(item) for item in value.values())
+    if isinstance(value, list):
+        return all(known_shape(item) for item in value)
+    return False
+
+
+def standard_vm(vm, unknown):
+    """Price only explicit standard VM settings, never unknown provider defaults."""
+    code = "gcp_price_plan_extra_vm_features_unpriced"
+    blocks = {
+        "scheduling": ({"provisioning_model": "STANDARD", "preemptible": False,
+                        "automatic_restart": True, "on_host_maintenance": "MIGRATE"},
+                       {"availability_domain", "host_error_timeout_seconds", "instance_termination_action",
+                        "min_node_cpus", "termination_time", "local_ssd_recovery_timeout", "max_run_duration",
+                        "node_affinities", "on_instance_stop_action"}),
+        "reservation_affinity": ({"type": "NO_RESERVATION"}, {"specific_reservation"}),
+        "confidential_instance_config": ({"enable_confidential_compute": False}, {"confidential_instance_type"}),
+    }
+    for key, (required, empty) in blocks.items():
+        value = vm.get(key)
+        require(isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict), code)
+        value = value[0]
+        require(set(value) <= set(required) | empty
+                and all(type(value.get(field)) is type(expected) and value[field] == expected for field, expected in required.items())
+                and all(value.get(field) is None or value.get(field) == [] for field in empty)
+                and known_shape(unknown.get(key, {})), code)
+    accelerators = vm.get("guest_accelerator")
+    require(accelerators == [] or isinstance(accelerators, list) and len(accelerators) == 1
+            and isinstance(accelerators[0], dict) and set(accelerators[0]) == {"count", "type"}
+            and type(accelerators[0]["count"]) is int and accelerators[0]["count"] == 0
+            and accelerators[0]["type"] == "", code)
+    for key in ("guest_accelerator", "scratch_disk", "advanced_machine_features"):
+        require((key == "guest_accelerator" or vm.get(key) == []) and known_shape(unknown.get(key, {})), code)
+
+
 def plan_selection(plan, cloud, prefix, run):
     validate_fresh_plan(plan, "gcp", prefix, run)
     image = planned_image(plan)
@@ -214,8 +254,8 @@ def plan_selection(plan, cloud, prefix, run):
     require(family is not None and vm.get("machine_type") == cloud["size"] and vm.get("zone") == cloud["zone"]
             and disk.get("zone") == cloud["zone"] and re.fullmatch(re.escape(cloud["region"]) + r"-[a-z]", cloud["zone"])
             and rows["google_compute_subnetwork"][0]["after"].get("region") == cloud["region"], "gcp_e2_plan_scope_required")
-    for key in ("scheduling", "guest_accelerator", "scratch_disk", "reservation_affinity", "confidential_instance_config"):
-        require(vm.get(key) == [], "gcp_price_plan_extra_vm_features_unpriced")
+    vm_unknown = rows["google_compute_instance"][0].get("after_unknown", {})
+    standard_vm(vm, vm_unknown)
     roots, networks = vm.get("boot_disk"), vm.get("network_interface")
     require(isinstance(roots, list) and len(roots) == 1 and isinstance(roots[0], dict)
             and isinstance(networks, list) and len(networks) == 1 and isinstance(networks[0], dict), "gcp_price_plan_shape_unsupported")
@@ -238,9 +278,15 @@ def plan_selection(plan, cloud, prefix, run):
     network = networks[0]
     access = network.get("access_config")
     require(isinstance(access, list) and len(access) == 1 and isinstance(access[0], dict)
-            and access[0].get("nat_ip") is None and access[0].get("network_tier") in (None, "PREMIUM")
-            and network.get("subnetwork") is None and network.get("ipv6_access_config") == [], "gcp_price_plan_network_changed")
-    vm_unknown = rows["google_compute_instance"][0].get("after_unknown", {})
+            and access[0].get("nat_ip") is None and access[0].get("network_tier") == "PREMIUM"
+            and network.get("stack_type") == "IPV4_ONLY" and network.get("subnetwork") is None
+            and network.get("ipv6_access_config") == [], "gcp_price_plan_network_changed")
+    network_unknown = vm_unknown.get("network_interface", [{}])
+    require(isinstance(network_unknown, list) and len(network_unknown) == 1 and isinstance(network_unknown[0], dict)
+            and known_shape(network_unknown[0].get("stack_type", {})), "gcp_price_plan_values_unknown")
+    access_unknown = network_unknown[0].get("access_config", [{}])
+    require(isinstance(access_unknown, list) and len(access_unknown) == 1 and isinstance(access_unknown[0], dict)
+            and known_shape(access_unknown[0].get("network_tier", {})), "gcp_price_plan_values_unknown")
     root_unknown = vm_unknown.get("boot_disk", [{}])
     require(isinstance(root_unknown, list) and len(root_unknown) == 1 and isinstance(root_unknown[0], dict), "gcp_price_plan_values_unknown")
     boot_unknown = root_unknown[0].get("initialize_params", [{}])
@@ -258,7 +304,8 @@ def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, c
     require(type(began) in (int, float) and math.isfinite(began) and 0 <= began <= 253402286400, "invalid_price_measurement_clock")
     machine = adapter.get("/zones/" + quote(cloud["zone"], safe="") + "/machineTypes/" + quote(cloud["size"], safe=""))
     ram = selection.pop("ram_gib_per_vcpu") * selection["vcpus"]
-    require(machine.get("name") == cloud["size"] and machine.get("architecture") == "X86_64"
+    from showcase_preflight import google_x86_machine
+    require(machine.get("name") == cloud["size"] and google_x86_machine(machine)
             and type(machine.get("guestCpus")) is int and machine["guestCpus"] == selection["vcpus"] and 2 <= selection["vcpus"] <= 32
             and type(machine.get("memoryMb")) is int and machine["memoryMb"] == ram * 1024 and ram >= 8,
             "gcp_price_vm_size_unavailable")

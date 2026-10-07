@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Opt-in live planning and recovery for isolated showcase attempts.
 
-Paid launch/test orchestration and measured readiness remain in development.
-This CLI never accepts a self-declared readiness file or launches a new VM.
+The run phase produces measured inputs and executes an approved bounded test.
+This CLI never accepts a self-declared readiness file or price override.
 Cleanup can delete only a recorded, reserved, ownership-checked applied attempt.
 """
 import argparse
@@ -21,6 +21,22 @@ from showcase_controller import RunController
 from showcase_policy import PROVIDERS, PolicyError, Reservations, require, secret_ref, validate_inputs
 from showcase_preflight import PreflightError
 from showcase_terraform import CloudSession, TerraformAttempt
+
+
+def configure_provider_cache(run):
+    """Use the same verified disk mirror as the local tests, when available."""
+    from showcase_attempt import ROOT
+    mirror = ROOT / ".tmp/agent-stack-tests/provider-mirror"
+    if mirror.exists():
+        require(mirror.is_dir() and not mirror.is_symlink()
+                and mirror.stat().st_uid == os.geteuid(), "provider_mirror_refused")
+        content = ('provider_installation {\n  filesystem_mirror {\n    path = '
+                   + json.dumps(str(mirror))
+                   + '\n    include = ["registry.terraform.io/*/*"]\n  }\n}\n')
+        target = run / "terraform.rc"
+        require(target.is_file() and not target.is_symlink(), "private_directory_required")
+        target.write_text(content)
+        target.chmod(0o600)
 
 
 def recovery_inputs(original, current, provider):
@@ -54,7 +70,7 @@ def main():
     parser.add_argument("--batch", required=True)
     parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--terraform", default="terraform")
-    parser.add_argument("--phase", choices=("plan", "cleanup"), required=True)
+    parser.add_argument("--phase", choices=("plan", "run", "cleanup"), required=True)
     args = parser.parse_args()
     signal.signal(signal.SIGINT, interrupted)
     signal.signal(signal.SIGTERM, interrupted)
@@ -66,11 +82,12 @@ def main():
         batch = Path(args.batch).absolute()
         run = batch / "attempts" / args.run_id
         flow = None
-        if args.phase == "plan":
+        if args.phase in ("plan", "run"):
             validate_inputs(current, args.provider)
             if not run.exists() and not run.is_symlink():
                 prepare(current, args.provider, args.run_id, batch, args.revision)
             verify_prepared(run, current, args.provider)
+            configure_provider_cache(run)
             original = current
             credentials = current
             require(not (run / "terraform.json").exists() and not (run / "repo/terraform.tfstate").exists(), "fresh_attempt_required")
@@ -80,6 +97,7 @@ def main():
             original = private_read(run / "inputs.json")
             validate_inputs(original, args.provider)
             prepared = verify_prepared(run, original, args.provider)
+            configure_provider_cache(run)
             credentials = recovery_inputs(original, current, args.provider)
             if (run / "showcase-run.json").exists():
                 flow = private_read(run / "showcase-run.json")
@@ -98,10 +116,20 @@ def main():
             ledger.operate(active)
         session = CloudSession(credentials, args.provider)
         attempt = TerraformAttempt(run, original, args.provider, session, terraform=args.terraform)
-        if args.phase == "plan":
+        if args.phase in ("plan", "run"):
             report = {**attempt.plan(), "status": "planned", "spend_reserved": False}
-            if args.provider in ("aws", "digitalocean", "gcp", "hetzner"):
+            if args.phase == "plan":
                 report["resource_unit_prices"] = attempt.resource_unit_prices()
+            if args.phase == "run":
+                # Run the paid controller in a dedicated process group so the
+                # independently started watchdog cannot signal the app or shell.
+                if os.getpgrp() != os.getpid():
+                    os.setsid()
+                fields = Path('/proc/self/stat').read_text().split()
+                from showcase_cleanup import private_write
+                private_write(run/'controller-owner.json', {'pid':os.getpid(),'pgid':os.getpgrp(),'start_ticks':fields[21]})
+                from showcase_launch import launch
+                report = launch(attempt, Reservations(batch, original))
         else:
             ledger = Reservations(batch, original)
             if flow is None:
@@ -119,7 +147,7 @@ def main():
         if args.phase == "cleanup":
             report["cleanup"] = "unverified"
     print(json.dumps(report, sort_keys=True))
-    return 0 if report["status"] in ("planned", "cleanup_verified") else 1
+    return 0 if report["status"] in ("planned", "pass", "cleanup_verified") else 1
 
 
 if __name__ == "__main__":

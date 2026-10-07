@@ -21,7 +21,7 @@ from showcase_cleanup import scope
 from showcase_models import ORIGINS, NoRedirect, selected_models, strict_json
 from showcase_model_completion import completion
 from showcase_preflight import PreflightError
-from showcase_policy import PolicyError, money, require, secret_ref, validate_model_policy as validate_policy, validate_model_account as validate_account
+from showcase_policy import PolicyError, money, require, secret_ref, request_cost, prepaid_charge, validate_model_policy as validate_policy, validate_model_account as validate_account
 
 HASH = r"[a-f0-9]{64}"
 ROLES = ("openclaw", "hermes", "codex", "claude")
@@ -68,7 +68,7 @@ class ModelSpend:
         require(len(rows) == 1 and rows[0]["status"] == "active", "active_model_reservation_required")
         row = rows[0]
         require("model_usd" in row and "quote_sha256" in row, "model_allocation_missing")
-        require(sum(self.costs[role] * self.policy["roles"][role]["max_requests"] for role in ROLES) <= money(row["model_usd"]),
+        require("funding" in self.ledger.config or sum(self.costs[role] * self.policy["roles"][role]["max_requests"] for role in ROLES) <= money(row["model_usd"]),
                 "model_bounds_exceed_reservation")
         if "model_policy" not in row:
             require(initialize, "model_spend_account_missing")
@@ -76,12 +76,15 @@ class ModelSpend:
         require(row["model_policy"] == self.policy, "model_spend_policy_changed")
         return row
 
-    def reserve(self, role, request_sha256, timeout):
+    def reserve(self, role, request_sha256, timeout, input_tokens=None):
         self.binding()
         require(role in ROLES and isinstance(request_sha256, str) and re.fullmatch(HASH, request_sha256)
                 and type(timeout) is int and 1 <= timeout <= 80, "invalid_model_spend_request")
         now = self.now()
         require(type(now) in (int, float) and math.isfinite(now), "invalid_model_spend_clock")
+        terms = self.policy["roles"][role]
+        require(input_tokens is None or type(input_tokens) is int and 1 <= input_tokens <= terms["context_tokens_upper_bound"], "invalid_model_spend_request")
+        cost = self.costs[role] if input_tokens is None else request_cost(terms, input_tokens)
         def update(state):
             row = self.account(state, initialize=True)
             require(row["started_at"] <= now and now + timeout <= row["work_deadline"], "model_work_deadline_reached")
@@ -89,8 +92,16 @@ class ModelSpend:
             require(not any(h["role"] == role and h["request_sha256"] == request_sha256 for h in holds), "model_request_already_admitted")
             require(sum(h["role"] == role for h in holds) < self.policy["roles"][role]["max_requests"], "model_request_limit_reached")
             held = sum((money(h["held_usd"]) for h in holds), Decimal(0))
-            require(held + self.costs[role] <= money(row["model_usd"]), "model_budget_exhausted")
-            hold = {"role": role, "request_sha256": request_sha256, "held_usd": str(self.costs[role]), "started_at": now, "status": "uncertain"}
+            require(held + cost <= money(row["model_usd"]), "model_budget_exhausted")
+            if "funding" in self.ledger.config:
+                provider = terms["provider"]
+                global_held = sum((prepaid_charge(h, attempt["model_policy"]["roles"][h["role"]]) for attempt in state["attempts"]
+                    for h in attempt.get("model_requests", [])
+                    if attempt["model_policy"]["roles"][h["role"]]["provider"] == provider), Decimal(0))
+                require(global_held + cost <= money(self.ledger.config["funding"]["prepaid_caps_usd"][provider]), "prepaid_model_budget_exhausted")
+            hold = {"role": role, "request_sha256": request_sha256, "held_usd": str(cost), "started_at": now, "status": "uncertain"}
+            if input_tokens is not None:
+                hold["input_tokens_upper_bound"] = input_tokens
             holds.append(hold); validate_account(row)
             return dict(hold)
         return self.ledger.operate(update)
@@ -198,6 +209,13 @@ def prepare_request(policy, role, path, raw):
     value[limit_key] = min(limit, terms["output_tokens_upper_bound"])
     if provider == "openai":
         value["store"] = False
+    if terms["model"] == "gpt-6-luna":
+        if path == "/v1/chat/completions":
+            value["reasoning_effort"] = "none"
+        else:
+            value["reasoning"] = {"effort": "none"}
+    if terms["model"] == "claude-haiku-4-5-20251001":
+        value["thinking"] = {"type": "disabled"}
     return ORIGINS[provider] + path, json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 
@@ -212,7 +230,17 @@ class RequestGate:
         began = self.now()
         url, body = prepare_request(self.spend.policy, role, path, raw)
         request_hash = digest({"path": path, "body_sha256": hashlib.sha256(body).hexdigest()})
-        self.spend.reserve(role, request_hash, timeout)
+        tokens = None
+        if "funding" in self.spend.ledger.config:
+            # Text-only UTF-8 bytes bound token count; include ample protocol
+            # overhead. The full context bound remains the ceiling.
+            terms = self.spend.policy["roles"][role]
+            require(len(body) + 4096 <= terms["context_tokens_upper_bound"], "short_model_context_required")
+            tokens = len(body) + 4096
+        if tokens is None:
+            self.spend.reserve(role, request_hash, timeout)
+        else:
+            self.spend.reserve(role, request_hash, timeout, tokens)
         provider = self.spend.policy["roles"][role]["provider"]
         reference = self.spend.ledger.config["secret_refs"][provider + "_api_key"]
         require(secret_ref(reference), "secret_reference_required")

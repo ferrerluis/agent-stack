@@ -126,7 +126,7 @@ class AWSPriceQuery:
         self.client, self.queries = client, 0
 
     def products(self, service, filters):
-        require(service in ("AmazonEC2", "AmazonVPC") and isinstance(filters, dict) and 0 < len(filters) <= 20
+        require(service in ("AmazonEC2", "AmazonVPC", "AWSDataTransfer") and isinstance(filters, dict) and 0 < len(filters) <= 20
                 and all(text(key) and text(value) for key, value in filters.items()), "aws_price_scope_invalid")
         request = {"ServiceCode": service, "FormatVersion": "aws_v1", "MaxResults": 100,
                    "Filters": [{"Type": "TERM_MATCH", "Field": key, "Value": value} for key, value in sorted(filters.items())]}

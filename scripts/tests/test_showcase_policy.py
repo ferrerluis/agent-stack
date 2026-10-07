@@ -219,6 +219,7 @@ class ReservationTest(unittest.TestCase):
 
     def test_symlink_or_world_readable_ledger_is_refused(self):
         self.ledger.directory.mkdir(mode=0o755)
+        self.ledger.directory.chmod(0o755)
         with self.assertRaisesRegex(policy.PolicyError, "private_ledger_required"):
             self.ledger.reserve("aws", "as7-fixture01", quote(), now=NOW)
         self.ledger.directory.chmod(0o700)

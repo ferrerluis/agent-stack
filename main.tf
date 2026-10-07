@@ -160,6 +160,7 @@ module "aws" {
   source = "./modules/aws"
 
   project_name               = var.project_name
+  showcase_trial_limits      = var.showcase_trial_limits
   admin_username             = var.admin_username
   aws_region                 = var.aws_region
   aws_instance_type          = var.aws_instance_type
@@ -234,12 +235,13 @@ module "digitalocean" {
   count  = var.cloud_provider == "digitalocean" ? 1 : 0
   source = "./modules/digitalocean"
 
-  project_name    = var.project_name
-  admin_username  = var.admin_username
-  do_region       = var.do_region
-  do_project_id   = var.do_project_id
-  do_droplet_size = var.do_droplet_size
-  do_disk_size_gb = var.do_disk_size_gb
+  project_name          = var.project_name
+  showcase_trial_limits = var.showcase_trial_limits
+  admin_username        = var.admin_username
+  do_region             = var.do_region
+  do_project_id         = var.do_project_id
+  do_droplet_size       = var.do_droplet_size
+  do_disk_size_gb       = var.do_disk_size_gb
 
   do_existing_volume_id   = var.do_existing_volume_id
   do_existing_volume_name = var.do_existing_volume_name
@@ -311,6 +313,7 @@ module "hetzner" {
   source = "./modules/hetzner"
 
   project_name                         = var.project_name
+  showcase_trial_limits                = var.showcase_trial_limits
   admin_username                       = var.admin_username
   hcloud_location                      = var.hcloud_location
   hcloud_server_type                   = var.hcloud_server_type
@@ -375,22 +378,24 @@ module "hetzner" {
 }
 
 module "gcp" {
-  count                 = var.cloud_provider == "gcp" ? 1 : 0
-  source                = "./modules/gcp"
-  project_name          = var.project_name
-  admin_username        = var.admin_username
-  ssh_public_key        = local.resolved_ssh_public_key
-  allowed_ssh_cidr      = var.allowed_ssh_cidr
-  gcp_project_id        = var.gcp_project_id
-  gcp_region            = var.gcp_region
-  gcp_zone              = var.gcp_zone
-  gcp_machine_type      = var.gcp_machine_type
-  gcp_image             = var.gcp_image
-  gcp_pin_boot_image    = var.gcp_pin_boot_image
-  gcp_disk_size_gb      = var.gcp_disk_size_gb
-  gcp_boot_disk_size_gb = var.gcp_boot_disk_size_gb
-  tailscale_enabled     = var.tailscale_enabled
-  public_domain_enabled = var.public_domain_enabled
+  count                      = var.cloud_provider == "gcp" ? 1 : 0
+  source                     = "./modules/gcp"
+  project_name               = var.project_name
+  showcase_trial_limits      = var.showcase_trial_limits
+  admin_username             = var.admin_username
+  ssh_public_key             = local.resolved_ssh_public_key
+  allowed_ssh_cidr           = var.allowed_ssh_cidr
+  gcp_project_id             = var.gcp_project_id
+  gcp_region                 = var.gcp_region
+  gcp_zone                   = var.gcp_zone
+  gcp_machine_type           = var.gcp_machine_type
+  gcp_image                  = var.gcp_image
+  gcp_pin_boot_image         = var.gcp_pin_boot_image
+  gcp_showcase_cost_controls = var.gcp_showcase_cost_controls
+  gcp_disk_size_gb           = var.gcp_disk_size_gb
+  gcp_boot_disk_size_gb      = var.gcp_boot_disk_size_gb
+  tailscale_enabled          = var.tailscale_enabled
+  public_domain_enabled      = var.public_domain_enabled
 }
 
 locals {

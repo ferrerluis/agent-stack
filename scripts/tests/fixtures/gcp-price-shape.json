@@ -107,21 +107,41 @@
             {
               "access_config": [
                 {
-                  "public_ptr_domain_name": null
+                  "public_ptr_domain_name": null,
+                  "network_tier": "PREMIUM"
                 }
               ],
               "alias_ip_range": [],
               "ipv6_access_config": [],
               "nic_type": null,
               "queue_count": null,
-              "vlan": null
+              "vlan": null,
+              "stack_type": "IPV4_ONLY"
             }
           ],
-          "scheduling": [],
+          "scheduling": [
+            {
+              "provisioning_model": "STANDARD",
+              "preemptible": false,
+              "automatic_restart": true,
+              "on_host_maintenance": "MIGRATE"
+            }
+          ],
           "guest_accelerator": [],
           "scratch_disk": [],
-          "reservation_affinity": [],
-          "confidential_instance_config": []
+          "reservation_affinity": [
+            {
+              "type": "NO_RESERVATION",
+              "specific_reservation": []
+            }
+          ],
+          "confidential_instance_config": [
+            {
+              "enable_confidential_compute": false,
+              "confidential_instance_type": null
+            }
+          ],
+          "advanced_machine_features": []
         },
         "after_unknown": {
           "boot_disk": [
@@ -156,8 +176,7 @@
             {
               "access_config": [
                 {
-                  "nat_ip": true,
-                  "network_tier": true
+                  "nat_ip": true
                 }
               ],
               "alias_ip_range": [],
@@ -171,16 +190,22 @@
               "network_attachment": true,
               "network_ip": true,
               "parent_nic_name": true,
-              "stack_type": true,
               "subnetwork": true,
               "subnetwork_project": true
             }
           ],
-          "scheduling": [],
+          "scheduling": [
+            {}
+          ],
           "guest_accelerator": [],
           "scratch_disk": [],
-          "reservation_affinity": [],
-          "confidential_instance_config": []
+          "reservation_affinity": [
+            {}
+          ],
+          "confidential_instance_config": [
+            {}
+          ],
+          "advanced_machine_features": []
         }
       }
     },

@@ -1126,6 +1126,12 @@ variable "gcp_pin_boot_image" {
     error_message = "gcp_pin_boot_image requires the standard ubuntu-os-cloud/ubuntu-2204-lts family."
   }
 }
+variable "gcp_showcase_cost_controls" {
+  description = "For showcase tests, explicitly select standard scheduling, no GPUs/reservations/confidential compute, and Premium IPv4 networking so the saved plan can be priced."
+  type        = bool
+  default     = false
+  nullable    = false
+}
 variable "gcp_disk_size_gb" {
   description = "Size of the separate persistent data disk."
   type        = number
@@ -1143,4 +1149,13 @@ variable "gcp_boot_disk_size_gb" {
     condition     = var.gcp_boot_disk_size_gb >= 20 && floor(var.gcp_boot_disk_size_gb) == var.gcp_boot_disk_size_gb
     error_message = "gcp_boot_disk_size_gb must be an integer of at least 20."
   }
+}
+
+variable "showcase_trial_limits" {
+  description = "Temporary showcase guest deadline and per-boot outbound quota; null preserves ordinary deployments."
+  type = object({
+    deadline_utc     = string
+    egress_cap_bytes = number
+  })
+  default = null
 }

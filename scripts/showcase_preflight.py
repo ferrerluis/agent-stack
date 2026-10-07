@@ -63,6 +63,13 @@ def segment(value):
 
 def read_secret(reference):
     check(secret_ref(reference), "secret_reference_required")
+    if reference.startswith("file://"):
+        from showcase_credentials import read_file, refresh_access_token
+        try:
+            refresh_access_token(reference)
+            return read_file(reference)
+        except ValueError:
+            raise PreflightError("temporary_credential_refused") from None
     try:
         result = subprocess.run(["op", "read", "--no-newline", reference],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=False)
@@ -260,6 +267,14 @@ def b64(value):
     return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
 
+def google_x86_machine(size):
+    # Compute omits architecture for E2. Its documented predefined series uses
+    # Intel/AMD; an explicit different architecture still takes precedence.
+    return size.get("architecture") == "X86_64" or (size.get("architecture") is None
+        and isinstance(size.get("name"), str)
+        and re.fullmatch(r"e2-(?:standard|highmem|highcpu)-(?:2|4|8|16|32)", size["name"]) is not None)
+
+
 class Google(RestCloud):
     """Service account JWT exchange; no ADC discovery or credential file."""
     def __init__(self, cloud, credential, http, now=time.time):
@@ -321,7 +336,7 @@ class Google(RestCloud):
         size = self.get("/zones/" + zone + "/machineTypes/" + segment(self.cloud["size"]))
         check(size.get("name") == self.cloud["size"] and type(size.get("memoryMb")) is int
               and size["memoryMb"] >= 8192, "vm_memory_below_8_gib")
-        check(size.get("architecture") == "X86_64", "vm_architecture_not_x86_64")
+        check(google_x86_machine(size), "vm_architecture_not_x86_64")
         region_info = self.get("/regions/" + region)
         quota = objects(region_info, "quotas")
         cpu = [row for row in quota if row.get("metric") == "CPUS"]

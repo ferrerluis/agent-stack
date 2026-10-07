@@ -7,6 +7,7 @@ reserves spend nor runs Terraform/cloud/model commands. Launch and acceptance
 must be implemented by the controller before a prepared attempt can be used.
 """
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -37,7 +38,7 @@ PROFILE = {
     "hermes_api_server_enabled": True, "workspace_claude_enabled": True, "workspace_codex_auto_update_enabled": False,
     "tailscale_enabled": True, "tailscale_mode": "host", "public_domain_enabled": False,
     "vpn_enabled": False, "host_codex_cli_enabled": False, "generate_repo_ssh_config": True, "gcp_pin_boot_image": True,
-    "aws_showcase_cost_controls": True, "hcloud_pin_boot_image": True,
+    "aws_showcase_cost_controls": True, "hcloud_pin_boot_image": True, "gcp_showcase_cost_controls": True,
 }
 
 
@@ -145,6 +146,13 @@ def settings(config, provider, prefix, public_key, profile_source):
         "gcp": {"gcp_project_id": cloud.get("project_id", ""), "gcp_region": cloud["region"], "gcp_zone": cloud.get("zone", ""), "gcp_machine_type": cloud["size"]},
         "hetzner": {"hcloud_location": cloud["region"], "hcloud_server_type": cloud["size"], "hcloud_existing_volume_id": ""},
     }[provider])
+    if "funding" in config:
+        values["showcase_trial_limits"] = {
+            "deadline_utc": datetime.fromtimestamp(time.time() + config["attempt_seconds"], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "egress_cap_bytes": 1073741824}
+        if provider == "aws":
+            require(cloud.get("ami_id") == "ami-062944a84867f2386", "approved_image_required")
+            values["aws_ami_id"] = cloud["ami_id"]
     return values
 
 
@@ -184,7 +192,7 @@ def prepare(config, provider, prefix, batch, revision="HEAD", repo=ROOT):
     values = settings(config, provider, prefix, public, (checkout / "examples/showcase/terraform.tfvars.example").read_text())
     private_write(checkout / "terraform.tfvars.json", values)
     (key_dir / "known_hosts").touch(mode=0o600, exist_ok=False)
-    for name in ("terraform-data", "home", "docker-client"):
+    for name in ("terraform-data", "home", "docker-client", "tmp"):
         private_directory(run / name, create=True)
     (run / "terraform.rc").touch(mode=0o600, exist_ok=False)
     private_write(run / "inputs.json", config)
@@ -251,6 +259,7 @@ def isolated_environment(run):
     # proxy, coding-tool, 1Password and SSH-agent credentials/settings.
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ") if key in os.environ}
     env.update(TF_DATA_DIR=str(run / "terraform-data"), TF_CLI_CONFIG_FILE=str(run / "terraform.rc"),
+               TMPDIR=str(run / "tmp"),
                TF_INPUT="0", TF_IN_AUTOMATION="1", PYTHONDONTWRITEBYTECODE="1", DOCKER_CONFIG=str(run / "docker-client"),
                AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null", AWS_EC2_METADATA_DISABLED="true")
     return env

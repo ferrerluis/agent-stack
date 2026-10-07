@@ -70,15 +70,21 @@ def text(value):
 def secret_ref(value):
     # Require field-level references; never accept values, CLI commands or
     # item exports that could include unrelated secrets.
-    return isinstance(value, str) and bool(re.fullmatch(r"op://[^/\s]+/[^/\s]+/(?:[^/\s]+/)?[^/\s]+", value))
+    from showcase_credentials import file_path
+    return isinstance(value, str) and (bool(re.fullmatch(r"op://[^/\s]+/[^/\s]+/(?:[^/\s]+/)?[^/\s]+", value))
+                                     or file_path(value) is not None)
 
 
 def validate_inputs(config, provider):
     require(provider in PROVIDERS, "invalid_provider")
-    object_fields(config, ("schema", "profile", "owner", "budget_usd", "attempt_seconds", "max_attempts", "runner", "pins", "models", "secret_refs", "tailnet", "providers"))
+    object_fields(config, ("schema", "profile", "owner", "budget_usd", "attempt_seconds", "max_attempts", "runner", "pins", "models", "secret_refs", "tailnet", "providers"), ("funding",))
     require(type(config["schema"]) is int and config["schema"] == 1 and config["profile"] == "showcase", "invalid_profile")
     require(text(config["owner"]), "owner_required")
     require(0 < money(config["budget_usd"]) <= 25, "budget_exceeds_approval")
+    if "funding" in config:
+        require(config["funding"] == {"purchased_usd": "10.30", "peer_reserved_usd": "1.00",
+                "prepaid_caps_usd": {"openai": "1.00", "anthropic": "1.00"}}, "funding_exceeds_approval")
+        require(models_approved(config.get("models")), "approved_models_required")
     require(type(config["attempt_seconds"]) is int and 900 < config["attempt_seconds"] <= 14400, "lifetime_exceeds_approval")
     require(type(config["max_attempts"]) is int and 1 <= config["max_attempts"] <= 2, "retries_exceed_approval")
     object_fields(config["runner"], ("ssh_cidr",), ("peer_ssh",))
@@ -113,7 +119,9 @@ def validate_inputs(config, provider):
     object_fields(refs, ("openai_api_key", "anthropic_api_key", "workspace_password"))
     require(all(secret_ref(value) for value in refs.values()), "secret_reference_required")
     tailnet = config["tailnet"]
-    object_fields(tailnet, ("name", "runner_dns", "auth_key_ref", "cleanup_key_ref"))
+    object_fields(tailnet, ("name", "runner_dns", "auth_key_ref", "cleanup_key_ref"), ("required_tag",))
+    if "required_tag" in tailnet:
+        require(tailnet["required_tag"] == "tag:agentstack-todo7-3bc66e", "tailnet_ownership_tag_invalid")
     require(text(tailnet["name"]) and isinstance(tailnet["runner_dns"], str) and bool(re.fullmatch(r"[a-z0-9-]+\.[a-z0-9.-]+\.ts\.net", tailnet["runner_dns"])), "second_peer_required")
     require(all(secret_ref(tailnet[key]) for key in ("auth_key_ref", "cleanup_key_ref")), "tailnet_credentials_required")
     require(isinstance(config["providers"], dict) and not config["providers"].keys() - set(PROVIDERS), "invalid_provider")
@@ -123,10 +131,12 @@ def validate_inputs(config, provider):
         required.update(("project_id", "isolated_project"))
     if provider == "gcp":
         required.add("zone")
-    object_fields(cloud, required)
+    object_fields(cloud, required, ("ami_id",) if provider == "aws" else ())
     require(all(text(cloud[key]) for key in ("account_id", "region", "size")), "cloud_identity_required")
     if provider == "aws":
         require(bool(re.fullmatch(r"[0-9]{12}", cloud["account_id"])), "cloud_identity_required")
+        if "ami_id" in cloud:
+            require(cloud["region"] == "us-east-1" and cloud["ami_id"] == "ami-062944a84867f2386", "approved_image_required")
     else:
         require(cloud["isolated_project"] is True and text(cloud["project_id"]), "isolated_project_required")
         expression = {"digitalocean": r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", "gcp": r"[a-z][a-z0-9-]{4,28}[a-z0-9]", "hetzner": r"[0-9]+"}[provider]
@@ -137,6 +147,11 @@ def validate_inputs(config, provider):
     object_fields(cloud["credential_refs"], credential_fields, ("session_token",) if provider == "aws" else ())
     require(all(secret_ref(value) for value in cloud["credential_refs"].values()), "secret_reference_required")
     return {"provider": provider, "status": "inputs_complete", "identity_permissions_prices_models_tailnet": "not_verified", "live_matrix": "not_tested"}
+
+
+def models_approved(models):
+    return models == {"openclaw": "openai/gpt-6-luna", "hermes": "anthropic/claude-haiku-4-5-20251001",
+                      "codex": "gpt-6-luna", "claude": "claude-haiku-4-5-20251001"}
 
 
 def validate_fresh_plan(plan, provider, resource_prefix, run_dir):
@@ -219,7 +234,8 @@ def resolved_plan_data(plan, module, kind, address, error):
 
 def reserve_amount(quote, provider, attempt_seconds, now):
     require(provider in PROVIDERS and type(attempt_seconds) is int and 900 < attempt_seconds <= 14400, "invalid_price_scope")
-    object_fields(quote, ("provider", "currency", "verified_at", "source", "hourly_usd", "fixed_usd", "model_usd", "cleanup_usd"))
+    object_fields(quote, ("provider", "currency", "verified_at", "source", "hourly_usd", "fixed_usd", "model_usd", "cleanup_usd"), ("model_prepaid",))
+    require("model_prepaid" not in quote or quote["model_prepaid"] is True, "invalid_prepaid_quote")
     require(quote["provider"] == provider and quote["currency"] == "USD", "price_scope_mismatch")
     source = urlparse(quote["source"]) if isinstance(quote["source"], str) else None
     require(source is not None and source.scheme == "https" and source.hostname in PRICE_HOSTS[provider] and not source.username and not source.password, "official_price_source_required")
@@ -230,7 +246,7 @@ def reserve_amount(quote, provider, attempt_seconds, now):
         raise PolicyError("stale_price") from None
     hourly, fixed, model, cleanup = (money(quote[key]) for key in ("hourly_usd", "fixed_usd", "model_usd", "cleanup_usd"))
     require(hourly > 0 and model > 0 and cleanup > 0, "complete_price_required")
-    return (hourly * Decimal(attempt_seconds) / 3600 + fixed + model + cleanup).quantize(Decimal(".01"), rounding=ROUND_CEILING)
+    return (hourly * Decimal(attempt_seconds) / 3600 + fixed + (0 if quote.get("model_prepaid") else model) + cleanup).quantize(Decimal(".01"), rounding=ROUND_CEILING)
 
 
 MODEL_ROLES = ("openclaw", "hermes", "codex", "claude")
@@ -268,7 +284,7 @@ def validate_model_account(row):
     allocated = any(key in row for key in ("model_usd", "quote_sha256", "price_quote"))
     require(not allocated or all(key in row for key in ("model_usd", "quote_sha256", "price_quote")), "invalid_model_spend_account")
     if allocated:
-        require(0 < money(row["model_usd"]) <= money(row["reserved_usd"])
+        require(0 < money(row["model_usd"]) and (row["price_quote"].get("model_prepaid") is True or money(row["model_usd"]) <= money(row["reserved_usd"]))
                 and isinstance(row["quote_sha256"], str) and re.fullmatch(MODEL_HASH, row["quote_sha256"]), "invalid_model_spend_account")
         require(all(type(row.get(key)) in (int, float) and math.isfinite(row[key]) for key in ("started_at", "deadline", "work_deadline")),
                 "invalid_model_spend_account")
@@ -290,10 +306,15 @@ def validate_model_account(row):
     require(isinstance(holds, list) and len(holds) <= 128, "invalid_model_spend_account")
     seen, completions, counts, total = set(), set(), dict.fromkeys(MODEL_ROLES, 0), Decimal(0)
     for hold in holds:
-        object_fields(hold, ("role", "request_sha256", "held_usd", "started_at", "status"), ("completion",))
+        object_fields(hold, ("role", "request_sha256", "held_usd", "started_at", "status"), ("completion", "input_tokens_upper_bound"))
         require(hold["role"] in MODEL_ROLES and isinstance(hold["request_sha256"], str) and re.fullmatch(MODEL_HASH, hold["request_sha256"]), "invalid_model_spend_account")
         key = (hold["role"], hold["request_sha256"])
-        require(key not in seen and money(hold["held_usd"]) == costs[hold["role"]]
+        expected = costs[hold["role"]]
+        if "input_tokens_upper_bound" in hold:
+            terms = row["model_policy"]["roles"][hold["role"]]
+            require(type(hold["input_tokens_upper_bound"]) is int and 1 <= hold["input_tokens_upper_bound"] <= terms["context_tokens_upper_bound"], "invalid_model_spend_account")
+            expected = request_cost(terms, hold["input_tokens_upper_bound"])
+        require(key not in seen and money(hold["held_usd"]) == expected
                 and type(hold["started_at"]) in (int, float) and math.isfinite(hold["started_at"])
                 and row["started_at"] <= hold["started_at"] < row["work_deadline"]
                 and hold["status"] in ("uncertain", "response_received"), "invalid_model_spend_account")
@@ -306,9 +327,35 @@ def validate_model_account(row):
             proof_key = (hold["completion"]["provider"], hold["completion"]["response_id_sha256"])
             require(proof_key not in completions, "model_completion_already_recorded")
             completions.add(proof_key)
-        seen.add(key); counts[hold["role"]] += 1; total += costs[hold["role"]]
+            if "input_tokens_upper_bound" in hold:
+                require(hold["completion"]["usage"]["context_tokens"] <= hold["input_tokens_upper_bound"],
+                        "model_usage_exceeds_admitted_bound")
+        seen.add(key); counts[hold["role"]] += 1; total += expected
     require(all(counts[role] <= row["model_policy"]["roles"][role]["max_requests"] for role in MODEL_ROLES)
             and total <= money(row["model_usd"]), "invalid_model_spend_account")
+
+
+def request_cost(terms, input_tokens):
+    return ((input_tokens * money(terms["input_usd_per_million_upper_bound"])
+             + terms["output_tokens_upper_bound"] * money(terms["output_usd_per_million_upper_bound"]))
+            / 1000000).quantize(Decimal(".000000001"), rounding=ROUND_CEILING)
+
+
+def prepaid_charge(hold, terms):
+    # Keep the original hold intact. A verified complete provider usage record
+    # supplies a tighter upper bound; HTTP success alone supplies no discount.
+    if hold.get("status") != "response_received" or "completion" not in hold:
+        return money(hold["held_usd"])
+    try:
+        validate_proof(hold["completion"], terms)
+    except (ValueError, TypeError, KeyError):
+        raise PolicyError("invalid_model_completion_account") from None
+    usage = hold["completion"]["usage"]
+    cost = ((usage["context_tokens"] * money(terms["input_usd_per_million_upper_bound"])
+            + usage["output_tokens"] * money(terms["output_usd_per_million_upper_bound"])) / 1000000).quantize(
+                Decimal(".000000001"), rounding=ROUND_CEILING)
+    require(cost <= money(hold["held_usd"]), "model_usage_exceeds_admitted_bound")
+    return cost
 
 
 class Reservations:
@@ -343,9 +390,12 @@ class Reservations:
                 state = {"schema": 3, "owner_fingerprint": self.fingerprint, "limits": {
                     "budget_usd": self.config["budget_usd"], "max_attempts": self.config["max_attempts"], "attempt_seconds": self.config["attempt_seconds"]
                 }, "provider_bindings": {}, "attempts": []}
+                if "funding" in self.config:
+                    state["funding"] = self.config["funding"]
             require(isinstance(state, dict) and state.get("schema") == 3 and state.get("owner_fingerprint") == self.fingerprint
                     and isinstance(state.get("attempts"), list) and isinstance(state.get("provider_bindings"), dict), "ledger_scope_mismatch")
             object_fields(state.get("limits"), ("budget_usd", "max_attempts", "attempt_seconds"))
+            require(state.get("funding") == self.config.get("funding"), "ledger_funding_changed")
             require(money(self.config["budget_usd"]) <= money(state["limits"]["budget_usd"])
                     and self.config["max_attempts"] <= state["limits"]["max_attempts"]
                     and self.config["attempt_seconds"] <= state["limits"]["attempt_seconds"], "ledger_scope_mismatch")
@@ -378,12 +428,15 @@ class Reservations:
         validate_inputs(self.config, provider)
         require(bool(re.fullmatch(r"as7-[a-z0-9-]{8,30}", run_id)), "invalid_run_id")
         amount = reserve_amount(quote, provider, self.config["attempt_seconds"], now)
+        require(bool(quote.get("model_prepaid")) == ("funding" in self.config), "prepaid_funding_required")
         def update(state):
             attempts = state["attempts"]
             require(not any(item["status"] == "active" for item in attempts), "cleanup_required_before_launch")
             require(not any(item["run_id"] == run_id for item in attempts), "run_id_already_used")
             require(sum(item["provider"] == provider for item in attempts) < self.config["max_attempts"], "attempt_limit_reached")
-            require(sum((money(item["reserved_usd"]) for item in attempts), Decimal(0)) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
+            funding = self.config.get("funding", {})
+            committed = money(funding.get("purchased_usd", "0")) + money(funding.get("peer_reserved_usd", "0"))
+            require(committed + sum((money(item["reserved_usd"]) for item in attempts), Decimal(0)) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
             cloud = self.config["providers"][provider]
             binding = {"account_id": cloud["account_id"], "project_id": cloud.get("project_id", ""),
                        "region": cloud["region"], "zone": cloud.get("zone", "")}

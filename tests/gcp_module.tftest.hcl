@@ -41,6 +41,10 @@ run "gcp_private_stack" {
     error_message = "Ordinary deployments must retain the existing image selection without another data read."
   }
   assert {
+    condition     = var.gcp_showcase_cost_controls == false && length(google_compute_instance.this.scheduling) == 0 && length(google_compute_instance.this.guest_accelerator) == 0 && length(google_compute_instance.this.reservation_affinity) == 0 && length(google_compute_instance.this.confidential_instance_config) == 0
+    error_message = "Ordinary deployments must retain their existing provider-default VM settings."
+  }
+  assert {
     condition     = output.instance_public_ip == "203.0.113.40"
     error_message = "GCP must expose the selected bootstrap IP."
   }
@@ -76,4 +80,22 @@ run "gcp_pin_rejects_different_family" {
     gcp_image          = "ubuntu-pro-os-cloud/ubuntu-pro-2204-lts"
   }
   expect_failures = [var.gcp_pin_boot_image]
+}
+
+run "gcp_showcase_explicit_standard_cost_controls" {
+  command = plan
+  module { source = "./modules/gcp" }
+  variables { gcp_showcase_cost_controls = true }
+  assert {
+    condition     = google_compute_instance.this.scheduling[0].provisioning_model == "STANDARD" && google_compute_instance.this.scheduling[0].preemptible == false && google_compute_instance.this.scheduling[0].automatic_restart == true && google_compute_instance.this.scheduling[0].on_host_maintenance == "MIGRATE"
+    error_message = "The showcase must explicitly plan ordinary standard scheduling."
+  }
+  assert {
+    condition     = google_compute_instance.this.reservation_affinity[0].type == "NO_RESERVATION" && google_compute_instance.this.confidential_instance_config[0].enable_confidential_compute == false
+    error_message = "The showcase must avoid existing reservations and confidential-compute features."
+  }
+  assert {
+    condition     = google_compute_instance.this.guest_accelerator[0].count == 0 && google_compute_instance.this.network_interface[0].stack_type == "IPV4_ONLY" && google_compute_instance.this.network_interface[0].access_config[0].network_tier == "PREMIUM"
+    error_message = "The showcase must explicitly disable GPUs and select the priced IPv4 network tier."
+  }
 }

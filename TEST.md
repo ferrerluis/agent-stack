@@ -1,5 +1,7 @@
 # AgentStack Test Contract
 
+Current work: Goal blocked pending local-verification approval and required execution inputs. GCP explicit VM settings remain uncommitted; the last fully verified commit is `756de5c`. The full objective and $25 limit are unchanged.
+
 This project has three test tiers. The default tier must be safe for local agents:
 it must not create, mutate, inspect, or destroy live cloud resources.
 
@@ -12,9 +14,18 @@ Deployment requires Terraform >=1.9 for cross-variable validation. The local tes
 ```
 
 The runner copies tracked and untracked non-ignored files to a temporary worktree
-under `/tmp/agent-stack-tests`, then runs all checks there. This keeps `.terraform/`,
+under the ignored `.tmp/agent-stack-tests` directory on the repo filesystem, then runs all checks there. This keeps `.terraform/`,
 provider lock files, generated SSH config, `__pycache__`, and other command side
 effects out of the real checkout.
+
+The runner keeps one shared Terraform provider cache on disk, directs child
+temporary files to its private workspace, and removes that workspace on success,
+failure or interruption. Set `AGENT_STACK_TEST_KEEP_WORK=1` to retain a workspace
+for diagnosis, then remove it when finished. `AGENT_STACK_TEST_ROOT` can select
+another disk directory; a root inside the checkout must be Git-ignored, and Linux rejects tmpfs/ramfs storage. On pi-main, `/tmp` is
+RAM-backed and must not hold large downloads, builds or test workspaces.
+The container-test shell entrypoint also directs its temporary build context
+to disk under the same test root and refuses Linux tmpfs/ramfs storage.
 
 Default-suite commands:
 
@@ -40,8 +51,8 @@ Forbidden in the default suite:
 
 Allowed side effects:
 
-- temporary files under `/tmp/agent-stack-tests`
-- Terraform plugin/cache data inside the temporary test worktree
+- temporary files under the ignored `.tmp/agent-stack-tests` or the selected disk directory
+- a shared Terraform provider cache retained there between runs
 - no changes to repo-tracked or untracked source files after the runner exits
 
 ## Mocked Terraform Suite
@@ -420,3 +431,25 @@ Hetzner exact image and saved-plan checkpoint, 2026-10-06:
 - The cached real Hetzner 1.70.0 provider was exercised against a loopback HTTP fixture with a dummy token, producing an actual binary plan and unchanged `terraform show -json` output that passes the production plan parser. Its completed data read appears only in the saved plan's refreshed `prior_state`, and native `keep_disk: false` is now accepted while true/unknown/nonboolean values refuse; all three checked module/template files match.
 - The shared [saved-data verifier](scripts/showcase_policy.py) now supports completed reads in refreshed state or planned values for both Hetzner and GCP, rejecting malformed, duplicate, foreign and conflicting copies or unknown/changed data actions. Five added Hetzner and two added GCP tests cover these formats and exact image scope; all 48 focused price tests pass, while three added Terraform checks cover the selected lookup, rejected nonstandard image and unchanged ordinary defaults.
 - Final validation: all 589 runner tests pass without skips in 273.278 seconds, plus 143 setup tests in 6.534 seconds and 16 doctor tests in 2.151 seconds (748 Python tests); cached-provider initialization/format/validation and all 63 Terraform checks pass. The initial workspace check detected bytecode from the standalone probe; after removal, the exact original Git status is verified, and the remaining shell/syntax checks pass, with six changed Python sources parsed. Complete account/model/traffic/cleanup/remaining-default/FX cost bounds, measured paid launch, selected native runtime pins, all 24 live cells, second-peer browser access, reboot/persistence and independent deletion remain unverified; no real credential, authenticated cloud/model request, VM/container deployment, peer enrollment or spend occurred ($0), and the full goal/TODO #7 stay active.
+
+GCP explicit VM settings checkpoint, 2026-10-06 (verification pending):
+
+- The cached real Google 7.46.1 provider against a loopback image fixture and dummy token produced a saved native plan with scheduling, GPU, reservation and confidential-compute blocks unknown. Its unchanged JSON is correctly refused before pricing; the older reduced mock fixture had incorrectly represented those defaults as empty lists.
+- The showcase adds `gcp_showcase_cost_controls` (schema default false) to request standard nonpreemptible scheduling, zero GPUs, no reservations, disabled confidential compute, and Premium IPv4 networking. The [price reader](scripts/showcase_gcp_prices.py) now requires those explicit known choices and refuses changed, malformed or unknown controls; the corrected fixture and four added regression tests cover native unknowns, paid features, zero-GPU handling and network choices. Existing profile tests also reject disabling the controls.
+- All 29 focused GCP price tests and 14 preparation/profile tests pass, as do 143 setup and 16 doctor tests in the sandbox (202 Python tests across these suites). Terraform format and four changed Python syntax checks pass. The full wrapper cannot start provider plugins because local sockets are blocked; its runner phase was interrupted after that environmental failure and has no completed result. Automatic approval review timed out twice for the follow-up native provider check. The updated native plan, the added Terraform assertions, full runner and workspace idempotence therefore remain pending; these changes are uncommitted on base `756de5c02e47d6790be5803d7078383f20a4c1e0`.
+- Before committing, finish the dummy-token native check, confirm that exact saved JSON passes the production parser, and run the complete local suite with permitted local sockets. Native zero-GPU normalization and unchanged ordinary deployment behavior still need that verification. Complete cost bounds and paid launch wiring, required execution inputs, selected native runtime pins, all 24 live cells, direct second-peer access, reboot/persistence and independently confirmed cleanup remain pending. No real credential, authenticated cloud/model request, VM/container deployment, peer enrollment or spend occurred ($0); the full goal and TODO #7 remain active.
+
+Blocked audit and final sandbox result, 2026-10-06:
+
+The same local-verification blocker persisted for three consecutive goal turns, with no human approval or execution inputs received. The goal is now blocked, preserving the full TODO #7 objective. The earlier wrapper later finished after the session interruption: it ran 589 runner tests in 636.623 seconds and reported 58 errors, all containing socket `PermissionError`; no other runner error was found. Provider startup also failed under the sandbox restrictions. Setup and doctor suites passed, as did the separately checked 29 GCP price and 14 preparation/profile tests. The workspace check failed because files were edited during the run; this run does not prove workspace idempotence.
+
+Resume after the pending local-verification request is approved or the execution environment permits the required local sockets, and supply the private account/credential-reference/model/pin/peer inputs for live work. First finish the dummy-token native GCP check and a complete permitted local run, then commit the checked changes. Complete cost bounds and public paid launch remain unfinished; all 24 live cells, selected native tools/runtime doctors, direct second-peer browser access, reboot/persistence, an evidence-matched final README and independently confirmed deletion still require proof. No real credential, authenticated cloud/model request, VM/container deployment, peer enrollment or spend occurred ($0).
+
+## Execution handoff integration — 2026-10-07
+
+- Setup supplied isolated cloud scopes, pinned images/tools, a real second Tailscale browser peer and temporary test credential references. Actual read-only checks pass for all four cloud tokens, the peer and the selected model IDs; Hetzner account/project-token mapping still needs independent console proof. No matrix VM or paid model task has run.
+- Models are fixed to gpt-6-luna and claude-haiku-4-5-20251001. The $25 cash cap includes $10.30 already purchased and a $1 peer reserve, leaving $13.70 for matrix/cloud costs. Global new model consumption is capped at $1 per API provider; consuming prepaid credits does not repeat the purchase charge.
+- Temporary credential reads require the authorized setup auth directory, exact private modes, current ownership, regular files and no symlink/path escape. Tailscale access tokens refresh during long phases; each matrix node is recorded and deletion requires its captured ID, exact name and dedicated tag.
+- The funded run phase measures native resource/model/traffic prices and runs the actual local suite at the exported revision. Guest shutdown deadlines, shared outbound limits, a two-boot limit and a separate controller cleanup watchdog bound the trial. Ordinary deployment defaults remain unchanged.
+- Real GCP reads required accepting documented E2 x86 machines when the API omits architecture, and the catalog's current Internet Data Transfer Out naming. The selected official model-card parser now accepts its actual snapshot wording. Native AWS/GCP traffic reads pass; both selected model price readers and all four metadata checks pass without generation.
+- The first full local run found the optional-null schema regression and two permission fixtures affected by the private wrapper umask. Corrections are implemented; final local verification, live native tasks/doctors, browser/reboot checks and independently confirmed deletion remain pending. Two-hour attempts fit the current peer lifetime; its fixed expiry is 2026-10-07 08:11:13 UTC.

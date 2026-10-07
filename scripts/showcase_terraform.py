@@ -76,6 +76,8 @@ class CloudSession:
             self.adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[provider](cloud, self.credentials["token"], self.http)
 
     def secret(self, reference):
+        if reference == self.config["tailnet"]["cleanup_key_ref"] and reference.startswith("file://"):
+            return self.reader(reference)
         if reference not in self.secrets:
             self.secrets[reference] = self.reader(reference)
         return self.secrets[reference]
@@ -111,8 +113,39 @@ class CloudSession:
         return env
 
     def inventory(self, prefix, previous=None):
-        return query(self.config, self.provider, prefix, self.adapter, self.http,
-                     self.secret(self.config["tailnet"]["cleanup_key_ref"]), previous)
+        result = query(self.config, self.provider, prefix, self.adapter, self.http,
+                       self.secret(self.config["tailnet"]["cleanup_key_ref"]), previous)
+        if "funding" in self.config and self.config["tailnet"].get("required_tag"):
+            # Keep the setup's final revocation inventory in sync. Only IDs
+            # already observed with this attempt's exact name and tag qualify.
+            import fcntl
+            from showcase_credentials import AUTH_ROOT
+            path = AUTH_ROOT.parent / "handoff/owned-tailnet-devices.json"
+            lock = os.open(path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                entries = private_read(path)
+                tag = self.config["tailnet"]["required_tag"]
+                present = {node["id"] for node in result["nodes"]}
+                for node in result["nodes"]:
+                    require(node["name"].split(".", 1)[0] == prefix
+                            and node["name"] != self.config["tailnet"]["runner_dns"]
+                            and tag in node.get("tags", []), "tailnet_ownership_tag_missing")
+                    old = entries.get(node["id"])
+                    require(old is None or old.get("name") == node["name"] and old.get("tag") == tag,
+                            "tailnet_ownership_changed")
+                    entries[node["id"]] = {"name":node["name"], "hostname":prefix, "tag":tag,
+                        "purpose":"owned TODO7 matrix attempt", "run_id":prefix, "deleted":False}
+                for node in (previous or {}).get("tailnet", {}).get("devices", []):
+                    old = entries.get(node["id"])
+                    if old and node["id"] not in present:
+                        require(old.get("name") == node["name"] and old.get("tag") == tag,
+                                "tailnet_ownership_changed")
+                        old["deleted"] = True
+                private_write(path, entries)
+            finally:
+                os.close(lock)
+        return result
 
     def delete_nodes(self, record):
         validate_record(record, self.config, self.provider, record["run_id"])
@@ -125,6 +158,11 @@ class CloudSession:
                 continue
             require(node["name"] != self.config["tailnet"]["runner_dns"] and
                     node["name"].split(".", 1)[0] == record["run_id"], "unexpected_tailnet_deletion_target")
+            require(by_id[node["id"]]["name"] == node["name"], "unexpected_tailnet_deletion_target")
+            tag = self.config["tailnet"].get("required_tag")
+            if tag:
+                require(tag in node.get("tags", []) and tag in by_id[node["id"]].get("tags", []),
+                        "unexpected_tailnet_deletion_target")
             tailnet_delete(self.http, self.secret(self.config["tailnet"]["cleanup_key_ref"]), node["id"])
 
 

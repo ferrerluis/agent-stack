@@ -55,6 +55,7 @@ class IsolationTest(unittest.TestCase):
             self.assertEqual(settings["workspace_codex_release"], value["pins"]["codex_release"])
             self.assertEqual(settings["workspace_claude_release"], value["pins"]["claude_release"])
             self.assertFalse(settings["workspace_codex_auto_update_enabled"])
+            self.assertTrue(settings["gcp_showcase_cost_controls"])
             self.assertNotIn("workspace_password", settings)
             self.assertNotIn("openai_api_key", settings)
             self.assertTrue(all(item == "" for key, item in settings.items() if "existing_volume" in key))
@@ -62,7 +63,8 @@ class IsolationTest(unittest.TestCase):
     def test_profile_change_cannot_open_public_access_or_enable_messaging(self):
         profile = (attempt.ROOT / "examples/showcase/terraform.tfvars.example").read_text()
         for changed in (profile.replace("public_domain_enabled               = false", "public_domain_enabled               = true"),
-                        profile + '\nagent_channel = "telegram"\n', profile + '\nextra = null\n'):
+                        profile + '\nagent_channel = "telegram"\n', profile + '\nextra = null\n',
+                        profile.replace("gcp_showcase_cost_controls         = true", "gcp_showcase_cost_controls         = false")):
             with self.assertRaises(attempt.PolicyError):
                 attempt.settings(config(), "aws", "as7-fixture01", "ssh-ed25519 fixture", changed)
 
@@ -81,6 +83,7 @@ class IsolationTest(unittest.TestCase):
             root = Path(temp)
             public = root / "public"
             public.mkdir(mode=0o755)
+            public.chmod(0o755)  # independent of the wrapper's private umask
             with self.assertRaises(attempt.PolicyError):
                 attempt.private_directory(public)
             (root / "alias").symlink_to(root, target_is_directory=True)

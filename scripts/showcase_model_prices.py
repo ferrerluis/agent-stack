@@ -96,7 +96,8 @@ def openai_terms(document, model):
     else:
         # Current release IDs can be canonical without a date. Earlier pages
         # listing both snapshots and a convenience alias must use a snapshot.
-        require("Use " + model + " to select this model." in snapshots
+        require(("Use " + model + " to select this model." in snapshots
+                 or "Use " + model + " in your API requests." in snapshots)
                 and not re.search(re.escape(base) + r"-20[0-9]{2}-[0-9]{2}-[0-9]{2}", snapshots), "model_snapshot_required")
     context = int(one(re.findall(r"([0-9][0-9,]*) context window", text), "model_terms_limits_unsupported").replace(",", ""))
     output = int(one(re.findall(r"([0-9][0-9,]*) max output tokens", text), "model_terms_limits_unsupported").replace(",", ""))
@@ -122,6 +123,10 @@ def openai_terms(document, model):
         input_rate *= max(Decimal(1), rate(input_factor)); output_rate *= max(Decimal(1), rate(output_factor))
         tail = re.sub(r"Prompts with more than [0-9]+K input tokens are priced at [0-9.]+x input and cache rates and [0-9.]+x output for the full request\. ?", "", tail)
     tail = tail.replace("Fast mode prices are 2x Standard. Batch and Flex prices are 50% lower than Standard.", "")
+    for phrase in ("EU data residency is available with Standard, Flex, and Batch processing.",
+                   "Batch and Flex are priced at 50% of Standard rates.",
+                   "Fast mode is priced at 2x the applicable rates."):
+        tail = tail.replace(phrase, "")
     require("Regional processing adds a 10% premium where available." in tail, "model_terms_price_unsupported")
     tail = tail.replace("Regional processing adds a 10% premium where available.", "")
     require(not tail.strip(), "model_terms_price_unsupported")

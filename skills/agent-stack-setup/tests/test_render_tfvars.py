@@ -102,6 +102,7 @@ class RenderTfvarsTest(unittest.TestCase):
         self.assertIn('repo_ssh_host_alias = "agent-stack"', rendered)
         self.assertIn('repo_ssh_private_key_path = ".ssh/id_ed25519_agent_stack"', rendered)
         self.assertIn('aws_ami_id = ""', rendered)
+        self.assertIn("showcase_trial_limits = null", rendered)
         self.assertIn("openclaw_swap_size_mb = 0", rendered)
         self.assertIn("openclaw_health_start_period_seconds = 120", rendered)
         self.assertIn("openclaw_health_retries = 8", rendered)

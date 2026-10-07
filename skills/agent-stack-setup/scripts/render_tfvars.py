@@ -58,6 +58,8 @@ def is_section_heading(line: str) -> bool:
 
 def parse_hcl_literal(raw: str) -> Any:
     value = raw.strip()
+    if value == "null":
+        return None
     if value == "[]":
         return []
     if value.startswith("["):
@@ -218,6 +220,8 @@ def load_schema(repo_root: Path) -> list[VariableSpec]:
 
 
 def value_to_hcl(value: Any) -> str:
+    if value is None:
+        return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -236,6 +240,8 @@ def value_to_hcl(value: Any) -> str:
 
 
 def validate_type(spec: VariableSpec, value: Any) -> None:
+    if value is None and spec.has_default and spec.default is None:
+        return
     if spec.type_name == "string":
         if not isinstance(value, str):
             fail(f"{spec.name} must be a string")

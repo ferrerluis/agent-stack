@@ -140,3 +140,12 @@ variable "ui_auth_password" {
   type      = string
   sensitive = true
 }
+
+variable "showcase_trial_limits" {
+  description = "Temporary showcase guest deadline and per-boot outbound quota; null preserves ordinary deployments."
+  type = object({
+    deadline_utc     = string
+    egress_cap_bytes = number
+  })
+  default = null
+}

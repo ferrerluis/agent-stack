@@ -265,7 +265,11 @@ def tailnet_inventory(config, key, http, prefix, tracked):
         first_label = dns.split(".", 1)[0]
         if value["id"] in known or owned_name(first_label, prefix) or owned_name(value.get("hostname"), prefix):
             check(dns != config["runner_dns"], "runner_peer_must_be_preserved")
-            result.append({"id": value["id"], "name": dns, "hostname": value.get("hostname", "")})
+            node = {"id": value["id"], "name": dns, "hostname": value.get("hostname", "")}
+            if config.get("required_tag"):
+                check(config["required_tag"] in value.get("tags", []), "tailnet_ownership_tag_missing")
+                node["tags"] = value["tags"]
+            result.append(node)
     return result
 
 

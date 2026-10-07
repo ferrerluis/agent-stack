@@ -7,14 +7,15 @@ terraform {
 locals {
   device_name = "agent-stack-data"
   cloud_init = templatefile("${path.module}/../common/templates/cloud_init.yaml.tpl", {
-    provider_type        = "gcp"
-    project_name         = var.project_name
-    admin_username       = var.admin_username
-    admin_ssh_public_key = var.ssh_public_key
-    ebs_volume_id        = ""
-    do_volume_name       = ""
-    hcloud_volume_id     = ""
-    gcp_device_name      = local.device_name
+    provider_type         = "gcp"
+    project_name          = var.project_name
+    showcase_trial_limits = var.showcase_trial_limits
+    admin_username        = var.admin_username
+    admin_ssh_public_key  = var.ssh_public_key
+    ebs_volume_id         = ""
+    do_volume_name        = ""
+    hcloud_volume_id      = ""
+    gcp_device_name       = local.device_name
   })
 }
 
@@ -95,6 +96,32 @@ resource "google_compute_instance" "this" {
   tags         = [var.project_name]
   labels       = { project = var.project_name }
 
+  dynamic "scheduling" {
+    for_each = var.gcp_showcase_cost_controls ? [1] : []
+    content {
+      provisioning_model  = "STANDARD"
+      preemptible         = false
+      automatic_restart   = true
+      on_host_maintenance = "MIGRATE"
+    }
+  }
+  dynamic "guest_accelerator" {
+    for_each = var.gcp_showcase_cost_controls ? [1] : []
+    content {
+      # The provider turns count=0 into an explicitly empty accelerator list.
+      count = 0
+      type  = ""
+    }
+  }
+  dynamic "reservation_affinity" {
+    for_each = var.gcp_showcase_cost_controls ? [1] : []
+    content { type = "NO_RESERVATION" }
+  }
+  dynamic "confidential_instance_config" {
+    for_each = var.gcp_showcase_cost_controls ? [1] : []
+    content { enable_confidential_compute = false }
+  }
+
   boot_disk {
     initialize_params {
       image = var.gcp_pin_boot_image ? one(data.google_compute_image.boot[*].self_link) : var.gcp_image
@@ -109,7 +136,10 @@ resource "google_compute_instance" "this" {
   }
   network_interface {
     subnetwork = google_compute_subnetwork.this.id
-    access_config {}
+    stack_type = var.gcp_showcase_cost_controls ? "IPV4_ONLY" : null
+    access_config {
+      network_tier = var.gcp_showcase_cost_controls ? "PREMIUM" : null
+    }
   }
   # Ubuntu's cloud-init consumes user-data. No model or tailnet keys belong here.
   metadata = {

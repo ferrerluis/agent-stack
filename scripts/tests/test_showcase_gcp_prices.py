@@ -224,6 +224,62 @@ class PriceTest(unittest.TestCase):
         for code in ("model_execution_cost_bound", "egress_unit_price_and_volume_bound", "cleanup_deadline_enforcement"):
             self.assertIn(code, result["not_verified"])
 
+    def test_unknown_native_provider_defaults_refuse_before_cloud_reads(self):
+        original = copy.deepcopy(self.plan)
+        for key in ("scheduling", "guest_accelerator", "reservation_affinity", "confidential_instance_config"):
+            self.plan = copy.deepcopy(original)
+            vm = next(row["change"] for row in self.plan["resource_changes"] if row["type"] == "google_compute_instance")
+            vm["after"][key] = None; vm["after_unknown"][key] = True
+            with self.subTest(key=key), self.assertRaisesRegex(PolicyError, "gcp_price_plan_extra_vm_features_unpriced"):
+                self.measure()
+        self.adapter.get.assert_not_called(); self.adapter.http.request.assert_not_called(); self.assertEqual(self.http.calls, [])
+
+    def test_paid_scheduling_reservations_confidential_compute_or_unknown_controls_refuse(self):
+        original = copy.deepcopy(self.plan)
+        changes = (
+            ("scheduling", "provisioning_model", "SPOT"), ("scheduling", "provisioning_model", "FLEX_START"),
+            ("scheduling", "preemptible", True), ("scheduling", "automatic_restart", False),
+            ("scheduling", "preemptible", 0), ("scheduling", "node_affinities", [{"key": "paid-node"}]),
+            ("scheduling", "min_node_cpus", 4), ("scheduling", "unrecognized_feature", True),
+            ("reservation_affinity", "type", "ANY_RESERVATION"),
+            ("reservation_affinity", "specific_reservation", [{"values": ["foreign"]}]),
+            ("confidential_instance_config", "enable_confidential_compute", True),
+            ("confidential_instance_config", "confidential_instance_type", "TDX"),
+        )
+        for key, field, value in changes:
+            self.plan = copy.deepcopy(original)
+            vm = next(row["change"] for row in self.plan["resource_changes"] if row["type"] == "google_compute_instance")
+            vm["after"][key][0][field] = value
+            with self.subTest(key=key, field=field, value=value), self.assertRaises(PolicyError): self.measure()
+        for key in ("scheduling", "reservation_affinity", "confidential_instance_config", "guest_accelerator", "advanced_machine_features"):
+            self.plan = copy.deepcopy(original)
+            vm = next(row["change"] for row in self.plan["resource_changes"] if row["type"] == "google_compute_instance")
+            vm["after_unknown"][key] = [{"unknown_feature": True}]
+            with self.subTest(unknown=key), self.assertRaises(PolicyError): self.measure()
+        self.adapter.get.assert_not_called(); self.adapter.http.request.assert_not_called(); self.assertEqual(self.http.calls, [])
+
+    def test_explicit_zero_gpu_contract_without_paid_accelerator(self):
+        vm = next(row["change"] for row in self.plan["resource_changes"] if row["type"] == "google_compute_instance")
+        vm["after"]["guest_accelerator"] = [{"count": 0, "type": ""}]
+        self.assertEqual(self.measure()["selection"]["vcpus"], 2)
+        for count, kind in ((1, "nvidia-tesla-k80"), (False, ""), (0, "nvidia-tesla-k80")):
+            vm["after"]["guest_accelerator"] = [{"count": count, "type": kind}]
+            with self.subTest(count=count, kind=kind), self.assertRaises(PolicyError): self.measure()
+
+    def test_changed_or_unknown_ip_version_and_network_tier_refuse_before_reads(self):
+        original = copy.deepcopy(self.plan)
+        for key, value in (("stack_type", "IPV4_IPV6"), ("stack_type", None), ("network_tier", "STANDARD"), ("network_tier", None)):
+            for unknown in (False, True):
+                self.plan = copy.deepcopy(original)
+                vm = next(row["change"] for row in self.plan["resource_changes"] if row["type"] == "google_compute_instance")
+                network = vm["after"]["network_interface"][0]
+                mask = vm["after_unknown"]["network_interface"][0]
+                if key == "network_tier": network = network["access_config"][0]; mask = mask["access_config"][0]
+                if unknown: mask[key] = True
+                else: network[key] = value
+                with self.subTest(key=key, value=value, unknown=unknown), self.assertRaises(PolicyError): self.measure()
+        self.adapter.get.assert_not_called(); self.adapter.http.request.assert_not_called(); self.assertEqual(self.http.calls, [])
+
     def test_expired_measurement_cannot_receive_receipt(self):
         clock = iter((NOW, NOW + 301))
         with self.assertRaisesRegex(PolicyError, "price_measurement_expired"): self.measure(lambda: next(clock))

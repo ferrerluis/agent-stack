@@ -47,6 +47,7 @@ locals {
     provider_type                        = "aws"
     gcp_device_name                      = ""
     project_name                         = var.project_name
+    showcase_trial_limits                = var.showcase_trial_limits
     admin_username                       = var.admin_username
     admin_ssh_public_key                 = var.ssh_public_key
     ebs_volume_id                        = local.ebs_volume_id
@@ -255,7 +256,8 @@ resource "aws_instance" "this" {
   key_name               = aws_key_pair.this.key_name
   availability_zone      = local.az
 
-  user_data = local.cloud_init
+  user_data                            = local.cloud_init
+  instance_initiated_shutdown_behavior = var.showcase_trial_limits == null ? null : "terminate"
 
   dynamic "credit_specification" {
     for_each = var.aws_showcase_cost_controls && contains(["t2", "t3", "t3a", "t4g", "t8i"], split(".", var.aws_instance_type)[0]) ? [1] : []

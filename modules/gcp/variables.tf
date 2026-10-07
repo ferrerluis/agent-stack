@@ -15,7 +15,21 @@ variable "gcp_pin_boot_image" {
     error_message = "gcp_pin_boot_image requires the standard Ubuntu 22.04 family."
   }
 }
+variable "gcp_showcase_cost_controls" {
+  type     = bool
+  default  = false
+  nullable = false
+}
 variable "gcp_disk_size_gb" { type = number }
 variable "gcp_boot_disk_size_gb" { type = number }
 variable "tailscale_enabled" { type = bool }
 variable "public_domain_enabled" { type = bool }
+
+variable "showcase_trial_limits" {
+  description = "Temporary showcase guest deadline and per-boot outbound quota; null preserves ordinary deployments."
+  type = object({
+    deadline_utc     = string
+    egress_cap_bytes = number
+  })
+  default = null
+}

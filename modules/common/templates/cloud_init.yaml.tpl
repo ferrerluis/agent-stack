@@ -3,6 +3,46 @@
 # Terraform over SSH after cloud-init reports ready.
 # Provider: ${provider_type}
 
+%{ if showcase_trial_limits != null }
+# Install limits before package downloads. Host and forwarded traffic share
+# one IPv4 quota per boot. Docker cannot bypass the final routing hook.
+bootcmd:
+  - |
+    set -eu
+    command -v iptables >/dev/null || { /sbin/shutdown -h now; exit 1; }
+    command -v ip6tables >/dev/null || { /sbin/shutdown -h now; exit 1; }
+    mkdir -p /var/lib/agent-stack-trial
+    count=$(cat /var/lib/agent-stack-trial/boots 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" > /var/lib/agent-stack-trial/boots
+    [ "$count" -le 2 ] || { /sbin/shutdown -h now; exit 1; }
+    iptables -t mangle -N AS7_EGRESS
+    iptables -t mangle -A AS7_EGRESS -o lo -j ACCEPT
+    iptables -t mangle -A AS7_EGRESS -m quota --quota ${showcase_trial_limits.egress_cap_bytes} -j ACCEPT
+    iptables -t mangle -A AS7_EGRESS -j DROP
+    iptables -t mangle -I POSTROUTING 1 -j AS7_EGRESS
+    ip6tables -t mangle -I POSTROUTING 1 ! -o lo -j DROP
+    cat > /etc/systemd/system/agent-stack-trial-deadline.service <<'AS7_SERVICE'
+    [Unit]
+    Description=Stop temporary AgentStack showcase VM
+    [Service]
+    Type=oneshot
+    ExecStart=/sbin/shutdown -h now
+    AS7_SERVICE
+    cat > /etc/systemd/system/agent-stack-trial-deadline.timer <<'AS7_TIMER'
+    [Unit]
+    Description=Fixed temporary AgentStack showcase deadline
+    [Timer]
+    OnCalendar=${showcase_trial_limits.deadline_utc}
+    Persistent=true
+    AccuracySec=1s
+    [Install]
+    WantedBy=timers.target
+    AS7_TIMER
+    systemctl daemon-reload
+    systemctl enable --now agent-stack-trial-deadline.timer
+%{ endif }
+
 packages:
   - ca-certificates
   - curl
