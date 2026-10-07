@@ -158,6 +158,44 @@ class DigitalOceanTest(unittest.TestCase):
             adapter.preflight(PREFIX)
         self.assertFalse(any("evil.test" in call[0] for call in adapter.http.calls))
 
+    def test_existing_default_vpc_is_preserved_and_separate_range_is_checked(self):
+        routes = do_routes(); base = preflight.DigitalOcean.base
+        identifier = "11111111-2222-3333-4444-555555555555"
+        routes[base + "/vpcs"] = {"vpcs": [{"id": identifier, "name": "openclaw-vpc", "ip_range": "10.1.0.0/16"}]}
+        routes[base + "/vpcs/" + identifier + "/subnets"] = {"vpc_subnet": [{"ip_range": "10.1.0.0/16"}]}
+        adapter = self.adapter(routes); report = adapter.preflight(PREFIX)
+        self.assertEqual(report["vpc_cidr"], preflight.digitalocean_showcase_cidr(PREFIX))
+        self.assertEqual(report["network_range"], "verified_unused")
+        self.assertTrue(all(call[2] is None for call in adapter.http.calls))
+
+    def test_overlapping_vpc_or_later_subnet_page_refuses_before_launch(self):
+        base = preflight.DigitalOcean.base; identifier = "11111111-2222-3333-4444-555555555555"
+        candidate = preflight.digitalocean_showcase_cidr(PREFIX)
+        for where in ("vpc", "subnet"):
+            routes = do_routes()
+            routes[base + "/vpcs"] = {"vpcs": [{"id": identifier, "name": "unrelated", "ip_range": candidate if where == "vpc" else "10.1.0.0/16"}]}
+            def page(url, _):
+                if "page=1&" in url:
+                    return {"vpc_subnet": [], "links": {"pages": {"next": "https://evil.test/steal"}}}
+                return {"vpc_subnet": [{"ip_range": candidate}]}
+            routes[base + "/vpcs/" + identifier + "/subnets"] = page
+            adapter = self.adapter(routes)
+            with self.subTest(where=where), self.assertRaisesRegex(preflight.PreflightError, "network_range_already_exists"):
+                adapter.preflight(PREFIX)
+            self.assertFalse(any("evil.test" in call[0] for call in adapter.http.calls))
+
+    def test_missing_malformed_or_failed_network_reads_are_not_unused_ranges(self):
+        base = preflight.DigitalOcean.base; identifier = "11111111-2222-3333-4444-555555555555"
+        for network in (None, "bad", "10.1.2.3/16", "::/0", 123, "10.1.0.0"):
+            routes = do_routes(); routes[base + "/vpcs"] = {"vpcs": [{"id": identifier, "ip_range": network}]}
+            with self.subTest(network=network), self.assertRaisesRegex(preflight.PreflightError, "network_range_unverified"):
+                self.adapter(routes).preflight(PREFIX)
+        for response in ({}, preflight.PreflightError("provider_http_403")):
+            routes = do_routes(); routes[base + "/vpcs"] = {"vpcs": [{"id": identifier, "ip_range": "10.1.0.0/16"}]}
+            routes[base + "/vpcs/" + identifier + "/subnets"] = response
+            with self.assertRaises(preflight.PreflightError):
+                self.adapter(routes).preflight(PREFIX)
+
 
 class HetznerTest(unittest.TestCase):
     def adapter(self, routes=None):

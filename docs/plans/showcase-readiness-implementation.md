@@ -1,6 +1,6 @@
 # AgentStack showcase readiness: implementation plan
 
-Current work: TODO #7 is active. Both allowed AWS attempts failed and their owned resources are independently confirmed deleted. The startup repair is proven; the later installation fault is still unidentified. Private failure capture is being added before the remaining cloud tests. All 24 live acceptance cells remain unverified; another fresh AWS deployment requires Luis’s approval.
+Current work: TODO #7 is active. Both allowed AWS attempts and the first DigitalOcean attempt failed; their owned resources are independently confirmed deleted. AWS startup is repaired, but its later installation fault is still unidentified. DigitalOcean’s existing VPC overlap is repaired for bounded showcase trials and private native failure capture is implemented. All 24 live cells remain unverified; another AWS deployment requires Luis’s approval.
 
 Status: Approved for implementation and goal-backed work on 2026-10-05. Reviewed 2026-10-05 against repository revision `648522add8c662f8c238c87ef899a7c0b6c8afb7`.
 
@@ -267,3 +267,13 @@ The retained `/tmp/agent-stack-tests/work.RwFate/terraform-data/providers` was c
 - The funded run phase measures native resource/model/traffic prices and runs the actual local suite at the exported revision. Guest shutdown deadlines, shared outbound limits, a two-boot limit and a separate controller cleanup watchdog bound the trial. Ordinary deployment defaults remain unchanged.
 - Real GCP reads required accepting documented E2 x86 machines when the API omits architecture, and the catalog's current Internet Data Transfer Out naming. The selected official model-card parser now accepts its actual snapshot wording. Native AWS/GCP traffic reads pass; both selected model price readers and all four metadata checks pass without generation.
 - The first full local run found the optional-null schema regression and two permission fixtures affected by the private wrapper umask. Corrections are implemented; final local verification, live native tasks/doctors, browser/reboot checks and independently confirmed deletion remain pending. Two-hour attempts fit the current peer lifetime; its fixed expiry is 2026-10-07 08:11:13 UTC.
+
+DigitalOcean network checkpoint, 2026-10-07:
+
+- `as7-do-1007-live1` at `60b42838826f6d27a80aa7c7b19241e753a3c9db` invoked apply once and failed when the default `10.1.0.0/16` VPC overlapped the account’s existing network. No VM was created; two owned resource IDs were independently confirmed absent, with empty Terraform state and no test tailnet node. This consumed DigitalOcean’s first allowed attempt.
+- Native failed-command output is retained privately before cleanup. That revision passed 784 Python tests (624 runner, 144 setup, 16 doctor) and all 64 Terraform mock checks, including native format/validation and unchanged Git status.
+- Ordinary DigitalOcean deployment defaults retain `10.1.0.0/16`. Bounded showcase trials derive a separate `10.247.<prefix hash>.0/24`; preflight reads every VPC and subnet page and rejects missing, malformed or overlapping ranges. The saved-plan price gate requires that exact known range. Existing networks are only read. The 48 focused preflight/price tests pass; verification of the new full source is pending.
+- Conservative committed cash is $16.62, including $10.30 prepaid purchases, the original $1 peer reservation, both $2.06 AWS attempts and the $1.20 DigitalOcean attempt. $8.38 remains; cleanup does not refund reservations. AWS has no attempts remaining; DigitalOcean has one. GCP and Hetzner have used none. All 24 live cells remain unverified and no paid model generation occurred.
+- The next trial is bounded to 75 minutes within the original four-hour limit. The existing peer’s absolute deadline remains unchanged; launch must independently confirm enough peer lifetime, current prices, matching source tests and remaining budget.
+
+Sources: [DigitalOcean network ranges](https://docs.digitalocean.com/products/networking/vpc/concepts/plan-your-network/), [additional subnet ranges and reads](https://docs.digitalocean.com/products/networking/vpc/how-to/manage-subnets/).

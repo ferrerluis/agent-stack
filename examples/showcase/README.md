@@ -1,6 +1,6 @@
 # TODO #7 showcase
 
-Current work: TODO #7 is active. Execution inputs are supplied; temporary test credential readers, prepaid budget limits and a bounded live run phase are being validated. All 24 live acceptance cells remain unverified.
+Current work: TODO #7 is active. Both allowed AWS attempts and the first DigitalOcean attempt failed; their owned resources are independently confirmed deleted. AWS startup is repaired, but its later installation fault is still unidentified. DigitalOcean’s existing VPC overlap is repaired for bounded showcase trials and private native failure capture is implemented. All 24 live cells remain unverified; another AWS deployment requires Luis’s approval.
 
 One fresh VM runs OpenClaw, Hermes and a workspace containing Claude Code and Codex. This is the live acceptance profile; the repository's normal deployment defaults remain unchanged.
 
@@ -135,3 +135,13 @@ Blocked audit and final sandbox result, 2026-10-06:
 The same local-verification blocker persisted for three consecutive goal turns, with no human approval or execution inputs received. The goal is now blocked, preserving the full TODO #7 objective. The earlier wrapper later finished after the session interruption: it ran 589 runner tests in 636.623 seconds and reported 58 errors, all containing socket `PermissionError`; no other runner error was found. Provider startup also failed under the sandbox restrictions. Setup and doctor suites passed, as did the separately checked 29 GCP price and 14 preparation/profile tests. The workspace check failed because files were edited during the run; this run does not prove workspace idempotence.
 
 Resume after the pending local-verification request is approved or the execution environment permits the required local sockets, and supply the private account/credential-reference/model/pin/peer inputs for live work. First finish the dummy-token native GCP check and a complete permitted local run, then commit the checked changes. Complete cost bounds and public paid launch remain unfinished; all 24 live cells, selected native tools/runtime doctors, direct second-peer browser access, reboot/persistence, an evidence-matched final README and independently confirmed deletion still require proof. No real credential, authenticated cloud/model request, VM/container deployment, peer enrollment or spend occurred ($0).
+
+DigitalOcean network checkpoint, 2026-10-07:
+
+- `as7-do-1007-live1` at `60b42838826f6d27a80aa7c7b19241e753a3c9db` invoked apply once and failed when the default `10.1.0.0/16` VPC overlapped the account’s existing network. No VM was created; two owned resource IDs were independently confirmed absent, with empty Terraform state and no test tailnet node. This consumed DigitalOcean’s first allowed attempt.
+- Native failed-command output is retained privately before cleanup. That revision passed 784 Python tests (624 runner, 144 setup, 16 doctor) and all 64 Terraform mock checks, including native format/validation and unchanged Git status.
+- Ordinary DigitalOcean deployment defaults retain `10.1.0.0/16`. Bounded showcase trials derive a separate `10.247.<prefix hash>.0/24`; preflight reads every VPC and subnet page and rejects missing, malformed or overlapping ranges. The saved-plan price gate requires that exact known range. Existing networks are only read. The 48 focused preflight/price tests pass; verification of the new full source is pending.
+- Conservative committed cash is $16.62, including $10.30 prepaid purchases, the original $1 peer reservation, both $2.06 AWS attempts and the $1.20 DigitalOcean attempt. $8.38 remains; cleanup does not refund reservations. AWS has no attempts remaining; DigitalOcean has one. GCP and Hetzner have used none. All 24 live cells remain unverified and no paid model generation occurred.
+- The next trial is bounded to 75 minutes within the original four-hour limit. The existing peer’s absolute deadline remains unchanged; launch must independently confirm enough peer lifetime, current prices, matching source tests and remaining budget.
+
+Sources: [DigitalOcean network ranges](https://docs.digitalocean.com/products/networking/vpc/concepts/plan-your-network/), [additional subnet ranges and reads](https://docs.digitalocean.com/products/networking/vpc/how-to/manage-subnets/).

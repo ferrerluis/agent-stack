@@ -67,6 +67,11 @@ def text(value):
     return isinstance(value, str) and bool(value.strip()) and not re.search(r"[\x00-\x1f\x7f]", value)
 
 
+def digitalocean_showcase_cidr(prefix):
+    require(isinstance(prefix, str) and re.fullmatch(r"as7-[a-z0-9-]{8,30}", prefix) is not None, "invalid_run_id")
+    return "10.247." + str(int(hashlib.sha256(prefix.encode()).hexdigest()[:2], 16)) + ".0/24"
+
+
 def secret_ref(value):
     # Require field-level references; never accept values, CLI commands or
     # item exports that could include unrelated secrets.

@@ -8,6 +8,7 @@ import argparse
 import base64
 from datetime import datetime
 import json
+import ipaddress
 import math
 import os
 from pathlib import Path
@@ -20,7 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from showcase_policy import PROVIDERS, PolicyError, require, secret_ref, text, validate_inputs
+from showcase_policy import PROVIDERS, PolicyError, require, secret_ref, text, validate_inputs, digitalocean_showcase_cidr
 
 MAX_RESPONSE = 4 * 1024 * 1024
 MAX_PAGES = 50
@@ -180,6 +181,28 @@ class RestCloud:
 class DigitalOcean(RestCloud):
     base = "https://api.digitalocean.com/v2"
 
+    def check_network_range(self, prefix, vpcs):
+        candidate = ipaddress.ip_network(digitalocean_showcase_cidr(prefix))
+        def check_range(row):
+            try:
+                value = row.get("ip_range")
+                check(isinstance(value, str) and "/" in value, "network_range_unverified")
+                network = ipaddress.ip_network(value, strict=True)
+            except (ValueError, TypeError):
+                raise PreflightError("network_range_unverified") from None
+            check(network.version == 4, "network_range_unverified")
+            check(not candidate.overlaps(network), "network_range_already_exists")
+        for row in vpcs:
+            check_range(row)
+            identifier = row.get("id")
+            check(isinstance(identifier, str) and re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", identifier),
+                  "network_range_unverified")
+            # Additional subnets can use ranges outside the VPC default range.
+            # Read every page; no API error or malformed response is empty.
+            for subnet in self.pages("/vpcs/" + identifier + "/subnets", "vpc_subnet", "digitalocean"):
+                check_range(subnet)
+        return str(candidate)
+
     def preflight(self, prefix):
         account = field(self.get("/account"), "account")
         team = account.get("team")
@@ -209,8 +232,11 @@ class DigitalOcean(RestCloud):
                           ("/firewalls", "firewalls"), ("/account/keys", "ssh_keys")):
             rows = droplets if path == "/droplets" else self.pages(path, key, "digitalocean")
             check(not any(isinstance(row.get("name"), str) and row["name"].startswith(prefix) for row in rows), "resource_prefix_already_exists")
+            if path == "/vpcs":
+                cidr = self.check_network_range(prefix, rows)
         return {"identity": "verified", "project": "verified_empty", "vm_memory_mib": size["memory"],
                 "architecture": "x86_64_image", "vm_quota": "available", "size_available_in_region": True,
+                "vpc_cidr": cidr, "network_range": "verified_unused",
                 "not_verified": ["create_delete_permissions", "disk_network_quotas", "live_capacity"]}
 
 

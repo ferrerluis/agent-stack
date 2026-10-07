@@ -35,7 +35,7 @@ def price_plan(cloud, prefix=PREFIX):
         unknown = {}
         if kind == "digitalocean_droplet": values.update(size=cloud["size"], region=cloud["region"], image="ubuntu-22-04-x64", backups=False)
         if kind == "digitalocean_volume": values.update(size=20, region=cloud["region"])
-        if kind == "digitalocean_vpc": values.update(region=cloud["region"])
+        if kind == "digitalocean_vpc": values.update(region=cloud["region"], ip_range=prices.digitalocean_showcase_cidr(prefix))
         if kind == "digitalocean_project_resources": values = {"project": cloud["project_id"], "resources": None}
         if kind == "digitalocean_volume_attachment":
             values = {"droplet_id": None, "volume_id": None}; unknown = {"droplet_id": True, "volume_id": True}
@@ -94,6 +94,8 @@ class PriceTest(unittest.TestCase):
             lambda rows: rows["digitalocean_volume"]["after"].update(region="wrong-region"),
             lambda rows: rows["digitalocean_project_resources"]["after"].update(project="foreign-project"),
             lambda rows: rows["digitalocean_vpc"]["after"].update(region="wrong-region"),
+            lambda rows: rows["digitalocean_vpc"]["after"].update(ip_range="10.1.0.0/16"),
+            lambda rows: rows["digitalocean_vpc"]["after_unknown"].update(ip_range=True),
         )
         original = copy.deepcopy(self.plan)
         for mutation in mutations:

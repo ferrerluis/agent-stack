@@ -205,6 +205,11 @@ run "digitalocean_module_plans_with_mocked_provider" {
   }
 
   assert {
+    condition     = digitalocean_vpc.this.ip_range == "10.1.0.0/16"
+    error_message = "Ordinary DigitalOcean deployments must preserve the original network range."
+  }
+
+  assert {
     condition     = output.volume_id == "do-volume-existing-agentstacktest"
     error_message = "DigitalOcean module should preserve an explicitly supplied existing volume ID."
   }
@@ -233,10 +238,18 @@ run "digitalocean_assigns_new_droplet_and_disk_to_selected_project" {
     do_droplet_size = "s-4vcpu-8gb"
     do_disk_size_gb = 20
     do_project_id   = "12345678-1234-1234-1234-123456789abc"
+    showcase_trial_limits = {
+      deadline_utc     = "2026-10-08 00:00:00 UTC"
+      egress_cap_bytes = 1073741824
+    }
   }
   assert {
     condition     = digitalocean_project_resources.this[0].project == var.do_project_id && length(digitalocean_project_resources.this[0].resources) == 2
     error_message = "Both new project-capable resources must join the isolated test project."
+  }
+  assert {
+    condition     = digitalocean_vpc.this.ip_range == "10.247.${parseint(substr(sha256(var.project_name), 0, 2), 16)}.0/24"
+    error_message = "Bounded showcase trials must use the network range checked before apply."
   }
 }
 

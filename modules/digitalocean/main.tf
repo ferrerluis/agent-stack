@@ -115,9 +115,11 @@ resource "digitalocean_ssh_key" "this" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "digitalocean_vpc" "this" {
-  name     = "${var.project_name}-vpc"
-  region   = var.do_region
-  ip_range = "10.1.0.0/16"
+  name   = "${var.project_name}-vpc"
+  region = var.do_region
+  # Keep the ordinary deployment default. Bounded showcase attempts use a
+  # separate /24, checked against account VPCs and subnets before apply.
+  ip_range = var.showcase_trial_limits == null ? "10.1.0.0/16" : "10.247.${parseint(substr(sha256(var.project_name), 0, 2), 16)}.0/24"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

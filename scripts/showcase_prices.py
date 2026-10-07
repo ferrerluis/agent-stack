@@ -16,7 +16,7 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from showcase_policy import PolicyError, require, validate_fresh_plan
+from showcase_policy import PolicyError, require, validate_fresh_plan, digitalocean_showcase_cidr
 
 SOURCES = {"volumes": "https://www.digitalocean.com/pricing/volumes",
            "droplets": "https://docs.digitalocean.com/products/droplets/details/pricing/"}
@@ -166,7 +166,7 @@ def do_plan(plan, cloud, prefix, run):
             continue
         require(item["type"] not in rows, "price_plan_shape_unsupported")
         unknown = item["change"].get("after_unknown", {})
-        require(isinstance(unknown, dict) and not any(unknown.get(key) for key in ("size", "region", "image", "backups", "project")),
+        require(isinstance(unknown, dict) and not any(unknown.get(key) for key in ("size", "region", "image", "backups", "project", "ip_range")),
                 "price_plan_values_unknown")
         rows[item["type"]] = item["change"]["after"]
     require(set(rows) == DO_TYPES, "price_plan_shape_unsupported")
@@ -179,6 +179,7 @@ def do_plan(plan, cloud, prefix, run):
     require(type(amount) is int and 1 <= amount <= 16384 and volume.get("region") == cloud["region"], "price_plan_disk_scope_changed")
     require(rows["digitalocean_project_resources"].get("project") == cloud["project_id"], "price_plan_project_scope_changed")
     require(rows["digitalocean_vpc"].get("region") == cloud["region"], "price_plan_vm_scope_changed")
+    require(rows["digitalocean_vpc"].get("ip_range") == digitalocean_showcase_cidr(prefix), "price_plan_network_scope_changed")
     return amount
 
 
