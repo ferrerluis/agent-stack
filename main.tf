@@ -24,11 +24,11 @@ provider "aws" {
 }
 
 provider "digitalocean" {
-  token = var.do_token != "" ? var.do_token : null
+  token = var.cloud_provider == "digitalocean" ? (var.do_token != "" ? var.do_token : null) : "agent-stack-inactive"
 }
 
 provider "hcloud" {
-  token = var.hcloud_token != "" ? var.hcloud_token : null
+  token = var.cloud_provider == "hetzner" ? (var.hcloud_token != "" ? var.hcloud_token : null) : "agent-stack-inactive"
 }
 
 resource "random_password" "gateway_token" {
