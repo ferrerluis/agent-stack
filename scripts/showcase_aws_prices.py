@@ -199,6 +199,23 @@ def flat_price(rows, service, filters, unit, now, suffix=None):
                   "publication_date": publication, "effective_date": effective, "product_sha256": digest}
 
 
+def omitted_instance_block(plan, vm, unknown, key):
+    if vm.get(key) == [] and not unknown.get(key):
+        return True
+    if vm.get(key) is not None or unknown.get(key) is not True:
+        return False
+    # Native AWS marks absent Optional+Computed blocks unknown. Accept only
+    # absence in this saved plan's actual resource configuration, never an
+    # unknown caller hint or a configured spot/interface block.
+    try:
+        resources = plan["configuration"]["root_module"]["module_calls"]["aws"]["module"]["resources"]
+        rows = [row for row in resources if row.get("address") == "aws_instance.this"
+                and row.get("type") == "aws_instance" and row.get("mode") == "managed"]
+        return len(rows) == 1 and isinstance(rows[0].get("expressions"), dict) and key not in rows[0]["expressions"]
+    except (KeyError, TypeError):
+        return False
+
+
 def aws_plan(plan, cloud, prefix, run):
     validate_fresh_plan(plan, "aws", prefix, run)
     rows, unknowns = {}, {}
@@ -217,7 +234,8 @@ def aws_plan(plan, cloud, prefix, run):
     require(vm.get("instance_type") == cloud["size"] and isinstance(zone, str)
             and re.fullmatch(re.escape(cloud["region"]) + r"[a-z]", zone) and isinstance(ami, str)
             and re.fullmatch(r"ami-[a-f0-9]{8,17}", ami), "aws_price_plan_vm_scope_changed")
-    require(vm.get("instance_market_options") == [] and vm.get("network_interface") == []
+    require(all(omitted_instance_block(plan, vm, unknowns["aws_instance"], key)
+                for key in ("instance_market_options", "network_interface"))
             and subnet.get("map_public_ip_on_launch") is True
             and (vm.get("associate_public_ip_address") is None or vm.get("associate_public_ip_address") is True),
             "aws_price_plan_network_or_market_unsupported")

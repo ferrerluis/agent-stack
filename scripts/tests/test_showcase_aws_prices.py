@@ -154,6 +154,21 @@ class PriceTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(PolicyError): self.measure()
             self.adapter.call.assert_not_called(); self.assertEqual(self.query.calls, [])
 
+    def test_native_computed_empty_blocks_require_saved_configuration_absence(self):
+        vm = next(row['change'] for row in self.plan['resource_changes'] if row['type'] == 'aws_instance')
+        for key in ('instance_market_options', 'network_interface'):
+            vm['after'][key] = None
+            vm['after_unknown'][key] = True
+        with self.assertRaisesRegex(PolicyError, 'aws_price_plan_network_or_market_unsupported'):
+            self.measure()
+        resource = {'address':'aws_instance.this','mode':'managed','type':'aws_instance','expressions':{}}
+        self.plan['configuration'] = {'root_module':{'module_calls':{'aws':{'module':{'resources':[resource]}}}}}
+        self.assertEqual(self.measure()['status'], 'resource_unit_prices_measured')
+        for key in ('instance_market_options', 'network_interface'):
+            resource['expressions'] = {key:{'constant_value':[]}}
+            with self.assertRaisesRegex(PolicyError, 'aws_price_plan_network_or_market_unsupported'):
+                self.measure()
+
     def test_missing_duplicate_or_unexpected_resources_refused_before_price_read(self):
         original = copy.deepcopy(self.plan)
         for kind in ("aws_security_group", "aws_key_pair"):
