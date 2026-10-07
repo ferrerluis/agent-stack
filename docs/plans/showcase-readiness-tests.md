@@ -1,6 +1,15 @@
 # AgentStack showcase readiness: agent-first test plan
 
-Current work: TODO #7 remains active. Both GCP attempts failed during installation and verified cleanup of seven owned resources each; all 24 live cells remain unverified. The first packaging repair passed 802 Python tests and 64 Terraform checks at 9d897d2. The second trial lost SSH during Claude installation without a native error; its exact cause remains unproved. A separate GCP address lookup repair passes 39 focused checks, and an isolated real-packet test reproduces and repairs the outbound quota's incorrect counting of inbound container downloads. Committed cash is $22.24 of $25. AWS, DigitalOcean and GCP have each used both approved attempts; further trials need explicit approval, and Hetzner still needs console project-token proof.
+Current work: TODO #7 is active; all 24 live cells remain unverified. The $25 cap is unchanged and the request for $30 is withdrawn.
+
+- Confirmed prepaid purchases are $10.30; actual cloud bills remain unreconciled. The former $22.24 figure included conservative reservations, rather than confirmed spending.
+- Six failed trials have independently verified cleanup. Receipt-bound accounting releases $3.90 of unused allowances, reducing the current conservative ceiling to $18.34 and leaving $6.66 within the cap; original quotes, account margins, transfer reserves, purchased credits and retry history are preserved.
+- Future private inputs choose AWS m5a.large to avoid CPU-credit surcharges and Hetzner cpx32 in fsn1 for a lower hourly rate. DigitalOcean already uses the cheapest available regional 8 GiB option; GCP's selected size is cheapest among predefined E2 options checked, and the broader AWS comparison remains incomplete.
+- A forecast using fresh VM prices and same-day disk/IP/network bounds allows $5.64 for four further 70-minute trials, for a $23.98 ceiling before a new peer. Each launch still requires a fresh plan and complete native price checks; prefer a free peer or keep any paid replacement within the $1.02 forecast headroom.
+- Both temporary browser peers have confirmed cloud and tailnet cleanup. Hetzner console sign-in, account, project and the Read & Write token entry are verified; exact private-token binding and an active browser peer remain pending.
+- The cost guard passed all 813 Python tests and 64 Terraform checks, with no skips. AWS, DigitalOcean and GCP each used both approved attempts; further trials require explicit approval within the existing $25 cap, while Hetzner has used none.
+
+Historical checkpoints below retain the earlier reservation policy and amounts; the current figures above supersede them. An 8 GiB VM remains a planning floor, rather than a measured minimum: record peak build/runtime memory in the next successful trial before choosing a smaller acceptance VM.
 
 Remaining-budget verification, 2026-10-07: focused tests pass for generated 512 MiB guest controls, matching two-boot price bounds, refusal of mismatched quotas, immutable replacement-peer amount/deadline binding, corrupt cost history, duplicate charges and preservation of all original cash reservations. The original two-attempt limit remains enforced. Full source verification, a newly funded browser peer and native GCP acceptance are next; current committed cash is $17.78 of $25.
 

@@ -370,12 +370,51 @@ def prepaid_charge(hold, terms):
     return cost
 
 
+def validate_cleanup_receipt(receipt, attempt, binding):
+    object_fields(receipt, ("provider", "account_id", "project_id", "region", "zone", "terraform_state_verified_empty", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"), ("terraform_state_proof",))
+    require(receipt.get("terraform_state_proof", "destroyed_empty_local_state") in ("destroyed_empty_local_state", "never_applied_verified_absent"), "invalid_state_proof")
+    require(receipt["terraform_state_verified_empty"] is True, "terraform_state_removal_unverified")
+    require(type(receipt["owned_ids_checked"]) is int and receipt["owned_ids_checked"] >= 0 and receipt["remaining_ids"] == []
+            and type(receipt["tailnet_nodes_checked"]) is int and receipt["tailnet_nodes_checked"] >= 0 and receipt["remaining_tailnet_nodes"] == []
+            and all(type(receipt[key]) is int and receipt[key] > 0 for key in ("cloud_queries_succeeded", "tailnet_queries_succeeded")), "cleanup_unverified")
+    require(receipt["provider"] == attempt["provider"] and isinstance(binding, dict)
+            and all(receipt[key] == binding.get(key) for key in ("account_id", "project_id", "region", "zone")), "cleanup_identity_mismatch")
+    require(type(receipt["verified_at"]) in (int, float) and math.isfinite(receipt["verified_at"])
+            and receipt["verified_at"] >= attempt["started_at"], "cleanup_unverified")
+
+
+def closed_cost_bound(attempt, binding):
+    """Bound a deleted trial, without claiming an invoice or changing its hold.
+
+    Reservation precedes creation; native absence verification follows deletion.
+    Round that entire interval up to whole hours for every cloud. Keep the
+    original complete resource rate, account margin, transfer/minimum reserve
+    and nonprepaid model hold. Once deletion is proved, its separate future
+    cleanup contingency is unnecessary: the interval already includes cleanup.
+    """
+    require(attempt.get("status") == "cleaned" and "cleanup_receipt" in attempt
+            and all(key in attempt for key in ("price_quote", "quote_sha256", "model_usd")), "closed_cost_proof_required")
+    validate_model_account(attempt)
+    receipt = attempt["cleanup_receipt"]
+    validate_cleanup_receipt(receipt, attempt, binding)
+    seconds = math.ceil(receipt["verified_at"] - attempt["started_at"])
+    hours = max(1, (seconds + 3599) // 3600)
+    quote = attempt["price_quote"]
+    amount = (money(quote["hourly_usd"]) * hours + money(quote["fixed_usd"])
+              + (0 if quote.get("model_prepaid") else money(quote["model_usd"]))).quantize(Decimal(".01"), rounding=ROUND_CEILING)
+    return {"kind": "native_cleanup_hourly_upper_bound", "usd": str(amount),
+            "original_reserved_usd": attempt["reserved_usd"], "quote_sha256": attempt["quote_sha256"],
+            "cleanup_receipt_sha256": hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "lifetime_upper_bound_seconds": seconds, "whole_hours_upper_bound": hours}
+
+
 class Reservations:
     """One private batch ledger, exclusive per process and conservative on costs.
 
-    A completed attempt still consumes its full reservation. Never infer a
-    refund from elapsed time or delayed provider billing. A missing cleanup
-    receipt blocks every new launch but never blocks recovery/deletion.
+    A completed attempt retains its original reservation and retry count.
+    An explicit reconciliation may use a conservative closed cost bound after
+    native deletion proof; neither this bound nor a hold is an actual bill.
+    Missing cleanup blocks new launches but never recovery/deletion.
     """
     def __init__(self, directory, config):
         self.directory = Path(directory)
@@ -413,10 +452,13 @@ class Reservations:
                     and self.config["attempt_seconds"] <= state["limits"]["attempt_seconds"], "ledger_scope_mismatch")
             for attempt in state["attempts"]:
                 object_fields(attempt, ("run_id", "provider", "reserved_usd", "started_at", "deadline", "work_deadline", "status"),
-                              ("cleanup_receipt", "model_usd", "quote_sha256", "price_quote", "model_policy", "model_requests"))
+                              ("cleanup_receipt", "model_usd", "quote_sha256", "price_quote", "model_policy", "model_requests", "closed_cost_bound"))
                 require(attempt["status"] in ("active", "cleaned") and attempt["provider"] in PROVIDERS, "ledger_unreadable")
                 money(attempt["reserved_usd"])
                 validate_model_account(attempt)
+                if "closed_cost_bound" in attempt:
+                    require(attempt["closed_cost_bound"] == closed_cost_bound(attempt, state["provider_bindings"].get(attempt["provider"])),
+                            "closed_cost_proof_changed")
             peers = state.get("peer_reservations", [])
             require(isinstance(peers, list), "ledger_unreadable")
             names = set()
@@ -482,9 +524,15 @@ class Reservations:
         return self.operate(update)
 
     def committed_cash(self, state):
+        def trial_bound(row):
+            if "closed_cost_bound" not in row:
+                return money(row["reserved_usd"])
+            proof = closed_cost_bound(row, state["provider_bindings"].get(row["provider"]))
+            require(row["closed_cost_bound"] == proof, "closed_cost_proof_changed")
+            return money(proof["usd"])
         funding = self.config.get("funding", {})
         return (money(funding.get("purchased_usd", "0")) + money(funding.get("peer_reserved_usd", "0"))
-                + sum((money(row["reserved_usd"]) for row in state["attempts"]), Decimal(0))
+                + sum((trial_bound(row) for row in state["attempts"]), Decimal(0))
                 + sum((money(row["reserved_usd"]) for row in state.get("peer_reservations", [])), Decimal(0)))
 
     def reserve(self, provider, run_id, quote, now=None):
@@ -514,22 +562,32 @@ class Reservations:
         return self.operate(update)
 
     def confirm_cleanup(self, run_id, receipt):
-        object_fields(receipt, ("provider", "account_id", "project_id", "region", "zone", "terraform_state_verified_empty", "cloud_queries_succeeded", "owned_ids_checked", "remaining_ids", "tailnet_queries_succeeded", "tailnet_nodes_checked", "remaining_tailnet_nodes", "verified_at"), ("terraform_state_proof",))
-        require(receipt.get("terraform_state_proof", "destroyed_empty_local_state") in ("destroyed_empty_local_state", "never_applied_verified_absent"), "invalid_state_proof")
-        require(receipt["terraform_state_verified_empty"] is True, "terraform_state_removal_unverified")
-        require(type(receipt["owned_ids_checked"]) is int and receipt["owned_ids_checked"] >= 0 and receipt["remaining_ids"] == []
-                and type(receipt["tailnet_nodes_checked"]) is int and receipt["tailnet_nodes_checked"] >= 0 and receipt["remaining_tailnet_nodes"] == []
-                and all(type(receipt[key]) is int and receipt[key] > 0 for key in ("cloud_queries_succeeded", "tailnet_queries_succeeded")), "cleanup_unverified")
         def update(state):
             matches = [item for item in state["attempts"] if item["run_id"] == run_id]
             require(len(matches) == 1 and matches[0]["status"] == "active", "active_attempt_required")
             attempt = matches[0]
             binding = state["provider_bindings"].get(attempt["provider"])
-            require(receipt["provider"] == attempt["provider"] and isinstance(binding, dict)
-                    and all(receipt[key] == binding.get(key) for key in ("account_id", "project_id", "region", "zone")), "cleanup_identity_mismatch")
-            require(type(receipt["verified_at"]) in (int, float) and receipt["verified_at"] >= attempt["started_at"], "cleanup_unverified")
+            validate_cleanup_receipt(receipt, attempt, binding)
             attempt.update(status="cleaned", cleanup_receipt=receipt)
             return {"run_id": run_id, "cleanup": "verified", "reserved_usd": attempt["reserved_usd"]}
+        return self.operate(update)
+
+    def reconcile_cleanup(self, run_id, now=None):
+        """Release unused contingencies only from the original native receipt.
+
+        No caller-selected dollar amount, billing refund, reset or new retry.
+        Late deletion can increase the bound above the original reservation.
+        """
+        now = time.time() if now is None else now
+        require(type(now) in (int, float) and math.isfinite(now), "closed_cost_proof_required")
+        def update(state):
+            matches = [row for row in state["attempts"] if row["run_id"] == run_id]
+            require(len(matches) == 1, "closed_cost_proof_required")
+            row = matches[0]
+            proof = closed_cost_bound(row, state["provider_bindings"].get(row["provider"]))
+            require(row["cleanup_receipt"]["verified_at"] <= now, "cleanup_time_unverified")
+            row["closed_cost_bound"] = proof
+            return {"run_id": run_id, "closed_cost_bound": dict(proof)}
         return self.operate(update)
 
 
