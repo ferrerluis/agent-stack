@@ -683,9 +683,37 @@ class AddressTest(unittest.TestCase):
         adapter.get.return_value = {"name": name, "status": "RUNNING", "networkInterfaces": [{"accessConfigs": [{"natIP": IP}]}]}
         values = {"id": identifier, "name": name, "network_interface": [{"access_config": [{"nat_ip": IP}]}]}
         self.assertEqual(remote.matching_address(adapter, "gcp", values), IP)
-        adapter.get.assert_called_once_with("/projects/agent-stack-fixture/zones/us-east1-b/instances/" + name)
+        adapter.get.assert_called_once_with("/zones/us-east1-b/instances/" + name)
         with self.assertRaisesRegex(terraform.PolicyError, "owned_vm_scope_mismatch"):
             remote.matching_address(adapter, "gcp", {**values, "id": identifier.replace("us-east1-b", "us-east1-c")})
+
+    def test_real_google_get_constructs_one_project_path_and_rejects_a_changed_saved_address(self):
+        from showcase_preflight import Google
+        adapter = Google.__new__(Google)
+        adapter.cloud = config()["providers"]["gcp"]
+        adapter.base = "https://compute.googleapis.com/compute/v1/projects/agent-stack-fixture"
+        adapter.access_token = lambda: "fixture-token"
+        name = PREFIX + "-instance"
+        expected = adapter.base + "/zones/us-east1-b/instances/" + name
+        calls = []
+        test = self
+        class HTTP:
+            def request(self, url, authorization):
+                test.assertEqual(url, expected)
+                test.assertEqual(authorization, "Bearer fixture-token")
+                calls.append(url)
+                return {"name": name, "status": "RUNNING", "networkInterfaces": [{"accessConfigs": [{"natIP": IP}]}]}
+        adapter.http = HTTP()
+        values = {"id": "projects/agent-stack-fixture/zones/us-east1-b/instances/" + name, "name": name,
+                  "network_interface": [{"access_config": [{"nat_ip": IP}]}]}
+        self.assertEqual(remote.matching_address(adapter, "gcp", values), IP)
+        changed = copy.deepcopy(values)
+        changed["network_interface"][0]["access_config"][0]["nat_ip"] = "1.1.1.1"
+        with self.assertRaisesRegex(terraform.PolicyError, "owned_vm_address_unverified"):
+            remote.matching_address(adapter, "gcp", changed)
+        with self.assertRaisesRegex(terraform.PolicyError, "owned_vm_scope_mismatch"):
+            remote.matching_address(adapter, "gcp", values | {"id": values["id"].replace("agent-stack-fixture", "foreign-project")})
+        self.assertEqual(len(calls), 2)
 
 
 @unittest.skipUnless(os.geteuid() == 1000, "independent workspace file verifier runs as UID 1000")

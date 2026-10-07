@@ -65,6 +65,8 @@ class CloudInitLoaderTemplateTest(unittest.TestCase):
             for name in ("iptables", "ip6tables"):
                 (commands / name).write_text("#!/bin/sh\nexit 0\n")
                 (commands / name).chmod(0o700)
+            (commands / "ip").write_text('#!/bin/sh\n[ "$1" != -4 ] || echo "default via 192.0.2.1 dev eth0"\nexit 0\n')
+            (commands / "ip").chmod(0o700)
             (commands / "systemctl").write_text('''#!/bin/sh
 if [ "$1" = enable ]; then
   for arg in "$@"; do [ "$arg" != --no-block ] || exit 0; done

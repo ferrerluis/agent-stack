@@ -138,7 +138,8 @@ def matching_address(adapter, provider, values):
     else:
         project, zone = adapter.cloud["project_id"], adapter.cloud["zone"]
         require(identifier == "projects/" + project + "/zones/" + zone + "/instances/" + name, "owned_vm_scope_mismatch")
-        vm = adapter.get("/projects/" + segment(project) + "/zones/" + segment(zone) + "/instances/" + segment(name))
+        # Google.get already uses the independently verified project as its base.
+        vm = adapter.get("/zones/" + segment(zone) + "/instances/" + segment(name))
         require(vm.get("name") == name and vm.get("status") == "RUNNING", "owned_vm_not_running")
         interfaces = objects(vm, "networkInterfaces")
         public = [row.get("natIP") for interface in interfaces for row in objects(interface, "accessConfigs")]
