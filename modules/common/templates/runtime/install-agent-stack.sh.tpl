@@ -308,7 +308,11 @@ build_workspace_image() {
   install -m 0644 "$app/workspace-para-memory-drive-skill.md" "$build_context/para-memory-drive/SKILL.md"
   install -m 0755 "$app/workspace-codex-update.sh" "$build_context/workspace-codex-update.sh"
   install -m 0755 "$app/workspace-codex-control.py" "$build_context/workspace-codex-control.py"
-  docker build -t agent-stack-workspace:local -f "$build_context/Dockerfile" "$build_context"
+  # Old rollback Dockerfiles predate the task helper; current images require it.
+  if [ -f "$app/workspace-cli-task.py" ] || grep -q '^COPY workspace-cli-task.py ' "$build_context/Dockerfile"; then
+    install -m 0755 "$app/workspace-cli-task.py" "$build_context/workspace-cli-task.py" || return 1
+  fi
+  docker build -t agent-stack-workspace:local -f "$build_context/Dockerfile" "$build_context" || return 1
   rm -rf "$build_context"
 }
 
@@ -358,7 +362,7 @@ restore_workspace_image() {
       && [ -f "$app/workspace-para-memory-drive-skill.md" ] \
       && [ -f "$app/workspace-codex-update.sh" ] \
       && [ -f "$app/workspace-codex-control.py" ]; then
-    build_workspace_image
+    build_workspace_image || return 1
     return 0
   fi
   return 1

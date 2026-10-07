@@ -1,6 +1,6 @@
 # AgentStack showcase readiness: implementation plan
 
-Current work: TODO #7 is active. Both allowed AWS and DigitalOcean attempts failed; independent cleanup is confirmed. The latest DigitalOcean failure identified a missing workspace target, now repaired. Full verification of that repair and trial cost controls is underway before GCP testing. All 24 live cells remain unverified; further AWS/DigitalOcean attempts require Luis’s approval.
+Current work: TODO #7 is active. GCP's first attempt reached the workspace Docker build, then failed because the build context omitted its task helper. Cleanup independently confirmed seven owned resources absent. The packaging repair passes four filesystem checks; full verification is next. Committed cash is $20.62 of $25. All 24 live cells remain unverified; further AWS/DigitalOcean attempts await Luis's approval and Hetzner needs console project-token proof.
 
 Remaining-budget controls, 2026-10-07: committed cash is $17.78 of $25. Funded trials may enforce 512 MiB outbound per boot, with absent input retaining 1 GiB; quotes must price the actual cap across two boots plus measurement/account margins. A replacement browser peer must have fresh credentials, a new name, a fixed deadline and an additional measured reservation that cannot reset earlier costs. Focused quota, binding and ledger tests pass; the full repaired source and native acceptance remain pending.
 

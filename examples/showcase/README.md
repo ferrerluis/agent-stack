@@ -1,6 +1,6 @@
 # TODO #7 showcase
 
-Current work: TODO #7 is active. Both allowed AWS and DigitalOcean attempts failed; independent cleanup is confirmed. The latest DigitalOcean failure identified a missing workspace target, now repaired. Full verification of that repair and trial cost controls is underway before GCP testing. All 24 live cells remain unverified; further AWS/DigitalOcean attempts require Luis’s approval.
+Current work: TODO #7 is active. GCP's first attempt reached the workspace Docker build, then failed because the build context omitted its task helper. Cleanup independently confirmed seven owned resources absent. The packaging repair passes four filesystem checks; full verification is next. Committed cash is $20.62 of $25. All 24 live cells remain unverified; further AWS/DigitalOcean attempts await Luis's approval and Hetzner needs console project-token proof.
 
 Funded trial controls: optional `trial_egress_cap_bytes` accepts 512 MiB or 1 GiB per boot and defaults to 1 GiB. Guest enforcement must match pricing across both allowed boots and all margins. A replacement browser peer requires a new name, fresh credentials, a fixed deadline and an additional measured cash reservation; original peer and failed-attempt costs remain charged. Current committed cash is $17.78 of $25, and focused checks pass; full source and native acceptance remain pending.
 
