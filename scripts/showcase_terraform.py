@@ -325,7 +325,55 @@ class TerraformAttempt:
             require(args[-1] == str(path) and path.is_file() and not path.is_symlink()
                     and path.stat().st_mode & 0o077 == 0 and isinstance(expected_plan, str)
                     and hashlib.sha256(path.read_bytes()).hexdigest() == expected_plan, "saved_plan_changed")
-        return self.execute([self.terraform, "-chdir=" + str(self.checkout), *args], env=env, timeout=timeout)
+        name = "terraform-cleanup-error.json" if cleanup else "terraform-apply-error.json" if args[0] == "apply" else "terraform-command-error.json"
+        options = {"failure_report": self.run / name} if self.execute is command else {}
+        return self.execute([self.terraform, "-chdir=" + str(self.checkout), *args], env=env, timeout=timeout, **options)
+
+    def collect_apply_failure(self):
+        """Best-effort bounded read before destruction; no doctor or generation."""
+        if self.execute is not command:
+            return
+        try:
+            require(self.record()["stage"] == "apply_uncertain" and self.state_path.is_file(), "failed_apply_required")
+            current = self.session.inventory(self.prefix)
+            inventory = capture(current, self.config)
+            require(inventory.get("identity") == "verified", "account_project_mapping_unverified")
+            private_write(self.run / "inventory.json", inventory)
+            rows = guard_state(private_read(self.state_path), private_read(self.run / "deployment-plan.json"),
+                self.config, self.provider, self.prefix, self.checkout, inventory, self.session.adapter)
+            vm_types = {"aws": "aws_instance", "digitalocean": "digitalocean_droplet", "gcp": "google_compute_instance", "hetzner": "hcloud_server"}
+            vms = [row["values"] for row in rows.values() if row["type"] == vm_types[self.provider]]
+            require(len(vms) == 1, "one_owned_vm_required")
+            from showcase_remote import matching_address
+            address = matching_address(self.session.adapter, self.provider, vms[0])
+            script = '''import json,os,stat
+logs={}
+for path in ['/var/log/openclaw-bootstrap.log','/var/log/cloud-init-output.log','/var/log/cloud-init.log']:
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        with os.fdopen(fd,'rb') as stream:
+            info=os.fstat(stream.fileno())
+            assert stat.S_ISREG(info.st_mode) and info.st_uid==0 and info.st_nlink==1
+            stream.seek(max(0,info.st_size-65536))
+            logs[path]=stream.read(65536).decode('utf-8',errors='replace')
+    except (OSError,AssertionError):
+        logs[path]=None
+print(json.dumps({'schema':1,'uid':os.geteuid(),'logs':logs}))
+'''
+            args = [str(self.checkout / "bin/agent-stack-ssh"), "--batch", "--key", str(self.checkout / ".ssh/id_ed25519_agent_stack"),
+                "--host", "admin@" + address, "--known-hosts", str(self.checkout / ".ssh/known_hosts"), "--", "sudo", "-n", "python3", "-"]
+            raw = command(args, env=isolated_environment(self.run), input=script.encode(), timeout=45)
+            require(len(raw) <= 2 * 1024 * 1024, "diagnostic_response_too_large")
+            result = json.loads(raw)
+            require(isinstance(result, dict) and result.get("schema") == 1 and result.get("uid") == 0
+                    and isinstance(result.get("logs"), dict), "invalid_private_diagnostic")
+            private_write(self.run / "guest-apply-error.json", result)
+        except BaseException:
+            # Diagnostics cannot skip cleanup or replace the original error.
+            try:
+                private_write(self.run / "guest-diagnostic-status.json", {"status": "unavailable"})
+            except (OSError, PolicyError, PreflightError):
+                pass
 
     def check_tool(self):
         result = json.loads(self.tf("version", "-json"))
@@ -477,6 +525,7 @@ class TerraformAttempt:
         except BaseException:
             record.update(stage="apply_uncertain")
             private_write(self.record_path, record)
+            self.collect_apply_failure()
             raise
         record.update(stage="applied")
         private_write(self.record_path, record)

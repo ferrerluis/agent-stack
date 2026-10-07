@@ -254,6 +254,31 @@ class DriverTest(unittest.TestCase):
         self.client.now = lambda: NOW + 15000
         self.assertEqual(self.client.cleanup(self.ledger)["cleanup"], "verified")
 
+    def test_failed_apply_collects_diagnostics_before_ownership_checked_cleanup(self):
+        self.client.plan(); self.reserve(); self.fail_apply = True
+        def collect():
+            self.assertEqual(self.client.record()["stage"], "apply_uncertain")
+            self.assertTrue(self.session.resources)
+        self.client.collect_apply_failure = Mock(side_effect=collect)
+        with self.assertRaisesRegex(runner.PolicyError, "command_timed_out"):
+            self.client.apply(self.ledger, self.readiness())
+        self.client.collect_apply_failure.assert_called_once()
+        self.assertEqual(self.client.cleanup(self.ledger)["cleanup"], "verified")
+
+    def test_native_cleanup_error_cannot_overwrite_original_apply_error(self):
+        self.applied()
+        tool = self.run / "fixture-native-tool"
+        tool.write_text('#!/bin/sh\nprintf "private-native-error" >&2\nexit 1\n')
+        tool.chmod(0o700)
+        self.client.terraform = str(tool); self.client.execute = runner.command
+        with self.assertRaisesRegex(runner.PolicyError, "^command_failed$"):
+            self.client.tf("apply", str(self.run / "deployment.tfplan"), expected_plan=self.client.record()["plan_sha256"])
+        apply = self.run / "terraform-apply-error.json"; before = apply.read_bytes()
+        with self.assertRaisesRegex(runner.PolicyError, "^command_failed$"):
+            self.client.tf("plan", "-destroy", cleanup=True, runtime=True)
+        self.assertEqual(apply.read_bytes(), before)
+        self.assertEqual(cleanup.private_read(self.run / "terraform-cleanup-error.json")["stderr"], "private-native-error")
+
     def test_expired_unapplied_reservation_can_be_cancelled_without_fake_state_or_destroy(self):
         self.client.plan()
         self.reserve()

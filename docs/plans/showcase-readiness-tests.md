@@ -1,6 +1,6 @@
 # AgentStack showcase readiness: agent-first test plan
 
-Current work: TODO #7 is active. The first AWS test deployment failed during boot and its 13 owned resources are independently confirmed deleted. Startup and cleanup repairs are being verified before the one remaining AWS retry; all 24 live acceptance cells remain unverified.
+Current work: TODO #7 is active. Both allowed AWS attempts failed and their owned resources are independently confirmed deleted. The startup repair is proven; the later installation fault is still unidentified. Private failure capture is being added before the remaining cloud tests. All 24 live acceptance cells remain unverified; another fresh AWS deployment requires Luis’s approval.
 
 Status: Approved for implementation on 2026-10-05; live runs remain gated on checked execution inputs. Based on revision `648522add8c662f8c238c87ef899a7c0b6c8afb7`, reviewed 2026-10-05.
 

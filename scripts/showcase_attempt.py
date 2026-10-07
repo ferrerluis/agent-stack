@@ -42,12 +42,31 @@ PROFILE = {
 }
 
 
-def command(args, env=None, timeout=60, input=None):
+def command(args, env=None, timeout=60, input=None, failure_report=None):
     """Capture output privately; kill the process group on every interruption.
 
     Callers must never print raw stdout/stderr. No secret may be in args.
     """
     require(timeout > 0, "attempt_deadline_reached")
+    if failure_report is not None:
+        target = Path(failure_report)
+        private_directory(target.parent)
+        require(target.name in {"terraform-command-error.json", "terraform-apply-error.json", "terraform-cleanup-error.json"} and not target.is_symlink()
+                and (not target.exists() or target.is_file() and target.stat().st_uid == os.geteuid()
+                     and stat.S_IMODE(target.stat().st_mode) == 0o600), "private_command_report_required")
+    def save_failure(output, errors, status):
+        if failure_report is None:
+            return
+        target = Path(failure_report)
+        private_directory(target.parent)
+        require(target.name in {"terraform-command-error.json", "terraform-apply-error.json", "terraform-cleanup-error.json"}, "private_command_report_required")
+        # Raw failure details may contain sensitive Terraform values. They
+        # stay in a bounded owner-private recovery file, never the exception.
+        limit = 1024 * 1024
+        private_write(target, {"schema": 1, "exit_code": status,
+            "stdout": output[-limit:].decode("utf-8", errors="replace"),
+            "stderr": errors[-limit:].decode("utf-8", errors="replace"),
+            "truncated": len(output) > limit or len(errors) > limit})
     try:
         process = subprocess.Popen(args, env=env, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, umask=0o077)
@@ -60,11 +79,14 @@ def command(args, env=None, timeout=60, input=None):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.communicate()
+        output, errors = process.communicate()
+        save_failure(output, errors, process.returncode)
         if isinstance(error, subprocess.TimeoutExpired):
             raise PolicyError("command_timed_out") from None
         raise
-    require(process.returncode == 0, "command_failed")
+    if process.returncode:
+        save_failure(output, errors, process.returncode)
+        raise PolicyError("command_failed")
     return output
 
 
