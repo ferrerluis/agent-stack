@@ -28,7 +28,7 @@ provider "digitalocean" {
 }
 
 provider "hcloud" {
-  token = var.cloud_provider == "hetzner" ? (var.hcloud_token != "" ? var.hcloud_token : null) : "agent-stack-inactive"
+  token = var.cloud_provider == "hetzner" ? (var.hcloud_token != "" ? var.hcloud_token : null) : "0000000000000000000000000000000000000000000000000000000000000000"
 }
 
 resource "random_password" "gateway_token" {
