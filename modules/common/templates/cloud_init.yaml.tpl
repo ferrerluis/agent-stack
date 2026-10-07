@@ -40,7 +40,9 @@ bootcmd:
     WantedBy=timers.target
     AS7_TIMER
     systemctl daemon-reload
-    systemctl enable --now agent-stack-trial-deadline.timer
+    # cloud-init's network stage blocks normal boot targets. Queue the timer
+    # without waiting for those targets, so SSH and time sync can start.
+    systemctl enable --now --no-block agent-stack-trial-deadline.timer
 %{ endif }
 
 packages:

@@ -195,6 +195,25 @@ class PreparationTest(unittest.TestCase):
             attempt.prepare(config(), "aws", "as7-fixture01", self.batch, repo=self.repo)
         self.assertFalse(self.batch.exists())
 
+    def test_native_state_lock_metadata_is_private_and_cannot_allow_other_overrides(self):
+        self.prepare()
+        run = self.batch / "attempts/as7-fixture01"
+        lock = run / "repo/.terraform.tfstate.lock.info"
+        lock.write_text('{"Operation":"OperationTypeApply"}')
+        lock.chmod(0o600)
+        attempt.verify_prepared(run, config(), "aws")
+        lock.chmod(0o644)
+        with self.assertRaisesRegex(attempt.PolicyError, "private_state_lock_required"):
+            attempt.verify_prepared(run, config(), "aws")
+        lock.unlink()
+        lock.symlink_to(run / "inputs.json")
+        with self.assertRaises(attempt.PolicyError):
+            attempt.verify_prepared(run, config(), "aws")
+        lock.unlink()
+        (run / "repo/.terraform.tfstate.lock.info.override.tf").write_text("foreign")
+        with self.assertRaisesRegex(attempt.PolicyError, "unexpected_prepared_file"):
+            attempt.verify_prepared(run, config(), "aws")
+
 
 class PasswordTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("openssl"), "OpenSSL required")

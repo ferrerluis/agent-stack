@@ -304,12 +304,17 @@ class TerraformAttempt:
                 private_write(self.run / "workspace-hash.json", {"hash": hashed})
             require(isinstance(hashed, str) and re.fullmatch(HASH_PATTERN, hashed), "invalid_workspace_hash")
             env["TF_VAR_workspace_password_hash"] = hashed
+            # Destroy still validates the enabled-runtime input schema. Use
+            # inert values rather than retrieving an enrollment or model key;
+            # guard_destroy permits only deletion of the captured resources.
+            for name in ("openai_api_key", "anthropic_api_key"):
+                env["TF_VAR_" + name] = "as7-model-gateway-not-active"
+            if cleanup:
+                env["TF_VAR_tailscale_auth_key"] = "as7-cleanup-never-enroll"
             if not cleanup:
                 # This runner's paid model work must use the controller's
                 # budget gateway. Never put provider keys in a saved plan,
                 # cloud-init, Terraform state or the VM's runtime environment.
-                for name in ("openai_api_key", "anthropic_api_key"):
-                    env["TF_VAR_" + name] = "as7-model-gateway-not-active"
                 auth_key = self.session.secret(self.config["tailnet"]["auth_key_ref"])
                 require(text(auth_key) and not any(char.isspace() for char in auth_key), "invalid_secret_field")
                 env["TF_VAR_tailscale_auth_key"] = auth_key

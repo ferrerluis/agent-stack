@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read plan-bound GCP E2 unit rates; never approve a complete launch quote."""
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import math
@@ -15,6 +16,8 @@ from showcase_prices import Decimal, NoRedirect, dollars
 
 SERVICE = "services/6F81-5844-456A"
 ENDPOINT = "https://cloudbilling.googleapis.com/v1/" + SERVICE + "/skus"
+LATEST_ENDPOINT = "https://cloudbilling.googleapis.com/v2beta/skus/"
+DEFAULT_CONSUMPTION_MODEL = "consumptionModels/7754-699E-0EBF"
 IMAGE_ENDPOINT = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/"
 IMAGE_LINK = "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/"
 IMAGE_ADDRESS = "module.gcp[0].data.google_compute_image.boot[0]"
@@ -66,6 +69,36 @@ class CatalogHTTP:
             raise PolicyError("gcp_price_request_failed") from None
         return value, len(raw), hashlib.sha256(raw).hexdigest()
 
+    def latest(self, token, sku):
+        require(text(token) and isinstance(sku, str)
+                and re.fullmatch(r"[A-F0-9]{4}(?:-[A-F0-9]{4}){2}", sku), "invalid_gcp_price_request")
+        endpoint = LATEST_ENDPOINT + sku + "/price?currencyCode=USD"
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate key")
+                value[key] = item
+            return value
+        try:
+            request = Request(endpoint, method="GET", headers={"Accept": "application/json",
+                "Authorization": "Bearer " + token, "Cache-Control": "no-cache",
+                "User-Agent": "AgentStack-showcase-pricing/1"})
+            with self.opener.open(request, timeout=20) as response:
+                require(response.status == 200, "gcp_price_request_failed")
+                raw = response.read(MAX_PAGE_BYTES + 1)
+                date = response.headers.get("Date")
+            require(len(raw) <= MAX_PAGE_BYTES, "gcp_price_response_too_large")
+            value = json.loads(raw, object_pairs_hook=unique,
+                parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite number")))
+            require(isinstance(value, dict) and isinstance(date, str), "invalid_gcp_latest_price_response")
+        except HTTPError as error:
+            error.close()
+            raise PolicyError("gcp_price_request_failed") from None
+        except (URLError, OSError, ValueError, UnicodeError):
+            raise PolicyError("gcp_price_request_failed") from None
+        return {"value": value, "date": date, "body_sha256": hashlib.sha256(raw).hexdigest()}
+
 
 def catalog_kind(row, region):
     description, category, regions = row.get("description"), row.get("category"), row.get("serviceRegions")
@@ -102,7 +135,47 @@ def money(value):
     return price
 
 
-def unit_rate(row, kind, now):
+def latest_rate(response, sku, unit, now):
+    require(isinstance(response, dict) and isinstance(response.get("body_sha256"), str)
+            and re.fullmatch(r"[a-f0-9]{64}", response["body_sha256"]), "invalid_gcp_latest_price_response")
+    try:
+        date = parsedate_to_datetime(response["date"])
+        require(date.tzinfo is not None and now - 300 <= date.timestamp() <= now + 60,
+                "gcp_latest_price_required")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise PolicyError("gcp_latest_price_required") from None
+    value = response.get("value")
+    require(isinstance(value, dict) and value.get("name") == "skus/" + sku + "/price"
+            and value.get("currencyCode") == "USD", "gcp_price_product_scope_changed")
+    models = value.get("skuPrices")
+    require(isinstance(models, list) and 0 < len(models) <= 20 and all(isinstance(item, dict) for item in models),
+            "invalid_gcp_latest_price_response")
+    selected = [item for item in models if item.get("consumptionModel") == DEFAULT_CONSUMPTION_MODEL
+                or item.get("consumptionModelDescription") == "Default"]
+    require(len(selected) == 1 and selected[0].get("consumptionModel") == DEFAULT_CONSUMPTION_MODEL
+            and selected[0].get("consumptionModelDescription") == "Default" and selected[0].get("valueType") == "rate",
+            "gcp_default_consumption_price_required")
+    rate = selected[0].get("rate")
+    require(isinstance(rate, dict) and isinstance(rate.get("unitInfo"), dict)
+            and rate["unitInfo"].get("unit") == unit, "gcp_price_unit_changed")
+    def decimal_value(item):
+        require(isinstance(item, dict) and isinstance(item.get("value"), str)
+                and re.fullmatch(r"[0-9]{1,16}(?:\.[0-9]{1,18})?", item["value"]), "gcp_price_unit_changed")
+        return Decimal(item["value"])
+    require(decimal_value(rate["unitInfo"].get("unitQuantity")) == 1, "gcp_price_unit_changed")
+    tiers = rate.get("tiers")
+    require(isinstance(tiers, list) and 0 < len(tiers) <= 20 and all(isinstance(item, dict) for item in tiers),
+            "gcp_price_tiers_unsupported")
+    starts = [decimal_value(item.get("startAmount")) for item in tiers]
+    rates = [money(item.get("listPrice")) for item in tiers]
+    require(starts[0] == 0 and all(start <= 10 ** 15 for start in starts)
+            and all(a < b for a, b in zip(starts, starts[1:])) and max(rates) > 0, "gcp_price_tiers_unsupported")
+    return max(rates), {"endpoint": LATEST_ENDPOINT + sku + "/price", "response_date": response["date"],
+        "body_sha256": response["body_sha256"], "consumption_model": DEFAULT_CONSUMPTION_MODEL,
+        "rate_policy": "highest_default_consumption_tier"}
+
+
+def unit_rate(row, kind, now, latest=None):
     sku = row.get("skuId")
     require(isinstance(sku, str) and re.fullmatch(r"[A-F0-9]{4}(?:-[A-F0-9]{4}){2}", sku)
             and row.get("name") == SERVICE + "/skus/" + sku and row.get("serviceProviderName") == "Google", "gcp_price_product_scope_changed")
@@ -111,7 +184,8 @@ def unit_rate(row, kind, now):
     info = timeline[0]
     try:
         effective = datetime.fromisoformat(info["effectiveTime"].replace("Z", "+00:00"))
-        require(effective.tzinfo is not None and now - 43200 <= effective.timestamp() <= now, "gcp_latest_price_required")
+        require(effective.tzinfo is not None and effective.timestamp() <= now
+                and (latest is not None or now - 43200 <= effective.timestamp()), "gcp_latest_price_required")
     except (KeyError, AttributeError, ValueError, OverflowError):
         raise PolicyError("gcp_latest_price_required") from None
     require(type(info.get("currencyConversionRate")) in (int, float) and info["currencyConversionRate"] == 1,
@@ -136,8 +210,14 @@ def unit_rate(row, kind, now):
     require(starts[0] == 0 and all(a < b for a, b in zip(starts, starts[1:])) and max(rates) > 0, "gcp_price_tiers_unsupported")
     # Charge every unit at the highest published tier. Never assume access to
     # the billing account's shared free allowance or discounts.
-    return max(rates), {"sku_id": sku, "unit": unit, "effective_time": info["effectiveTime"],
-                        "sku_sha256": digest(row), "rate_policy": "highest_published_tier"}
+    upper = max(rates)
+    proof = {"sku_id": sku, "unit": unit, "effective_time": info["effectiveTime"],
+             "sku_sha256": digest(row), "rate_policy": "highest_published_tier"}
+    if latest is not None:
+        current, proof["latest_price"] = latest_rate(latest, sku, unit, now)
+        upper = max(upper, current)
+        proof["rate_policy"] = "highest_catalog_or_latest_default_tier"
+    return upper, proof
 
 
 class GCPCatalog:
@@ -174,7 +254,9 @@ class GCPCatalog:
                 require(type(finished) in (int, float) and math.isfinite(finished) and began <= finished <= began + 300, "price_measurement_expired")
                 rates, proofs = {}, {}
                 for kind, row in candidates.items():
-                    rates[kind], proofs[kind] = unit_rate(row, kind, finished)
+                    latest = self.http.latest(self.adapter.access_token(), row["skuId"])
+                    rates[kind], proofs[kind] = unit_rate(row, kind, finished, latest)
+                require(began <= self.now() <= began + 300, "price_measurement_expired")
                 return rates, {"endpoint": ENDPOINT, "page_count": len(hashes), "page_hashes_sha256": digest(hashes), "products": proofs}
             require(text(token) and len(token) <= 8192 and token not in seen_tokens, "invalid_gcp_price_pagination")
             seen_tokens.add(token)

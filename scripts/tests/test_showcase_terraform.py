@@ -181,6 +181,21 @@ class DriverTest(unittest.TestCase):
         self.assertTrue(any("TF_VAR_workspace_password_hash" in env for _, env, _ in self.commands))
         self.assertTrue(all("TF_VAR_workspace_password" not in env and "-auto-approve" not in args for args, env, _ in self.commands))
 
+    def test_destroy_validates_runtime_schema_without_reading_enrollment_or_model_keys(self):
+        self.applied()
+        self.session.secret = Mock(side_effect=AssertionError("cleanup must not retrieve runtime keys"))
+        original = self.execute
+        def validate_destroy(args, env, timeout):
+            if args[2] == "plan" and "-destroy" in args:
+                self.assertEqual(env["TF_VAR_tailscale_auth_key"], "as7-cleanup-never-enroll")
+                self.assertTrue(env["TF_VAR_workspace_password_hash"].startswith("$6$"))
+                for name in ("openai_api_key", "anthropic_api_key"):
+                    self.assertEqual(env["TF_VAR_" + name], "as7-model-gateway-not-active")
+            return original(args, env, timeout)
+        self.client.execute = validate_destroy
+        self.assertEqual(self.client.cleanup(self.ledger)["cleanup"], "verified")
+        self.session.secret.assert_not_called()
+
     def test_missing_readiness_or_reservation_never_starts_apply(self):
         self.client.plan()
         for proof in (None, {}, {**self.readiness(), "checks": {}}):

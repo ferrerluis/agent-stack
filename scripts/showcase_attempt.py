@@ -221,7 +221,7 @@ def verify_prepared(run, config, provider):
         target = checkout / name
         require(all(not part.is_symlink() for part in (target, *target.parents)) and target.is_file()
                 and hashlib.sha256(target.read_bytes()).hexdigest() == expected, "prepared_source_changed")
-    generated = {"terraform.tfvars.json", ".terraform.lock.hcl", "terraform.tfstate", "terraform.tfstate.backup",
+    generated = {"terraform.tfvars.json", ".terraform.lock.hcl", "terraform.tfstate", "terraform.tfstate.backup", ".terraform.tfstate.lock.info",
                  KEY_PATH, KEY_PATH + ".pub", ".ssh/known_hosts", ".ssh/config"}
     for target in checkout.rglob("*"):
         require(not target.is_symlink(), "prepared_source_changed")
@@ -229,6 +229,9 @@ def verify_prepared(run, config, provider):
             continue
         require(target.is_file() and (target.relative_to(checkout).as_posix() in record["source_files"] or
                 target.relative_to(checkout).as_posix() in generated), "unexpected_prepared_file")
+        if target.name == ".terraform.tfstate.lock.info":
+            require(target.stat().st_uid == os.geteuid() and stat.S_IMODE(target.stat().st_mode) == 0o600,
+                    "private_state_lock_required")
     require(hashlib.sha256((checkout / "terraform.tfvars.json").read_bytes()).hexdigest() == record.get("settings_sha256"), "prepared_settings_changed")
     private_directory(checkout / ".ssh")
     key = checkout / KEY_PATH

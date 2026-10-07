@@ -6,6 +6,7 @@ import os
 import pwd
 import shutil
 import shlex
+import textwrap
 import subprocess
 import tempfile
 import unittest
@@ -49,6 +50,36 @@ class CloudInitLoaderTemplateTest(unittest.TestCase):
     def test_openclaw_only_compact_template_is_removed(self) -> None:
         compact_template = TEMPLATE_DIR / "cloud_init_hetzner_openclaw.yaml.tpl"
         self.assertFalse(compact_template.exists())
+
+    def test_trial_boot_can_finish_while_systemd_boot_targets_are_blocked(self) -> None:
+        # Model the network-stage ordering: a blocking timer start cannot
+        # finish until cloud-init itself returns. Exercise the loader shell.
+        script = textwrap.dedent(self.loader.split("bootcmd:\n  - |\n", 1)[1].split("%{ endif }", 1)[0])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); commands = root / "bin"; commands.mkdir()
+            script = script.replace("/etc/systemd/system", str(root / "systemd"))
+            script = script.replace("/var/lib/agent-stack-trial", str(root / "trial"))
+            script = script.replace("${showcase_trial_limits.egress_cap_bytes}", "1073741824")
+            script = script.replace("${showcase_trial_limits.deadline_utc}", "2099-01-01 00:00:00 UTC")
+            (root / "systemd").mkdir()
+            for name in ("iptables", "ip6tables"):
+                (commands / name).write_text("#!/bin/sh\nexit 0\n")
+                (commands / name).chmod(0o700)
+            (commands / "systemctl").write_text('''#!/bin/sh
+if [ "$1" = enable ]; then
+  for arg in "$@"; do [ "$arg" != --no-block ] || exit 0; done
+  # The real systemd job waits on the boot target cloud-init blocks.
+  exec sleep 10
+fi
+exit 0
+''')
+            (commands / "systemctl").chmod(0o700)
+            env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ.get("PATH", ""))
+            result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, timeout=2)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            timer = (root / "systemd/agent-stack-trial-deadline.timer").read_text()
+            self.assertIn("Persistent=true", timer)
+            self.assertEqual((root / "trial/boots").read_text().strip(), "1")
 
 
 class RuntimeTemplateTest(unittest.TestCase):

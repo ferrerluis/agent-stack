@@ -105,6 +105,14 @@ class PriceTest(unittest.TestCase):
         self.assertNotIn("eur_to_usd_spend_bound_and_conversion_fees", result["not_verified"])
         self.assertFalse(result["complete_quote"])
 
+    def test_native_sixteen_digit_gross_prices_preserve_exact_decimal_bound(self):
+        self.assertEqual(prices.gross(money("0.0817000000", "0.0817000000000000"), prices.Decimal("0")),
+                         prices.Decimal("0.0817"))
+        self.assertEqual(prices.number("0.000000000000000001"), prices.Decimal("0.000000000000000001"))
+        for value in ("0.0000000000000000001", "1e-3", "NaN", "Infinity", "-0.1", "1000000.000000000000000001"):
+            with self.subTest(value=value), self.assertRaises(PolicyError):
+                prices.number(value)
+
     def test_mutable_different_or_unknown_boot_image_refuses_before_any_reads(self):
         original = copy.deepcopy(self.plan)
         for image, unknown in (("ubuntu-22.04", {}), ("45557057", {}), (45557056, {}),

@@ -1,6 +1,6 @@
 # AgentStack showcase readiness: implementation plan
 
-Current work: TODO #7 is active. Execution inputs are supplied; temporary test credential readers, prepaid budget limits and a bounded live run phase are being validated. All 24 live acceptance cells remain unverified.
+Current work: TODO #7 is active. The first AWS test deployment failed during boot and its 13 owned resources are independently confirmed deleted. Startup and cleanup repairs are being verified before the one remaining AWS retry; all 24 live acceptance cells remain unverified.
 
 Status: Approved for implementation and goal-backed work on 2026-10-05. Reviewed 2026-10-05 against repository revision `648522add8c662f8c238c87ef899a7c0b6c8afb7`.
 

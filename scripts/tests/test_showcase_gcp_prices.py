@@ -1,6 +1,7 @@
 import contextlib
 import copy
 from datetime import datetime, timezone
+from email.utils import formatdate
 import hashlib
 import io
 import json
@@ -70,15 +71,30 @@ def catalog_rows():
     return [sku(kind) for kind in ("cpu", "ram", "disk", "ipv4")]
 
 
+def latest_response(kind):
+    row = sku(kind); expression = row["pricingInfo"][0]["pricingExpression"]
+    value = {"name": "skus/" + row["skuId"] + "/price", "currencyCode": "USD", "skuPrices": [{
+        "consumptionModel": prices.DEFAULT_CONSUMPTION_MODEL, "consumptionModelDescription": "Default",
+        "valueType": "rate", "rate": {"unitInfo": {"unit": expression["usageUnit"], "unitQuantity": {"value": "1"}},
+        "tiers": [{"startAmount": {"value": str(tier.get("startUsageAmount", 0))}, "listPrice": tier["unitPrice"]}
+                  for tier in expression["tieredRates"]]}}]}
+    return {"value": value, "date": formatdate(NOW, usegmt=True), "body_sha256": prices.digest(value)}
+
+
 class FakeHTTP:
     def __init__(self, pages=None):
         self.pages = [{"skus": catalog_rows()}] if pages is None else pages
         self.calls = []
+        self.latest_calls = []
     def page(self, token, page_token=None):
         self.calls.append((token, page_token)); value = self.pages[len(self.calls) - 1]
         if isinstance(value, Exception): raise value
         raw = json.dumps(value).encode()
         return value, len(raw), hashlib.sha256(raw).hexdigest()
+    def latest(self, token, identifier):
+        self.latest_calls.append((token, identifier))
+        kind = next(kind for kind in ("cpu", "ram", "disk", "ipv4") if sku(kind)["skuId"] == identifier)
+        return latest_response(kind)
 
 
 class PriceTest(unittest.TestCase):
@@ -334,7 +350,7 @@ class CatalogTest(unittest.TestCase):
     def test_latest_price_published_during_read_is_checked_against_completion_time(self):
         rows = catalog_rows()
         rows[0]["pricingInfo"][0]["effectiveTime"] = datetime.fromtimestamp(NOW + 4, timezone.utc).isoformat()
-        catalog, _ = self.catalog([{"skus": rows}]); clock = iter((NOW, NOW, NOW + 5))
+        catalog, _ = self.catalog([{"skus": rows}]); clock = iter((NOW, NOW, NOW + 5, NOW + 6))
         catalog.now = lambda: next(clock)
         rates, proof = catalog.selected("us-east1")
         self.assertEqual(rates["cpu"], prices.Decimal(".02"))
@@ -365,6 +381,44 @@ class CatalogTest(unittest.TestCase):
         _, proof = catalog.selected("us-east1")
         self.assertNotIn(PRIVATE, json.dumps(proof)); self.assertEqual(len(proof["products"]["cpu"]["sku_sha256"]), 64)
 
+    def test_stale_catalog_requires_native_latest_prices_for_the_same_selected_skus(self):
+        rows = catalog_rows()
+        for row in rows:
+            row["pricingInfo"][0]["effectiveTime"] = datetime.fromtimestamp(NOW - 86400, timezone.utc).isoformat()
+        catalog, http = self.catalog([{"skus": rows}])
+        rates, proof = catalog.selected("us-east1")
+        self.assertEqual(len(http.latest_calls), 4)
+        self.assertEqual(rates["disk"], prices.Decimal(".1"))
+        self.assertEqual(proof["products"]["disk"]["latest_price"]["consumption_model"], prices.DEFAULT_CONSUMPTION_MODEL)
+        with self.assertRaisesRegex(PolicyError, "gcp_latest_price_required"):
+            prices.unit_rate(rows[2], "disk", NOW)
+        http.latest = Mock(side_effect=PolicyError("gcp_price_request_failed"))
+        http.calls.clear()
+        with self.assertRaisesRegex(PolicyError, "gcp_price_request_failed"):
+            catalog.selected("us-east1")
+
+    def test_latest_default_prices_use_the_higher_bound_and_reject_changed_units_scope_and_tiers(self):
+        row = sku("disk"); response = latest_response("disk")
+        rate = response["value"]["skuPrices"][0]["rate"]
+        rate["tiers"][0]["listPrice"]["nanos"] = 200000000
+        self.assertEqual(prices.unit_rate(row, "disk", NOW, response)[0], prices.Decimal(".2"))
+        rate["tiers"][0]["listPrice"]["nanos"] = 50000000
+        self.assertEqual(prices.unit_rate(row, "disk", NOW, response)[0], prices.Decimal(".1"))
+        mutations = [lambda r: r.update(date=formatdate(NOW - 301, usegmt=True)),
+            lambda r: r.update(date=formatdate(NOW + 61, usegmt=True)), lambda r: r.update(date="invalid"),
+            lambda r: r["value"].update(name="skus/AAAA-BBBB-CCCC/price"),
+            lambda r: r["value"].update(currencyCode="EUR"),
+            lambda r: r["value"]["skuPrices"][0].update(consumptionModelDescription="1 year CUD"),
+            lambda r: r["value"]["skuPrices"].append(copy.deepcopy(r["value"]["skuPrices"][0])),
+            lambda r: r["value"]["skuPrices"][0]["rate"]["unitInfo"].update(unit="GiBy.h"),
+            lambda r: r["value"]["skuPrices"][0]["rate"]["unitInfo"].update(unitQuantity={"value":"1000"}),
+            lambda r: r["value"]["skuPrices"][0]["rate"]["tiers"][0].update(startAmount={"value":"1"}),
+            lambda r: r["value"]["skuPrices"][0]["rate"]["tiers"][0]["listPrice"].update(nanos=-1)]
+        for mutation in mutations:
+            response = latest_response("disk"); mutation(response)
+            with self.subTest(mutation=mutation), self.assertRaises(PolicyError):
+                prices.unit_rate(row, "disk", NOW, response)
+
 
 class TransportTest(unittest.TestCase):
     def response(self, raw):
@@ -393,6 +447,20 @@ class TransportTest(unittest.TestCase):
             http = prices.CatalogHTTP()
             with patch.object(http.opener, "open", side_effect=error) as opened, self.assertRaises(PolicyError) as caught: http.page(PRIVATE)
             self.assertNotIn(PRIVATE, str(caught.exception)); self.assertEqual(opened.call_count, 1)
+
+    def test_latest_price_has_fixed_native_origin_currency_date_and_no_cache(self):
+        http = prices.CatalogHTTP(); fixture = latest_response("disk"); raw = json.dumps(fixture["value"]).encode()
+        response = Mock(); response.__enter__ = Mock(return_value=SimpleNamespace(status=200,
+            read=lambda limit: raw[:limit], headers={"Date": fixture["date"]})); response.__exit__ = Mock(return_value=False)
+        with patch.object(http.opener, "open", return_value=response) as opened:
+            result = http.latest(PRIVATE, sku("disk")["skuId"])
+        request = opened.call_args.args[0]
+        self.assertEqual(request.full_url, prices.LATEST_ENDPOINT + sku("disk")["skuId"] + "/price?currencyCode=USD")
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("Cache-control"), "no-cache")
+        self.assertEqual(result["date"], fixture["date"])
+        self.assertEqual(result["body_sha256"], hashlib.sha256(raw).hexdigest())
+        with self.assertRaises(PolicyError): http.latest(PRIVATE, "../foreign")
 
 
 class DriverTest(unittest.TestCase):

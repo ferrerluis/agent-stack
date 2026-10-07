@@ -63,7 +63,7 @@ def terms(public):
 
 
 def number(value, upper=1000000):
-    require(isinstance(value, str) and re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,12})?", value), "invalid_hetzner_unit_price")
+    require(isinstance(value, str) and re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,18})?", value), "invalid_hetzner_unit_price")
     result = Decimal(value)
     require(0 <= result <= upper, "invalid_hetzner_unit_price")
     return result
