@@ -218,7 +218,7 @@ class DigitalOcean(RestCloud):
         matches = [row for row in sizes if row.get("slug") == self.cloud["size"]]
         check(len(matches) == 1, "vm_size_unavailable")
         size = matches[0]
-        check(type(size.get("memory")) is int and size["memory"] >= 8192, "vm_memory_below_8_gib")
+        check(type(size.get("memory")) is int and size["memory"] >= 4096, "vm_memory_below_4_gib")
         check(size.get("available") is True and isinstance(size.get("regions"), list)
               and self.cloud["region"] in size["regions"], "vm_size_unavailable")
         image = field(self.get("/images/ubuntu-22-04-x64"), "image")
@@ -294,7 +294,7 @@ class Hetzner(RestCloud):
         check(len(matches) == 1, "vm_size_unavailable")
         size = matches[0]
         check(type(size.get("memory")) in (int, float) and math.isfinite(size["memory"])
-              and 8 <= size["memory"] <= 1000000, "vm_memory_below_8_gib")
+              and 4 <= size["memory"] <= 1000000, "vm_memory_below_4_gib")
         check(size.get("architecture") == "x86", "vm_architecture_not_x86_64")
         prices = objects(size, "prices")
         check(any(row.get("location") == self.cloud["region"] for row in prices), "vm_size_unavailable")
@@ -377,7 +377,7 @@ class Google(RestCloud):
         zone, region = segment(self.cloud["zone"]), segment(self.cloud["region"])
         size = self.get("/zones/" + zone + "/machineTypes/" + segment(self.cloud["size"]))
         check(size.get("name") == self.cloud["size"] and type(size.get("memoryMb")) is int
-              and size["memoryMb"] >= 8192, "vm_memory_below_8_gib")
+              and size["memoryMb"] >= 4096, "vm_memory_below_4_gib")
         check(google_x86_machine(size), "vm_architecture_not_x86_64")
         region_info = self.get("/regions/" + region)
         quota = objects(region_info, "quotas")
@@ -485,7 +485,7 @@ class AWS:
         check(len(sizes) == 1 and sizes[0].get("InstanceType") == self.cloud["size"], "vm_size_unavailable")
         size = sizes[0]
         memory, processor = field(size, "MemoryInfo"), field(size, "ProcessorInfo")
-        check(type(memory.get("SizeInMiB")) is int and memory["SizeInMiB"] >= 8192, "vm_memory_below_8_gib")
+        check(type(memory.get("SizeInMiB")) is int and memory["SizeInMiB"] >= 4096, "vm_memory_below_4_gib")
         check("x86_64" in processor.get("SupportedArchitectures", []), "vm_architecture_not_x86_64")
         zones = objects(self.call(self.ec2, "describe_availability_zones", Filters=[{"Name": "state", "Values": ["available"]}]), "AvailabilityZones")
         check(zones and text(zones[0].get("ZoneName")), "availability_zone_unavailable")

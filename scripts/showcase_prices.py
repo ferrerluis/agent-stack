@@ -194,7 +194,7 @@ def digitalocean_rates(plan, cloud, prefix, run, adapter, source_revision, plan_
     require(len(matches) == 1, "price_vm_size_unavailable")
     size = matches[0]
     require(size.get("available") is True and isinstance(size.get("regions"), list) and cloud["region"] in size["regions"]
-            and type(size.get("memory")) is int and size["memory"] >= 8192 and type(size.get("disk")) is int and size["disk"] >= 20
+            and type(size.get("memory")) is int and size["memory"] >= 4096 and type(size.get("disk")) is int and size["disk"] >= 20
             and not size.get("gpu_info"), "price_vm_size_unavailable")
     vm = max(decimal_price(size.get("price_hourly")), decimal_price(size.get("price_monthly")) / 672)
     vm = vm.quantize(Decimal(".000001"), rounding=ROUND_CEILING)

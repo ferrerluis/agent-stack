@@ -133,7 +133,7 @@ class DigitalOceanTest(unittest.TestCase):
         mutations = (
             lambda r: r[base + "/account"]["account"].update(team={"uuid": "wrong-team"}),
             lambda r: r[base + "/projects/" + value["project_id"] + "/resources"].update(resources=[{"urn": "do:droplet:existing"}]),
-            lambda r: r[base + "/sizes"]["sizes"][0].update(memory=4096),
+            lambda r: r[base + "/sizes"]["sizes"][0].update(memory=2048),
             lambda r: r[base + "/account"]["account"].update(droplet_limit=0),
             lambda r: r[base + "/sizes"]["sizes"][0].update(regions=["wrong-region"]),
             lambda r: r[base + "/firewalls"].update(firewalls=[{"name": PREFIX + "-firewall"}]),
@@ -207,6 +207,14 @@ class HetznerTest(unittest.TestCase):
         self.assertIn("account_project_token_mapping", report["not_verified"])
         self.assertIn("live_capacity", report["not_verified"])
 
+    def test_four_gib_still_requires_separate_scope_and_capacity_proof(self):
+        routes = hcloud_routes()
+        routes[preflight.Hetzner.base + '/server_types']['server_types'][0]['memory'] = 4
+        result = self.adapter(routes).preflight(PREFIX)
+        self.assertEqual(result['vm_memory_mib'], 4096)
+        self.assertEqual(result['identity'], 'declared_only')
+        self.assertIn('live_capacity', result['not_verified'])
+
     def test_existing_primary_ip_arm_low_ram_wrong_location_fail(self):
         base = preflight.Hetzner.base
         for changes in ("primary_ip", "arm", "ram", "location", "capacity"):
@@ -215,7 +223,7 @@ class HetznerTest(unittest.TestCase):
                 routes[base + "/primary_ips"]["primary_ips"] = [{"id": 777}]
             else:
                 row = routes[base + "/server_types"]["server_types"][0]
-                row.update({"arm": {"architecture": "arm"}, "ram": {"memory": 4}, "location": {"prices": []},
+                row.update({"arm": {"architecture": "arm"}, "ram": {"memory": 2}, "location": {"prices": []},
                             "capacity": {"locations": [{"location": {"name": "us-east1"}, "available": False}]}}[changes])
             with self.assertRaises(preflight.PreflightError):
                 self.adapter(routes).preflight(PREFIX)
@@ -239,7 +247,7 @@ class HetznerTest(unittest.TestCase):
     def test_nonfinite_or_boolean_memory_is_refused_before_integer_conversion(self):
         for memory in (True, float("inf"), float("nan"), 1000001):
             routes = hcloud_routes(); routes[preflight.Hetzner.base + "/server_types"]["server_types"][0]["memory"] = memory
-            with self.subTest(memory=memory), self.assertRaisesRegex(preflight.PreflightError, "vm_memory_below_8_gib"):
+            with self.subTest(memory=memory), self.assertRaisesRegex(preflight.PreflightError, "vm_memory_below_4_gib"):
                 self.adapter(routes).preflight(PREFIX)
 
     def test_deprecation_must_cover_whole_four_hour_attempt(self):

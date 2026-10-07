@@ -149,7 +149,7 @@ def hetzner_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha25
     require(type(began) in (int, float) and math.isfinite(began) and 0 <= began <= 253402286400, "invalid_price_measurement_clock")
     size = selected(adapter.pages("/server_types", "server_types", "hetzner"), "name", cloud["size"])
     require(type(size.get("id")) is int and size["id"] > 0 and size.get("architecture") == "x86"
-            and type(size.get("memory")) in (int, float) and math.isfinite(size["memory"]) and 8 <= size["memory"] <= 1000000
+            and type(size.get("memory")) in (int, float) and math.isfinite(size["memory"]) and 4 <= size["memory"] <= 1000000
             and type(size.get("disk")) in (int, float) and math.isfinite(size["disk"]) and 20 <= size["disk"] <= 1000000,
             "hetzner_price_vm_size_unavailable")
     try:

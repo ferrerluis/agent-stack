@@ -722,10 +722,20 @@ mark_openclaw_restart_needed() {
 }
 
 run_openclaw_cli() {
+  local cli_seconds="$${OPENCLAW_CLI_TIMEOUT_SECONDS:-30}"
+  if [[ ! "$cli_seconds" =~ ^[1-9][0-9]{0,3}$ ]]; then
+    echo "[openclaw-cli] Invalid timeout in seconds." >&2
+    return 2
+  fi
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$${OPENCLAW_CLI_TIMEOUT_SECONDS:-30}" docker compose -f "$app/docker-compose.yml" exec -T openclaw openclaw "$@"
+    # Docker clients can forward TERM without exiting. Bound the command
+    # inside the container and force-stop an overdue client after its grace.
+    timeout --kill-after=5s "$((cli_seconds + 10))s" \
+      docker compose -f "$app/docker-compose.yml" exec --interactive=false -T openclaw \
+      sh -c 'seconds="$1"; shift; if command -v timeout >/dev/null 2>&1; then exec timeout -k 5s "$seconds" openclaw "$@"; else exec openclaw "$@"; fi' \
+      sh "$cli_seconds" "$@"
   else
-    docker compose -f "$app/docker-compose.yml" exec -T openclaw openclaw "$@"
+    docker compose -f "$app/docker-compose.yml" exec --interactive=false -T openclaw openclaw "$@"
   fi
 }
 

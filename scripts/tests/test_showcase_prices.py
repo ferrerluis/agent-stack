@@ -69,6 +69,11 @@ class PriceTest(unittest.TestCase):
         return prices.digitalocean_rates(self.plan, self.cloud, PREFIX, "/tmp/fixture-private-repo", self.adapter,
                                        "a" * 40, "b" * 64, self.public, (lambda: NOW) if clock is None else clock)
 
+    def test_four_gib_native_machine_preserves_partial_price_gate(self):
+        self.size['memory'] = 4096
+        result = self.measure()
+        self.assertFalse(result['complete_quote']); self.assertEqual(result['launch_gate'], 'unverified')
+
     def test_bound_selection_prices_round_up_without_passing_a_launch_gate(self):
         result = self.measure()
         self.assertEqual(result["vm_and_boot_hourly_usd"], "0.071429000")
@@ -118,7 +123,7 @@ class PriceTest(unittest.TestCase):
         self.adapter.pages.assert_not_called()
 
     def test_v5_gpu_or_unavailable_or_duplicate_sizes_refused(self):
-        for mutation in (lambda s: s.update(memory=4096), lambda s: s.update(disk=10), lambda s: s.update(available=False),
+        for mutation in (lambda s: s.update(memory=2048), lambda s: s.update(disk=10), lambda s: s.update(available=False),
                          lambda s: s.update(regions=["foreign-region"]), lambda s: s.update(gpu_info={"count": 1})):
             row = copy.deepcopy(self.size); mutation(row); self.adapter.pages.return_value = [row]
             with self.subTest(mutation=mutation), self.assertRaisesRegex(PolicyError, "price_vm_size_unavailable"): self.measure()

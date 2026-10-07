@@ -78,6 +78,11 @@ class PriceTest(unittest.TestCase):
         return prices.hetzner_rates(self.plan, self.cloud, PREFIX, "/tmp/private-fixture", self.adapter,
                                    "a" * 40, "b" * 64, self.public, (lambda: NOW) if clock is None else clock)
 
+    def test_four_gib_native_machine_is_supported_without_claiming_launch_readiness(self):
+        self.adapter.size['memory'] = 4
+        result = self.measure()
+        self.assertFalse(result['complete_quote']); self.assertEqual(result['launch_gate'], 'unverified')
+
     def test_actual_module_plan_gross_prices_currency_and_default_ip_assumptions_remain_partial(self):
         result = self.measure()
         self.assertEqual(result["currency"], "EUR"); self.assertEqual(result["vat_percent"], "19.00")
@@ -218,7 +223,7 @@ class PriceTest(unittest.TestCase):
 
     def test_type_and_image_architecture_memory_status_and_license_scope_fail_closed(self):
         size, image = copy.deepcopy(self.adapter.size), copy.deepcopy(self.adapter.image)
-        for target, mutation in (("size", {"architecture": "arm"}), ("size", {"memory": 4}), ("size", {"memory": float("inf")}),
+        for target, mutation in (("size", {"architecture": "arm"}), ("size", {"memory": 2}), ("size", {"memory": float("inf")}),
                 ("size", {"disk": 19}), ("size", {"id": True}), ("image", {"status": "unavailable"}),
                 ("image", {"type": "snapshot"}), ("image", {"architecture": "arm"}), ("image", {"os_version": "24.04"})):
             self.adapter.size.clear(); self.adapter.size.update(size); self.adapter.image.clear(); self.adapter.image.update(image)

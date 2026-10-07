@@ -389,7 +389,7 @@ def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, c
     from showcase_preflight import google_x86_machine
     require(machine.get("name") == cloud["size"] and google_x86_machine(machine)
             and type(machine.get("guestCpus")) is int and machine["guestCpus"] == selection["vcpus"] and 2 <= selection["vcpus"] <= 32
-            and type(machine.get("memoryMb")) is int and machine["memoryMb"] == ram * 1024 and ram >= 8,
+            and type(machine.get("memoryMb")) is int and machine["memoryMb"] == ram * 1024 and ram >= 4,
             "gcp_price_vm_size_unavailable")
     image = adapter.http.request(IMAGE_ENDPOINT + selection["image"], "Bearer " + adapter.access_token())
     require(isinstance(image, dict) and image.get("family") == "ubuntu-2204-lts" and image.get("architecture") == "X86_64"

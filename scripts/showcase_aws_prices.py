@@ -75,7 +75,7 @@ def machine_selection(adapter, cloud, credit_mode):
     cpu = machine["VCpuInfo"].get("DefaultVCpus")
     require(machine.get("InstanceType") == cloud["size"] and type(cpu) is int and 1 <= cpu <= 256
             and isinstance(machine.get("MemoryInfo"), dict) and type(machine["MemoryInfo"].get("SizeInMiB")) is int
-            and machine["MemoryInfo"]["SizeInMiB"] >= 8192 and isinstance(machine.get("ProcessorInfo"), dict)
+            and machine["MemoryInfo"]["SizeInMiB"] >= 4096 and isinstance(machine.get("ProcessorInfo"), dict)
             and machine["ProcessorInfo"].get("SupportedArchitectures") == ["x86_64"]
             and type(machine.get("BurstablePerformanceSupported")) is bool, "aws_price_machine_required")
     burst = machine["BurstablePerformanceSupported"]; family = cloud["size"].split(".", 1)[0]

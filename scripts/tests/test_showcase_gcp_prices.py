@@ -107,6 +107,14 @@ class PriceTest(unittest.TestCase):
         return prices.gcp_rates(self.plan, self.cloud, PREFIX, "/tmp/fixture-repo", self.adapter,
                                 "a" * 40, "b" * 64, self.catalog, now)
 
+    def test_four_gib_predefined_machine_requires_matching_cpu_ram_and_billing_shape(self):
+        self.cloud['size'] = 'e2-highcpu-4'
+        self.plan = json.loads(json.dumps(self.plan).replace('e2-standard-2', 'e2-highcpu-4'))
+        self.adapter.get.return_value = {'name':self.cloud['size'], 'architecture':'X86_64', 'guestCpus':4, 'memoryMb':4096}
+        result = self.measure()
+        self.assertEqual(result['vm_hourly_usd_upper_bound'], '0.092000000')
+        self.assertFalse(result['complete_quote']); self.assertEqual(result['launch_gate'], 'unverified')
+
     def test_real_mock_plan_shape_cpu_ram_both_disks_and_ip_without_free_allowance(self):
         result = self.measure()
         self.assertEqual(result["vm_hourly_usd_upper_bound"], "0.064000000")

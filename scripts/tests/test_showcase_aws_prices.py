@@ -116,6 +116,12 @@ class PriceTest(unittest.TestCase):
         return prices.aws_rates(self.plan, self.cloud, PREFIX, "/tmp/fixture-repo", self.adapter,
             {"access_key": PRIVATE, "secret_key": PRIVATE}, "a" * 40, "b" * 64, self.query, (lambda: NOW) if clock is None else clock, self.public)
 
+    def test_four_gib_machine_keeps_exact_selected_native_identity_and_price_gate(self):
+        native = self.adapter.machine['InstanceTypes'][0]
+        native['MemoryInfo']['SizeInMiB'] = 4096
+        result = self.measure()
+        self.assertFalse(result['complete_quote']); self.assertEqual(result['launch_gate'], 'unverified')
+
     def test_on_demand_vm_both_disks_and_one_public_ipv4_bound_without_complete_quote(self):
         result = self.measure()
         self.assertEqual(result["vm_hourly_usd"], "0.100000000")
@@ -217,7 +223,7 @@ class PriceTest(unittest.TestCase):
     def test_machine_identity_cpu_architecture_memory_and_burst_mode_cannot_be_assumed(self):
         original = copy.deepcopy(self.adapter.machine)
         for mutation in ({"InstanceType": "foreign"}, {"VCpuInfo": None}, {"VCpuInfo": {"DefaultVCpus": True}},
-                         {"MemoryInfo": {"SizeInMiB": 4096}}, {"ProcessorInfo": {"SupportedArchitectures": ["arm64"]}},
+                         {"MemoryInfo": {"SizeInMiB": 2048}}, {"ProcessorInfo": {"SupportedArchitectures": ["arm64"]}},
                          {"BurstablePerformanceSupported": None}, {"BurstablePerformanceSupported": True}):
             self.adapter.machine = copy.deepcopy(original); self.adapter.machine["InstanceTypes"][0].update(mutation)
             with self.subTest(mutation=mutation), self.assertRaises(PolicyError): self.measure()
