@@ -99,7 +99,15 @@ def validate_inputs(config, provider):
         require(models_approved(config.get("models")), "approved_models_required")
     require(type(config["attempt_seconds"]) is int and 900 < config["attempt_seconds"] <= 14400, "lifetime_exceeds_approval")
     require(type(config["max_attempts"]) is int and 1 <= config["max_attempts"] <= 2, "retries_exceed_approval")
-    object_fields(config["runner"], ("ssh_cidr",), ("peer_ssh",))
+    object_fields(config["runner"], ("ssh_cidr",), ("peer_ssh", "local_peer"))
+    require(not ('peer_ssh' in config['runner'] and 'local_peer' in config['runner']), 'one_peer_transport_required')
+    if 'local_peer' in config['runner']:
+        peer = config['runner']['local_peer']
+        object_fields(peer, ('record_path',))
+        require(isinstance(peer['record_path'], str) and peer['record_path'].startswith('/')
+                and not re.search(r'[\s\x00-\x1f\x7f]', peer['record_path'])
+                and not any(part in ('.', '..', '') for part in peer['record_path'].split('/')[1:]),
+                'local_peer_reference_invalid')
     require(text(config["runner"]["ssh_cidr"]), "runner_ipv4_32_required")
     try:
         cidr = ipaddress.ip_network(config["runner"]["ssh_cidr"], strict=True)
@@ -143,7 +151,9 @@ def validate_inputs(config, provider):
         required.update(("project_id", "isolated_project"))
     if provider == "gcp":
         required.add("zone")
-    object_fields(cloud, required, ("ami_id",) if provider == "aws" else ())
+    object_fields(cloud, required, ("ami_id",) if provider == "aws" else (("identity_proof_ref",) if provider == "hetzner" else ()))
+    if provider == 'hetzner' and 'identity_proof_ref' in cloud:
+        require(secret_ref(cloud['identity_proof_ref']), 'hetzner_project_binding_reference_required')
     require(all(text(cloud[key]) for key in ("account_id", "region", "size")), "cloud_identity_required")
     if provider == "aws":
         require(bool(re.fullmatch(r"[0-9]{12}", cloud["account_id"])), "cloud_identity_required")

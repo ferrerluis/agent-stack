@@ -71,7 +71,7 @@ def identity(adapter, provider):
         check(value.get("projectId") == adapter.cloud["project_id"] and value.get("state") == "ACTIVE", "project_identity_mismatch")
         adapter.base = "https://compute.googleapis.com/compute/v1/projects/" + project
     else:
-        return "declared_only"
+        return adapter.identity()
     return "verified"
 
 
@@ -439,7 +439,8 @@ def main():
             elif args.provider == "gcp":
                 adapter = Google(cloud, credentials["service_account_json"], http)
             else:
-                adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[args.provider](cloud, credentials["token"], http)
+                extra = {'identity_proof':secret(cloud['identity_proof_ref'])} if args.provider == 'hetzner' and 'identity_proof_ref' in cloud else {}
+                adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[args.provider](cloud, credentials["token"], http, **extra)
             result = query(config, args.provider, args.run_id, adapter, http, secret(config["tailnet"]["cleanup_key_ref"]), previous)
             if args.phase == "capture":
                 record = capture(result, config, previous)

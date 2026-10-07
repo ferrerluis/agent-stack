@@ -75,6 +75,10 @@ def local_checks(attempt):
 
 
 def check_peer_lifetime(attempt):
+    if 'local_peer' in attempt.config['runner']:
+        from showcase_local_peer import lifetime
+        return lifetime(attempt.config['runner']['local_peer'], attempt.config['tailnet']['runner_dns'],
+                        attempt.config['attempt_seconds'], attempt.now)
     from showcase_credentials import AUTH_ROOT
     peer = private_read(AUTH_ROOT.parent / "handoff/browser-peer-aws.json")
     try:

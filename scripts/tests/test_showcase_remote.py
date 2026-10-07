@@ -17,7 +17,7 @@ import showcase_cleanup as cleanup
 import test_showcase_attempt as preparation_fixtures
 import test_showcase_terraform as terraform_fixtures
 from test_showcase_policy import config, quote, NOW
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import test_showcase_peer as peer_fixtures
 from showcase_model_session_fixtures import FixtureSession, PRIVATE_ROUTE, CAPABILITY
 
@@ -463,6 +463,22 @@ class RemoteChecksTest(unittest.TestCase):
         self.assertEqual(len(self.calls), before)
         self.session.http.request.assert_not_called()
         self.assertEqual(self.peer_calls, [])
+
+    def test_free_local_peer_requires_live_binding_before_collecting_private_inputs(self):
+        self.ready()
+        self.config['runner'].pop('peer_ssh')
+        local={'record_path':'/fixture/local-peer/state.json'}
+        self.config['runner']['local_peer']=local
+        cleanup.private_write(self.run / 'inputs.json',self.config)
+        before=len(self.calls)
+        with patch('showcase_local_peer.checked',side_effect=terraform.PolicyError('local_peer_process_changed')):
+            with self.assertRaisesRegex(terraform.PolicyError,'local_peer_process_changed'):
+                self.checks.network_checks('before_reboot',self.peer_execute)
+        self.assertEqual(len(self.calls),before);self.assertEqual(self.peer_calls,[])
+        with patch('showcase_local_peer.checked',return_value={'status':'ready'}) as checked:
+            proof=self.checks.network_checks('before_reboot',self.peer_execute)
+        checked.assert_called_once_with(local,self.config['tailnet']['runner_dns'],self.checks.now)
+        self.assertEqual(proof['status'],'pass');self.assertEqual(self.peer_calls[0][0],local)
 
     def test_network_requires_doctors_correct_boot_stage_and_full_deadline(self):
         self.checks.bootstrap()

@@ -449,11 +449,16 @@ class RemoteChecks:
         require((stage == "before_reboot" and "reboot" not in evidence["checks"]) or
                 (stage == "after_reboot" and evidence["checks"].get("reboot") == "pass"), "network_boot_stage_invalid")
         module = self.peer_module()
-        access = self.config["runner"].get("peer_ssh")
-        try:
-            module.access_valid(access)
-        except module.ProbeError:
-            raise PolicyError("existing_peer_access_required") from None
+        local = self.config['runner'].get('local_peer')
+        access = local if local is not None else self.config["runner"].get("peer_ssh")
+        if local is not None:
+            from showcase_local_peer import checked
+            checked(local, self.config['tailnet']['runner_dns'], self.now)
+        else:
+            try:
+                module.access_valid(access)
+            except module.ProbeError:
+                raise PolicyError("existing_peer_access_required") from None
         _, active = self.ensure()
         require(remaining_timeout(active, 750, now=self.now()) == 750, "network_check_time_required")
         baseline = evidence["baseline"] if stage == "before_reboot" else evidence.get("after_reboot")
@@ -483,8 +488,13 @@ class RemoteChecks:
             # preparation window dispatch beyond the attempt's work deadline.
             require(remaining_timeout(self.ensure()[1], 250, now=self.now()) == 250, "network_check_time_required")
             if peer_execute is None:
-                reader = self.attempt.session.reader
-                peer_execute = lambda access, command, payload: module.existing_peer_execute(access, command, payload, reader)
+                if local is not None:
+                    from showcase_local_peer import execute_probe
+                    peer_execute = lambda access, command, payload: execute_probe(access,
+                        self.config['tailnet']['runner_dns'], command, payload, self.now)
+                else:
+                    reader = self.attempt.session.reader
+                    peer_execute = lambda access, command, payload: module.existing_peer_execute(access, command, payload, reader)
             report = module.strict_json(peer_execute(access, command, payload))
             proof = module.validate_proof(report, payload)
             require(self.probe(target) == baseline, "network_boot_baseline_changed")

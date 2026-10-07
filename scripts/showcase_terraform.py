@@ -73,7 +73,8 @@ class CloudSession:
         elif provider == "gcp":
             self.adapter = Google(cloud, self.credentials["service_account_json"], self.http)
         else:
-            self.adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[provider](cloud, self.credentials["token"], self.http)
+            extra = {'identity_proof':self.secret(cloud['identity_proof_ref'])} if provider == 'hetzner' and 'identity_proof_ref' in cloud else {}
+            self.adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[provider](cloud, self.credentials["token"], self.http, **extra)
 
     def secret(self, reference):
         if reference == self.config["tailnet"]["cleanup_key_ref"] and reference.startswith("file://"):

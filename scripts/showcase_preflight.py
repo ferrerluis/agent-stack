@@ -267,9 +267,24 @@ def hetzner_location(size, name, now=None):
 class Hetzner(RestCloud):
     base = "https://api.hetzner.cloud/v1"
 
+    def __init__(self, cloud, token, http, identity_proof=None):
+        super().__init__(cloud, token, http)
+        self.identity_proof = identity_proof
+
+    def identity(self):
+        if 'identity_proof_ref' not in self.cloud:
+            check(self.identity_proof is None, 'hetzner_project_binding_reference_required')
+            return 'declared_only'
+        from showcase_hetzner_identity import verify_proof
+        try:
+            return verify_proof(self.identity_proof, self.cloud, self.token)['identity']
+        except ValueError:
+            raise PreflightError('hetzner_project_binding_invalid') from None
+
     def preflight(self, prefix):
         # HCloud tokens are project-scoped. Its Cloud API does not expose the
         # account/project ID: matching the declared IDs needs separate proof.
+        identity = self.identity()
         for path, key in (("/servers", "servers"), ("/volumes", "volumes"), ("/firewalls", "firewalls"),
                           ("/ssh_keys", "ssh_keys"), ("/networks", "networks"), ("/primary_ips", "primary_ips"),
                           ("/floating_ips", "floating_ips"), ("/load_balancers", "load_balancers")):
@@ -284,9 +299,10 @@ class Hetzner(RestCloud):
         prices = objects(size, "prices")
         check(any(row.get("location") == self.cloud["region"] for row in prices), "vm_size_unavailable")
         hetzner_location(size, self.cloud["region"])
-        return {"identity": "declared_only", "project": "token_scope_verified_empty", "vm_memory_mib": int(size["memory"] * 1024),
+        return {"identity": identity, "project": "token_scope_verified_empty", "vm_memory_mib": int(size["memory"] * 1024),
                 "architecture": "x86_64", "size_available_in_region": True,
-                "not_verified": ["account_project_token_mapping", "create_delete_permissions", "quotas", "live_capacity"]}
+                "not_verified": (["account_project_token_mapping"] if identity != 'verified' else [])
+                    + ["create_delete_permissions", "quotas", "live_capacity"]}
 
 
 def b64(value):
@@ -540,7 +556,8 @@ def preflight(config, provider, prefix, secret_reader=read_secret, http=None, aw
     elif provider == "gcp":
         adapter = Google(cloud, credentials["service_account_json"], http)
     else:
-        adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[provider](cloud, credentials["token"], http)
+        extra = {'identity_proof':secret(cloud['identity_proof_ref'])} if provider == 'hetzner' and 'identity_proof_ref' in cloud else {}
+        adapter = {"digitalocean": DigitalOcean, "hetzner": Hetzner}[provider](cloud, credentials["token"], http, **extra)
     report = adapter.preflight(prefix)
     tailnet = check_tailnet(config["tailnet"], secret(config["tailnet"]["cleanup_key_ref"]), http, prefix)
     models = check_models(config, secret, http=model_http)
