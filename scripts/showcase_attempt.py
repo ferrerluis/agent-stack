@@ -255,11 +255,18 @@ def workspace_password_hash(reference, secret_reader=read_secret):
 
 def isolated_environment(run):
     run = private_directory(run)
+    temporary = run / "tmp"
+    # Provider plugins create Unix sockets here. Deep private attempt paths
+    # exceed Linux's socket-name limit, so use a short disk-backed directory.
+    if len(os.fsencode(temporary)) > 75:
+        base = next((path for path in (ROOT, *ROOT.parents) if (path / ".git").exists()), ROOT)
+        temporary = private_directory(base / ".tmp/p" / hashlib.sha256(str(run).encode()).hexdigest()[:12], create=True)
+    require(len(os.fsencode(temporary)) <= 75, "temporary_path_too_long")
     # Explicit allowlist: discard TF_CLI_ARGS, TF_VAR_*, personal provider,
     # proxy, coding-tool, 1Password and SSH-agent credentials/settings.
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ") if key in os.environ}
     env.update(TF_DATA_DIR=str(run / "terraform-data"), TF_CLI_CONFIG_FILE=str(run / "terraform.rc"),
-               TMPDIR=str(run / "tmp"),
+               TMPDIR=str(temporary),
                TF_INPUT="0", TF_IN_AUTOMATION="1", PYTHONDONTWRITEBYTECODE="1", DOCKER_CONFIG=str(run / "docker-client"),
                AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null", AWS_EC2_METADATA_DISABLED="true")
     return env

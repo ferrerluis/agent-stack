@@ -90,6 +90,19 @@ class IsolationTest(unittest.TestCase):
             with self.assertRaises(attempt.PolicyError):
                 attempt.private_directory(root / "alias" / "new", create=True)
 
+    def test_deep_private_run_uses_short_distinct_disk_temporary_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            deep = Path(temp) / ("a" * 90)
+            deep.mkdir(mode=0o700)
+            first = attempt.isolated_environment(deep)
+            self.assertLessEqual(len(os.fsencode(first["TMPDIR"])), 75)
+            self.assertIn(".tmp", Path(first["TMPDIR"]).parts)
+            self.assertEqual(Path(first["TMPDIR"]).stat().st_mode & 0o077, 0)
+            other = deep / "other"
+            other.mkdir(mode=0o700)
+            second = attempt.isolated_environment(other)
+            self.assertNotEqual(first["TMPDIR"], second["TMPDIR"])
+
     def test_deadlines_leave_cleanup_margin_and_reject_expired_or_invalid_values(self):
         deadlines = {"work_deadline": 1100, "deadline": 2000}
         self.assertEqual(attempt.remaining_timeout(deadlines, 1800, now=1000), 100)
