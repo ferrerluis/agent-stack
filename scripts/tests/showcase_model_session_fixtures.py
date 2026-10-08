@@ -1,5 +1,6 @@
 """Only test fixtures: cloud SSH/Docker/model replies are replaced, ledger is real."""
 from contextlib import contextmanager
+import base64
 import copy
 import hashlib
 import json
@@ -88,7 +89,8 @@ class FixtureSession(session.ModelSession):
         if role == "openclaw":
             config["agents"]["defaults"].update(maxConcurrent=8, compaction={"mode": "safeguard"},
                                               subagents={"maxConcurrent": 8, "archiveAfterMinutes": 60})
-            native = probe.native_openclaw({"valid": True, "configRevisionHash": "b" * 64, "appliedConfigHash": "b" * 64,
+            revision = "hmac-sha256:v1:" + base64.urlsafe_b64encode(b"b" * 32).decode().rstrip("=")
+            native = probe.native_openclaw({"valid": True, "configRevisionHash": revision, "appliedConfigHash": revision,
                 "config": config, "issues": [], "warnings": [], "legacyIssues": []}, route)
         else:
             actual = {"provider": "custom", "model": route["model"], "requested_provider": "as7-budget", "source": "custom_provider:as7-budget",

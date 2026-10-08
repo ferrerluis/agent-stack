@@ -1,3 +1,4 @@
+import base64
 import copy
 from http.client import HTTPConnection
 import hashlib
@@ -86,7 +87,8 @@ def snapshot(route):
     if route["role"] == "openclaw":
         config["agents"]["defaults"].update(maxConcurrent=8, compaction={"mode": "safeguard"},
                                           subagents={"maxConcurrent": 8, "archiveAfterMinutes": 60})
-    return {"valid": True, "configRevisionHash": "b" * 64, "appliedConfigHash": "b" * 64,
+    revision = "hmac-sha256:v1:" + base64.urlsafe_b64encode(b"b" * 32).decode().rstrip("=")
+    return {"valid": True, "configRevisionHash": revision, "appliedConfigHash": revision,
             "config": config, "issues": [], "warnings": [], "legacyIssues": []}
 
 
@@ -102,6 +104,34 @@ def native(route):
 
 
 class NativeProbeTest(unittest.TestCase):
+    def test_revision_tokens_reject_file_hashes_bad_versions_padding_noncanonical_or_stale_values(self):
+        route = route_fixtures.route()
+        for bad in (None, "b" * 64, "hmac-sha256:v2:" + "A" * 43,
+                    "hmac-sha256:v1:" + "A" * 43 + "=", "hmac-sha256:v1:" + "A" * 42 + "B",
+                    "hmac-sha256:v1:" + "A" * 42, "hmac-sha256:v1:" + "A" * 43 + "\n"):
+            value = snapshot(route); value.update(configRevisionHash=bad, appliedConfigHash=bad)
+            with self.assertRaises(probe.OpenClawNativeError) as error:
+                probe.native_openclaw(value, route)
+            self.assertEqual(str(error.exception), "openclaw_config_revision_invalid")
+            report = native(route); report["applied_config_hash"] = bad
+            with self.assertRaises(ValueError): probe.native_proof_valid(route, report)
+        value = snapshot(route); value["appliedConfigHash"] = "hmac-sha256:v1:" + "A" * 43
+        self.assertTrue(probe.openclaw_revision_valid(value["appliedConfigHash"]))
+        with self.assertRaises(probe.OpenClawNativeError) as error: probe.native_openclaw(value, route)
+        self.assertEqual(str(error.exception), "openclaw_applied_revision_unverified")
+        value = snapshot(route); value["appliedConfigHash"] = None
+        with self.assertRaises(probe.OpenClawNativeError) as error: probe.native_openclaw(value, route)
+        self.assertEqual(str(error.exception), "openclaw_applied_revision_invalid")
+
+    def test_pinned_gateway_hmac_revisions_bind_the_exact_applied_revision(self):
+        route = route_fixtures.route()
+        value = snapshot(route)
+        token = "hmac-sha256:v1:" + base64.urlsafe_b64encode(hashlib.sha256(b"native-fixture").digest()).decode().rstrip("=")
+        value.update(configRevisionHash=token, appliedConfigHash=token)
+        result = probe.native_openclaw(value, route)
+        probe.native_proof_valid(route, result)
+        self.assertEqual(result["applied_config_hash"], token)
+
     def test_openclaw_materialized_defaults_cannot_add_auxiliary_model_routes(self):
         route = route_fixtures.route()
         for key, bad in (("compaction", {"mode": "safeguard", "model": "other/model"}),

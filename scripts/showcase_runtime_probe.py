@@ -5,6 +5,7 @@ Hermes resolves its configured native provider without a model request. Both
 containers independently check UID/config bytes and an authenticated nonce.
 OpenClaw's active gateway revision is checked by the outer VM lifecycle probe.
 """
+import base64
 import hashlib
 from http.client import HTTPConnection
 import ipaddress
@@ -20,7 +21,8 @@ def need(value):
 
 
 OPENCLAW_NATIVE_ERRORS = frozenset({
-    "openclaw_snapshot_invalid", "openclaw_applied_revision_unverified", "openclaw_config_invalid",
+    "openclaw_snapshot_invalid", "openclaw_config_revision_invalid", "openclaw_applied_revision_invalid",
+    "openclaw_applied_revision_unverified", "openclaw_config_invalid",
     "openclaw_tools_unverified", "openclaw_provider_set_unverified", "openclaw_provider_route_unverified",
     "openclaw_model_bounds_unverified", "openclaw_agent_roster_unverified", "openclaw_agent_route_unverified",
     "openclaw_runtime_defaults_unverified", "openclaw_native_route_unverified"})
@@ -34,6 +36,16 @@ class OpenClawNativeError(ValueError):
 
 def openclaw_need(value, reason):
     if not value: raise OpenClawNativeError(reason)
+
+
+def openclaw_revision_valid(value):
+    # The pinned Gateway projects revisions as versioned HMAC-SHA256 tokens,
+    # with an unpadded, canonical base64url digest (not a raw file hash).
+    if not isinstance(value, str) or re.fullmatch(r"hmac-sha256:v1:[A-Za-z0-9_-]{43}", value) is None:
+        return False
+    digest = value.rsplit(":", 1)[1]
+    raw = base64.urlsafe_b64decode(digest + "=")
+    return len(raw) == 32 and base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") == digest
 
 
 def decoded(raw, limit=4096):
@@ -93,8 +105,9 @@ def native_openclaw(snapshot, route):
     openclaw_need(snapshot.get("valid") is True and not any(snapshot.get(k) for k in ("issues", "warnings", "legacyIssues")),
                   "openclaw_snapshot_invalid")
     revision = snapshot.get("configRevisionHash")
-    openclaw_need(isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{64}", revision)
-                  and snapshot.get("appliedConfigHash") == revision, "openclaw_applied_revision_unverified")
+    openclaw_need(openclaw_revision_valid(revision), "openclaw_config_revision_invalid")
+    openclaw_need(openclaw_revision_valid(snapshot.get("appliedConfigHash")), "openclaw_applied_revision_invalid")
+    openclaw_need(snapshot["appliedConfigHash"] == revision, "openclaw_applied_revision_unverified")
     config = snapshot.get("config"); openclaw_need(isinstance(config, dict), "openclaw_config_invalid")
     openclaw_need(isinstance(config.get("tools"), dict) and config["tools"].get("deny") == ["*"], "openclaw_tools_unverified")
     models = config.get("models")
@@ -142,7 +155,7 @@ def native_proof_valid(route, report):
                     "base_url_sha256": hashlib.sha256(base.encode()).hexdigest()}
         need(isinstance(report, dict) and set(report) == set(expected) | {"applied_config_hash"}
              and all(report.get(k) == v for k, v in expected.items())
-             and isinstance(report["applied_config_hash"], str) and re.fullmatch(r"[a-f0-9]{64}", report["applied_config_hash"]))
+             and openclaw_revision_valid(report["applied_config_hash"]))
 
 
 def hermes_probe(packet, resolver=None):
