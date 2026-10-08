@@ -158,6 +158,20 @@ class PriceTest(unittest.TestCase):
         high = VOLUMES.replace("$0.074", "$0.080")
         self.assertEqual(prices.volume_rate(high), prices.Decimal("0.000160"))
 
+    def test_monthly_only_volume_rows_ignore_snapshot_table_and_keep_conservative_hourly_bound(self):
+        document = '<table><tr><th>Storage</th><th>$/month</th><th></th></tr>' \
+            '<tr><td>100 GiB</td><td>$10.00</td><td>Get Started</td></tr>' \
+            '<tr><td>500 GiB</td><td>$50.00</td><td>Get Started</td></tr>' \
+            '<tr><td>1,000 GiB</td><td>$100.00</td><td>Get Started</td></tr></table>'
+        snapshot = '<table><tr><th>Storage</th><th>$/month</th><th></th></tr>' \
+            '<tr><td>Volumes Snapshot</td><td>$0.06/GiB per month</td><td>Get Started</td></tr></table>'
+        self.assertEqual(prices.volume_rate(document + snapshot), prices.Decimal('0.000150000'))
+        self.public.documents['volumes'] = document + snapshot
+        self.assertEqual(self.measure()['data_volume_gib_hourly_usd'], '0.000150000')
+        for bad in (document + document, document + VOLUMES, snapshot, document.replace('$10.00', 'price unavailable'),
+                    document.replace('$/month', 'EUR/month'), document.replace('500 GiB', '100 GiB')):
+            with self.assertRaises(PolicyError): prices.volume_rate(bad)
+
     def test_script_prices_cannot_replace_missing_visible_prices(self):
         with self.assertRaisesRegex(PolicyError, "volume_price_table_missing_or_ambiguous"):
             prices.volume_rate("<script>" + VOLUMES + "</script>")

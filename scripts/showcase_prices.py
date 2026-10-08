@@ -126,21 +126,40 @@ def dollars(value):
 
 def volume_rate(document):
     parsed = PriceHTML.parse(document)
-    candidates = [table for table in parsed.tables if table and table[0][:3] == ["Storage", "$/hour", "$/month"]]
-    require(len(candidates) == 1 and len(candidates[0]) >= 2, "volume_price_table_missing_or_ambiguous")
+    quantity_pattern = r"([0-9][0-9,]*) GiB"
+    def layout(table):
+        if table and table[0][:3] == ["Storage", "$/hour", "$/month"]:
+            return "hourly_monthly"
+        # The current visible page omits the hourly column. A separate
+        # snapshot table has the same header; it is not a volume unit price.
+        if (len(table) >= 2 and table[0] in (["Storage", "$/month"], ["Storage", "$/month", ""])
+                and re.fullmatch(quantity_pattern, table[1][0])):
+            return "monthly"
+        return None
+    candidates = [(table, layout(table)) for table in parsed.tables if layout(table)]
+    require(len(candidates) == 1, "volume_price_table_missing_or_ambiguous")
+    table, kind = candidates[0]
+    require(len(table) >= 2, "volume_price_table_missing_or_ambiguous")
     rates, quantities = [], set()
-    for row in candidates[0][1:]:
-        require(len(row) >= 3, "volume_price_table_unsupported")
-        quantity = re.fullmatch(r"([0-9][0-9,]*) GiB", row[0])
-        hourly = re.fullmatch(r"\$\s*([0-9]+(?:\.[0-9]+)?)", row[1])
-        monthly = re.fullmatch(r"\$\s*([0-9]+(?:\.[0-9]+)?)", row[2])
-        require(quantity and hourly and monthly, "volume_price_table_unsupported")
+    for row in table[1:]:
+        require(len(row) >= (3 if kind == "hourly_monthly" else 2), "volume_price_table_unsupported")
+        quantity = re.fullmatch(quantity_pattern, row[0])
+        hourly = re.fullmatch(r"\$\s*([0-9]+(?:\.[0-9]+)?)", row[1]) if kind == "hourly_monthly" else None
+        monthly = re.fullmatch(r"\$\s*([0-9]+(?:\.[0-9]+)?)", row[2 if kind == "hourly_monthly" else 1])
+        require(quantity and monthly and (hourly or kind == "monthly"), "volume_price_table_unsupported")
         amount = int(quantity[1].replace(",", ""))
         require(1 <= amount <= 16384 and amount not in quantities, "volume_price_table_unsupported")
         quantities.add(amount)
         # Published rounded hourly rows may be lower than monthly/672. Use the
         # highest per-unit value, round upward, and never rely on monthly caps.
-        rates.extend((decimal_price(hourly[1]) / amount, decimal_price(monthly[1]) / amount / 672))
+        monthly_hour = decimal_price(monthly[1]) / 672
+        if kind == "monthly":
+            # Preserve a conservative bound at the former published hourly
+            # row precision, rather than treating a monthly cap as free usage.
+            monthly_hour = monthly_hour.quantize(Decimal(".001"), rounding=ROUND_CEILING)
+        rates.append(monthly_hour / amount)
+        if hourly:
+            rates.append(decimal_price(hourly[1]) / amount)
     return max(rates).quantize(Decimal(".000000001"), rounding=ROUND_CEILING)
 
 

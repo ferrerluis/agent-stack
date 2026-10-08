@@ -53,6 +53,8 @@ Transfer allowances use the measured provider rate and enforced quota, with two 
 
 Purchased model credits count once as cash. Actual requests require durable holds, exact model/origin binding, output/request limits, and unchanged global prepaid caps. Haiku 5.5's two prompt-length tiers are bounded at their highest input, output and cache rates, including the documented regional premium. Disable extra reasoning only when its model metadata supports the chosen settings.
 
+DigitalOcean volume pricing accepts either the published hourly/monthly table or its current monthly-only format. It excludes the separate snapshot table, rejects duplicate or malformed prices, and converts monthly rows with an upward hourly rounding margin. The current format retains the same conservative per-GiB hourly bound; it cannot waive a fresh pricing read or account/cleanup adjustments.
+
 After native absence proof, `Reservations.reconcile_cleanup` can tighten an original allowance using its original quote, scope, timestamps and cleanup receipt. It preserves account margins, transfer/minimum reserves and whole-hour rounding, removes completed cleanup contingencies, and retains retry history. Missing or edited proof refuses reconciliation; late deletion can increase the bound.
 
 ## Required live evidence
