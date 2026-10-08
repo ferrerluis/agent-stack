@@ -90,6 +90,12 @@ The repaired configuration passes the actual pinned CLI's default doctor and com
 
 OpenClaw configuration and capability commands allow 30 seconds for CLI startup and execution. The configuration request itself retains its five-second limit and fixed local gateway. The enclosing route-verification command allows 60 seconds for that command plus transport and container checks; watchdogs, task limits, spend limits and refusal of changed routes remain in force.
 
+DigitalOcean iteration06 at `3d9bc23` passed 916 Python tests and 67 Terraform checks with zero skips, then passed native apply and bootstrap. Its shortened 80-minute lifetime left too little time for the mandatory container-test safety window, so the suite did not start; verified cleanup closed this trial at a conservative $0.14 bound, leaving $1.89 under the unchanged $25 cap.
+
+Read-only native inspection found the missing Hermes command link, and an isolated reproduction of the pinned upstream installation check fails without that link and passes with it. Setup now installs only a missing link, preserves existing operator entries, and refuses symlinked directories; the temporary acceptance CLI and API contexts both explicitly disable tools, with the original app configuration retained for restoration.
+
+Subsequent trials use a 105-minute total lifetime including 15 minutes reserved for cleanup, retaining the existing container safety window and fresh complete-price/cap checks. These repairs still require full local qualification and native acceptance; no paid model request or final-revision matrix cell is verified at this checkpoint.
+
 ## Recorded cost investigation, 2026-10-07
 
 Confirmed prepaid purchases were $10.30; cloud bills were unreconciled. The earlier $22.24 figure included conservative allowances. Verified cleanup of six failed trials released $3.90 of unused allowances, for an $18.34 ceiling. The first Hetzner trial's native cleanup further released $0.55, for $19.14. These are conservative bounds, not actual cloud charges, and the request for $30 was withdrawn.

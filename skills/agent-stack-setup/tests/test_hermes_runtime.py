@@ -75,6 +75,58 @@ class HermesConfigTest(unittest.TestCase):
             config.seed_config(self.root, {"model_ref": "anthropic/test"}, "manage")
         self.assertEqual(target.read_text(), '{"model":{"default":"old"}}')
 
+    def test_missing_command_link_is_installed_once_for_the_runtime_user(self):
+        self.assertTrue(config.install_command_link(self.root))
+        link = self.root / ".local/bin/hermes"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), config.CLI_TARGET)
+        self.assertEqual(link.lstat().st_uid, 10000 if os.geteuid() == 0 else os.geteuid())
+        self.assertEqual((link.parent.stat().st_mode & 0o777), 0o700)
+        before = link.lstat()
+        self.assertFalse(config.install_command_link(self.root))
+        self.assertEqual(link.lstat(), before)
+
+    def test_operator_command_files_and_dangling_links_are_preserved(self):
+        link = self.root / ".local/bin/hermes"
+        link.parent.mkdir(parents=True)
+        link.write_text("operator wrapper\n")
+        link.chmod(0o750)
+        before = link.stat()
+        self.assertFalse(config.install_command_link(self.root))
+        self.assertEqual(link.read_text(), "operator wrapper\n")
+        self.assertEqual(link.stat(), before)
+        link.unlink()
+        link.symlink_to("operator-missing-target")
+        before = link.lstat()
+        self.assertFalse(config.install_command_link(self.root))
+        self.assertEqual(os.readlink(link), "operator-missing-target")
+        self.assertEqual(link.lstat(), before)
+
+    def test_symlinked_home_or_command_directories_cannot_redirect_installation(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        home = self.root / "home"
+        home.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            config.install_command_link(home)
+        self.assertFalse((outside / ".local").exists())
+        for parent in (self.root / ".local", self.root / ".local/bin"):
+            parent.parent.mkdir(exist_ok=True)
+            parent.symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(OSError):
+                config.install_command_link(self.root)
+            self.assertFalse((outside / "hermes").exists())
+            parent.unlink()
+
+    def test_preserved_operator_yaml_still_receives_the_missing_command_link(self):
+        self.file.write_text("model:\n  default: operator-model\n")
+        seed = self.root / "seed.json"
+        seed.write_text('{"model_ref":"openai/fixture"}')
+        with patch("sys.argv", ["hermes_config.py", "--data-dir", str(self.root), "--seed", str(seed), "--mode", "preserve"]), contextlib.redirect_stdout(io.StringIO()):
+            config.main()
+        self.assertEqual(self.file.read_text(), "model:\n  default: operator-model\n")
+        self.assertEqual(os.readlink(self.root / ".local/bin/hermes"), config.CLI_TARGET)
+
 
 class HermesReadinessTest(unittest.TestCase):
     def good(self):

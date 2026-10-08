@@ -1,10 +1,42 @@
 #!/usr/bin/env python3
 """Seed a fresh Hermes config as JSON (a YAML subset); preserve existing files."""
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
 import tempfile
+
+CLI_TARGET = "/opt/hermes/.venv/bin/hermes"
+
+
+def install_command_link(data_dir):
+    """Install a missing CLI link; retain every existing operator entry."""
+    root = Path(data_dir).absolute()
+    if any(path.is_symlink() for path in (root, *root.parents)):
+        raise ValueError("refusing a symlinked Hermes home")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with contextlib.ExitStack() as stack:
+        fd = os.open(root, flags)
+        stack.callback(os.close, fd)
+        for name in (".local", "bin"):
+            created = False
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=fd)
+                created = True
+            except FileExistsError:
+                pass
+            fd = os.open(name, flags, dir_fd=fd)
+            stack.callback(os.close, fd)
+            if created and os.geteuid() == 0:
+                os.fchown(fd, 10000, 10000)
+        try:
+            os.symlink(CLI_TARGET, "hermes", dir_fd=fd)
+        except FileExistsError:
+            return False
+        if os.geteuid() == 0:
+            os.chown("hermes", 10000, 10000, dir_fd=fd, follow_symlinks=False)
+    return True
 
 
 def seed_config(data_dir, seed, mode="auto"):
@@ -53,6 +85,7 @@ def main():
     args = parser.parse_args()
     try:
         changed = seed_config(args.data_dir, json.loads(Path(args.seed).read_text()), args.mode)
+        install_command_link(args.data_dir)
         print("changed" if changed else "preserved")
     except (OSError, ValueError, KeyError):
         parser.error("Hermes seed configuration is invalid or could not be written")

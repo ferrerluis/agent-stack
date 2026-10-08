@@ -143,6 +143,9 @@ def compile_config(original, route, file_secrets=False):
         need(not result.get("auxiliary"))
         platforms = result.setdefault("platform_toolsets", {}); need(isinstance(platforms, dict))
         platforms["api_server"] = []
+        # The native static doctor evaluates CLI tool requirements. Its test
+        # context must match the same tool-free arithmetic acceptance profile.
+        platforms["cli"] = []
         result["mcp_servers"] = {}
     encoded(result)
     return result
