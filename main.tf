@@ -470,6 +470,7 @@ locals {
     local_postgres_enabled                         = local.local_postgres_enabled
     caddy_enabled                                  = var.public_domain_enabled
     hermes_image                                   = var.hermes_image
+    hermes_npm_security_patch_enabled              = var.hermes_npm_security_patch_enabled
     hermes_dashboard_enabled                       = var.hermes_dashboard_enabled
     hermes_api_server_enabled                      = var.hermes_api_server_enabled
     hermes_api_server_key                          = local.resolved_hermes_api_server_key
@@ -530,6 +531,8 @@ locals {
   runtime_workspace_cli_task      = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
   runtime_hermes_config           = file("${path.module}/modules/common/runtime/hermes_config.py")
   runtime_hermes_health           = file("${path.module}/modules/common/runtime/hermes_health.py")
+  runtime_hermes_npm_patch        = file("${path.module}/modules/common/runtime/hermes_npm_patch.py")
+  runtime_hermes_npm_patch_bundle = file("${path.module}/modules/common/runtime/hermes_npm_patch.json")
   runtime_workspace_env           = templatefile("${path.module}/modules/common/templates/runtime/workspace.env.tpl", local.runtime_template_vars)
   runtime_caddyfile_template      = templatefile("${path.module}/modules/common/templates/runtime/Caddyfile.template.tpl", local.runtime_template_vars)
   runtime_tailscale_bootstrap     = templatefile("${path.module}/modules/common/templates/runtime/tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
@@ -570,6 +573,8 @@ locals {
     local.runtime_workspace_cli_task,
     local.runtime_hermes_config,
     local.runtime_hermes_health,
+    local.runtime_hermes_npm_patch,
+    local.runtime_hermes_npm_patch_bundle,
     nonsensitive(local.runtime_workspace_env),
     nonsensitive(local.runtime_caddyfile_template),
     nonsensitive(local.runtime_tailscale_bootstrap),
@@ -671,6 +676,14 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_hermes_health
     destination = "${local.runtime_staging_dir}/hermes_health.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_hermes_npm_patch
+    destination = "${local.runtime_staging_dir}/hermes_npm_patch.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_hermes_npm_patch_bundle
+    destination = "${local.runtime_staging_dir}/hermes_npm_patch.json"
   }
   provisioner "file" {
     content     = local.runtime_workspace_cli_task

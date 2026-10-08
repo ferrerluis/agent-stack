@@ -180,6 +180,7 @@ class InstallerReadinessTest(unittest.TestCase):
         source = (ROOT / "modules/common/templates/runtime/install-agent-stack.sh.tpl").read_text()
         start = source.index("wait_agent_stack_initial_restart() {")
         function = source[start:source.index("\n}\n", start) + 3]
+        function = function.replace('${hermes_npm_security_patch_enabled ? 180 : 60}', '60')
         values = {"openclaw_enabled": "true", "workspace_enabled": "true", "hermes_enabled": "true",
                   "hermes_api_server_enabled": "true", "workspace_codex_auto_update_enabled": "false"}
         function = re.sub(r"(?<!\$)\$\{([a-z_]+)\}", lambda m: values.get(m[1], "test"), function).replace("$${", "${")

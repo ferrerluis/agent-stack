@@ -879,6 +879,19 @@ variable "hermes_image" {
   default     = "nousresearch/hermes-agent:latest"
 }
 
+variable "hermes_npm_security_patch_enabled" {
+  description = "Apply the pinned npm dependency and interface-build repair for the supported immutable Hermes showcase image before startup."
+  type        = bool
+  default     = false
+  validation {
+    condition = !var.hermes_npm_security_patch_enabled || (
+      contains(var.enabled_services, "hermes") &&
+      var.hermes_image == "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db"
+    )
+    error_message = "hermes_npm_security_patch_enabled requires Hermes and its exact supported immutable showcase image."
+  }
+}
+
 variable "hermes_dashboard_enabled" {
   description = "Run the Hermes dashboard side-process inside the Hermes gateway container."
   type        = bool

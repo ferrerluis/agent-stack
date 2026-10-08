@@ -10,6 +10,7 @@ openai_auth_mode                    = "api_key"
 openclaw_config_mode                = "manage"
 openclaw_host_network_enabled       = true
 hermes_config_mode                  = "auto"
+hermes_npm_security_patch_enabled   = true
 hermes_dashboard_enabled            = true
 hermes_api_server_enabled           = true
 workspace_claude_enabled            = true

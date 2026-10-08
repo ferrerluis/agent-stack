@@ -30,6 +30,9 @@ services:
 
   hermes:
     image: ${hermes_image}
+%{ if hermes_npm_security_patch_enabled }
+    entrypoint: ["/opt/hermes/.venv/bin/python", "-B", "/usr/local/libexec/agent-stack-hermes-npm-patch.py"]
+%{ endif }
     restart: unless-stopped
     command: gateway run
     env_file: .env
@@ -39,13 +42,17 @@ services:
     volumes:
       - /opt/agent-stack/data/hermes:/opt/data
       - /opt/agent-stack/hermes_health.py:/usr/local/libexec/agent-stack-hermes-health.py:ro
+%{ if hermes_npm_security_patch_enabled }
+      - /opt/agent-stack/hermes_npm_patch.py:/usr/local/libexec/agent-stack-hermes-npm-patch.py:ro
+      - /opt/agent-stack/hermes_npm_patch.json:/usr/local/libexec/agent-stack-hermes-npm-patch.json:ro
+%{ endif }
 %{ if hermes_api_server_enabled }
     healthcheck:
       test: ["CMD", "/opt/hermes/.venv/bin/python", "/usr/local/libexec/agent-stack-hermes-health.py"]
       interval: 30s
       timeout: 10s
       retries: 8
-      start_period: 120s
+      start_period: ${hermes_npm_security_patch_enabled ? 480 : 120}s
 %{ endif }
     environment:
       HERMES_DASHBOARD: "${hermes_dashboard_enabled ? "1" : "0"}"

@@ -38,6 +38,7 @@ PROFILE = {
     "model_providers_enabled": ["openai", "anthropic"], "fallback_models": [], "openai_auth_mode": "api_key",
     "openclaw_config_mode": "manage", "openclaw_host_network_enabled": True,
     "hermes_config_mode": "auto", "hermes_dashboard_enabled": True,
+    "hermes_npm_security_patch_enabled": True,
     "hermes_api_server_enabled": True, "workspace_claude_enabled": True, "workspace_codex_auto_update_enabled": False,
     "tailscale_enabled": True, "tailscale_mode": "host", "public_domain_enabled": False,
     "vpn_enabled": False, "host_codex_cli_enabled": False, "generate_repo_ssh_config": True, "gcp_pin_boot_image": True,

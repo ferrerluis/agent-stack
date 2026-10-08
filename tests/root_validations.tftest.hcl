@@ -94,6 +94,45 @@ run "rejects_unknown_cloud_provider" {
   ]
 }
 
+run "rejects_hermes_dependency_patch_for_unrecognized_image" {
+  command = plan
+  variables {
+    hermes_npm_security_patch_enabled = true
+    hermes_image                      = "nousresearch/hermes-agent:latest"
+  }
+  expect_failures = [var.hermes_npm_security_patch_enabled]
+}
+
+run "accepts_pinned_hermes_dependency_patch" {
+  command = plan
+  variables {
+    hermes_npm_security_patch_enabled = true
+    hermes_image                      = "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db"
+  }
+  assert {
+    condition     = strcontains(local.runtime_docker_compose, "agent-stack-hermes-npm-patch.py") && strcontains(local.runtime_docker_compose, "agent-stack-hermes-npm-patch.json:ro")
+    error_message = "The pinned Hermes repair must run before the original entrypoint and use its declared read-only bundle."
+  }
+}
+
+run "hermes_dependency_patch_keeps_ordinary_startup_default" {
+  command = plan
+  assert {
+    condition     = var.hermes_npm_security_patch_enabled == false && !strcontains(local.runtime_docker_compose, "agent-stack-hermes-npm-patch.py") && strcontains(local.runtime_docker_compose, "start_period: 120s")
+    error_message = "Ordinary Hermes startup must retain its original entrypoint and readiness defaults."
+  }
+}
+
+run "rejects_hermes_dependency_patch_when_hermes_is_disabled" {
+  command = plan
+  variables {
+    enabled_services                  = ["openclaw"]
+    hermes_npm_security_patch_enabled = true
+    hermes_image                      = "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db"
+  }
+  expect_failures = [var.hermes_npm_security_patch_enabled]
+}
+
 run "rejects_openclaw_host_network_without_native_tailnet" {
   command = plan
   variables {
