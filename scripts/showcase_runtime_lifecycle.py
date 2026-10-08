@@ -475,6 +475,7 @@ class RuntimeLifecycle:
                 need(self.native(context, route) == context["native_route"] and self.healthy(self.known(context)))
                 self.current_files(context, route)
                 turn.update(watchdog="disarmed", duration_seconds=round(self.now() - started, 2))
+                self.phase = role + "_task_result"
                 agents.validate_proof(turn, role, model, challenge, request_id)
                 context.update(status="task_verified", turn_sha256=routes.sha(routes.encoded(turn))); self.save(context)
                 return {"schema": 1, "status": "runtime_task_verified", "binding": self.binding,
