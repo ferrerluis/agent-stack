@@ -723,6 +723,40 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(json.loads(self.vm.path(self.role).read_text())['status'], 'uncertain')
         self.vm.restore(self.role); self.assertFalse(self.timer)
 
+    def test_zero_exit_doctor_rejection_retains_safe_coverage_and_lease_flags(self):
+        secret = 'fixture-private-doctor-result'
+        reports = [
+            {'schemaVersion': 1, 'ok': True, 'checksRun': 36, 'checksSkipped': 31, 'findings': [], 'warnings': []},
+            {'schemaVersion': 1, 'ok': True, 'checksRun': 37, 'checksSkipped': 30, 'findings': [],
+             'warnings': [{'errorCode': 'OPENCLAW_STATE_LEASE_ABORTED', 'message': secret}]},
+        ]
+        for report in reports:
+            self.make(); self.prepare(); self.vm.verify(self.route, 'f' * 64)
+            self.doctor_output = json.dumps(report).encode()
+            with self.assertRaises(ValueError): self.vm.doctor(self.route, 'a' * 32)
+            self.assertFalse(self.running); self.assertTrue(self.timer)
+            self.assertEqual(self.vm.failure['phase'], 'openclaw_doctor_result')
+            diagnostic = self.vm.failure['doctor']
+            self.assertEqual(diagnostic['exit_code'], 0)
+            self.assertEqual(diagnostic['checks_run'], report['checksRun'])
+            self.assertEqual(diagnostic['checks_skipped'], report['checksSkipped'])
+            self.assertEqual(diagnostic['state_lease_aborted'], bool(report['warnings']))
+            self.assertTrue(diagnostic['warning_entries_valid'])
+            self.assertNotIn(secret, json.dumps(self.vm.failure))
+            self.vm.restore(self.role)
+
+    def test_green_doctor_report_is_retained_if_configuration_changes_after_command(self):
+        self.make(); self.prepare(); self.vm.verify(self.route, 'f' * 64); self.doctor_change = True
+        with self.assertRaises(ValueError): self.vm.doctor(self.route, 'a' * 32)
+        self.assertFalse(self.running); self.assertTrue(self.timer)
+        self.assertEqual(self.vm.failure['phase'], 'file_verification')
+        diagnostic = self.vm.failure['doctor']
+        self.assertEqual(diagnostic['exit_code'], 0); self.assertTrue(diagnostic['ok'])
+        self.assertEqual((diagnostic['checks_run'], diagnostic['checks_skipped']), (37, 30))
+        self.assertNotIn('operator', json.dumps(self.vm.failure))
+        with self.assertRaises(ValueError): self.vm.restore(self.role)
+        self.assertEqual(self.files.target(self.role).read_bytes(), b'{"operator":"change"}\n')
+
     def test_doctor_changed_configuration_or_environment_cannot_keep_old_green_or_overwrite(self):
         for role in ("openclaw", "hermes"):
             self.make(role); self.prepare(); self.vm.verify(self.route, "f" * 64); self.doctor_change = True

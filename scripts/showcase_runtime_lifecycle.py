@@ -57,7 +57,10 @@ def doctor_failure_summary(error):
                 row[target] = routes.sha(value.encode())
             rows.append(row)
         result.update(report="json", ok=report["ok"], checks_run=report["checksRun"],
-                      checks_skipped=report["checksSkipped"], warning_count=len(warnings), findings=rows)
+                      checks_skipped=report["checksSkipped"], warning_count=len(warnings), findings=rows,
+                      warning_entries_valid=all(isinstance(item, dict) for item in warnings),
+                      state_lease_aborted=any(isinstance(item, dict) and item.get("errorCode") ==
+                          "OPENCLAW_STATE_LEASE_ABORTED" for item in findings + warnings))
     except (ValueError, agents.ProbeError, TypeError, UnicodeError):
         pass
     return result
@@ -300,6 +303,7 @@ class RuntimeLifecycle:
             context = self.load(route["role"]); need(context["status"] == "route_verified")
             context.update(status="doctor_started", unit="as7-route-" + self.binding["run_id"] + "-" + route["role"] + "-" + request_id)
             self.save(context)
+            raw = None
             try:
                 self.known(context)
                 self.execute(["systemd-run", "--quiet", "--unit=" + context["unit"], "--on-active=180s",
@@ -342,6 +346,8 @@ class RuntimeLifecycle:
                     "uid": routes.OWNERS[route["role"]], "health": "healthy", "watchdog": "disarmed", "checks": checks, **readiness}
             except BaseException as error:
                 self.remember_failure(error)
+                if route["role"] == "openclaw" and isinstance(raw, bytes) and 0 < len(raw) <= agents.LIMIT:
+                    self.failure.setdefault("doctor", doctor_failure_summary(agents.ProbeCommandFailed(0, raw)))
                 try: self.stop(context)
                 except BaseException: pass
                 context["status"] = "uncertain"; self.save(context)
