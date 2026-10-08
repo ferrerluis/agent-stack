@@ -221,17 +221,18 @@ class RemoteChecks:
                 "checksum": checksum, "dns": nodes[0]["name"], "data_volume_id": str(disks[0]["id"]),
                 "data_volume_name": disks[0].get("name") or (disks[0].get("tags") or {}).get("Name")}
 
-    def ssh(self, target, args, input=None, timeout=60):
+    def ssh(self, target, args, input=None, timeout=60, capture_failure=False):
         _, active = self.ensure()
         hosts = self.attempt.checkout / ".ssh/known_hosts"
         require(hosts.is_file() and not hosts.is_symlink() and hosts.stat().st_uid == os.geteuid()
                 and stat.S_IMODE(hosts.stat().st_mode) == 0o600, "private_known_hosts_required")
         wrapper = self.attempt.checkout / "bin/agent-stack-ssh"
         require(wrapper.is_file() and wrapper.stat().st_mode & 0o100, "verified_ssh_wrapper_required")
+        options = {"failure_report": self.run / "container-command-error.json"} if capture_failure and self.execute is command else {}
         return self.execute([str(wrapper), "--batch", *( ["--pinned"] if self.models is not None else [] ),
                              "--known-hosts", str(hosts), "--key", str(self.attempt.checkout / KEY_PATH),
                              "--host", target["host"], "--", shlex.join(args)], env=isolated_environment(self.run),
-                            input=input, timeout=remaining_timeout(active, timeout, now=self.now()))
+                            input=input, timeout=remaining_timeout(active, timeout, now=self.now()), **options)
 
     def probe(self, target, timeout=180):
         report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", self.provider, target["checksum"],
@@ -383,7 +384,7 @@ class RemoteChecks:
             source = (self.attempt.checkout / "scripts/showcase_container_probe.py").read_text()
             require(remaining_timeout(self.ensure()[1], 3100, now=self.now()) == 3100, "container_check_time_required")
             report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-I", "-c", source],
-                                      input=json.dumps(bundle).encode(), timeout=3100))
+                                      input=json.dumps(bundle).encode(), timeout=3100, capture_failure=True))
             proof = module.validate_proof(report, bundle, evidence["baseline"]["boot_id"])
             require(self.probe(target) == evidence["baseline"], "container_boot_baseline_changed")
             evidence["containers"].update(proof)

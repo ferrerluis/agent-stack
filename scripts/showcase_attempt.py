@@ -31,6 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 HASH_PATTERN = r"\$6\$(?:rounds=[1-9][0-9]{3,8}\$)?[./A-Za-z0-9]{8,16}\$[./A-Za-z0-9]{86}"
 KEY_PATH = ".ssh/id_ed25519_agent_stack"
 MAX_ARCHIVE = 32 * 1024 * 1024
+FAILURE_REPORTS = {"terraform-command-error.json", "terraform-apply-error.json", "terraform-cleanup-error.json",
+                   "container-command-error.json"}
 PROFILE = {
     "enabled_services": ["openclaw", "hermes", "workspace"], "agent_channel": "none",
     "model_providers_enabled": ["openai", "anthropic"], "fallback_models": [], "openai_auth_mode": "api_key",
@@ -51,7 +53,7 @@ def command(args, env=None, timeout=60, input=None, failure_report=None):
     if failure_report is not None:
         target = Path(failure_report)
         private_directory(target.parent)
-        require(target.name in {"terraform-command-error.json", "terraform-apply-error.json", "terraform-cleanup-error.json"} and not target.is_symlink()
+        require(target.name in FAILURE_REPORTS and not target.is_symlink()
                 and (not target.exists() or target.is_file() and target.stat().st_uid == os.geteuid()
                      and stat.S_IMODE(target.stat().st_mode) == 0o600), "private_command_report_required")
     def save_failure(output, errors, status):
@@ -59,8 +61,8 @@ def command(args, env=None, timeout=60, input=None, failure_report=None):
             return
         target = Path(failure_report)
         private_directory(target.parent)
-        require(target.name in {"terraform-command-error.json", "terraform-apply-error.json", "terraform-cleanup-error.json"}, "private_command_report_required")
-        # Raw failure details may contain sensitive Terraform values. They
+        require(target.name in FAILURE_REPORTS, "private_command_report_required")
+        # Raw failure details may contain sensitive command output. They
         # stay in a bounded owner-private recovery file, never the exception.
         limit = 1024 * 1024
         private_write(target, {"schema": 1, "exit_code": status,

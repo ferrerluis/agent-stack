@@ -64,6 +64,8 @@ For every cloud, require all of the following before declaring its six cells ver
 
 Use the shared [setup skill](../../skills/agent-stack-setup/SKILL.md) and [doctor skill](../../skills/agent-stack-doctor/SKILL.md) for deployment/repair. Prefer the repo-local `bin/` SSH helpers for inspection. The driver stores private plans, inventories, source hashes, task proofs, browser evidence, reservations and cleanup receipts together in the selected batch.
 
+A failed native container check retains its bounded command output in the attempt's owner-private `container-command-error.json`. The credential-free suite supplies the failing profile, a stable reason and bounded command output; arguments, stdin and environment values are excluded. Unknown exceptions stay redacted, normal status receipts contain no raw output, and diagnostics cannot count as acceptance evidence.
+
 ## Recorded cost investigation, 2026-10-07
 
 Confirmed prepaid purchases were $10.30; cloud bills were unreconciled. The earlier $22.24 figure included conservative allowances. Verified cleanup of six failed trials released $3.90 of unused allowances, for an $18.34 ceiling. The first Hetzner trial's native cleanup further released $0.55, for $19.14. These are conservative bounds, not actual cloud charges, and the request for $30 was withdrawn.
@@ -83,3 +85,5 @@ The second originally authorized Hetzner trial used the CX23 at revision `61d3b0
 The installer now downloads selected remote images before applying runtime files or starting health checks, with a ten-minute bound and forced-stop grace. It excludes the locally built workspace image. The existing health requirements and three-minute readiness window remain intact; failed downloads stop before applying runtime files.
 
 At a 105-minute maximum, the next four planning allowances are AWS $1.25, DigitalOcean $1.14, GCP $1.72 and Hetzner $1.12: $5.23 combined, or $24.94 including the current bound. These forecasts preserve the original native price timestamps; every actual launch refreshes its prices and refuses to exceed $25. All four providers used both originally approved attempts. The user subsequently removed the attempt-count limit while preserving the $25 cap; no extra model funding was authorized. All 24 live cells remain unverified.
+
+At revision `2b72471`, all 858 Python tests and 64 Terraform checks passed. Two further Hetzner CX23 trials were confirmed deleted: one was interrupted during bootstrap, and the other passed deployment/SSH with all three services healthy but failed its real container check. The error output was discarded, so its cause remains unproved. Neither invoked paid model tasks. Each closed cost bound was $0.57, bringing the conservative total bound to $20.85; this is not a reconciled cloud bill. The diagnostic retention above addresses that missing evidence before another paid iteration.

@@ -55,6 +55,27 @@ class CleanupTest(unittest.TestCase):
 
 
 class ProcessAndInputTest(unittest.TestCase):
+    def test_failed_process_preserves_bounded_output_without_arguments_or_input(self):
+        code = "import sys;print('x'*20000);sys.stderr.write('docker-build-failure');sys.exit(42)"
+        with self.assertRaises(checks.CheckFailed) as raised:
+            checks.execute(["python3", "-c", code, "private-argument"], os.environ, input="private-input")
+        error = raised.exception
+        self.assertEqual(str(error), "command_failed: python3")
+        self.assertEqual(error.details["exit_code"], 42)
+        self.assertEqual(error.details["stderr"], "docker-build-failure")
+        self.assertEqual(len(error.details["stdout"]), 8192)
+        self.assertTrue(error.details["truncated"])
+        self.assertFalse(error.details["timed_out"])
+        self.assertNotIn("private-", json.dumps(error.details))
+
+    def test_timeout_preserves_partial_output_and_stable_exception(self):
+        code = "import sys,time;print('partial-build',flush=True);time.sleep(10)"
+        with self.assertRaisesRegex(checks.CheckFailed, "^command_timed_out$") as raised:
+            checks.execute(["python3", "-c", code], os.environ, timeout=.2)
+        self.assertEqual(raised.exception.details["stdout"], "partial-build\n")
+        self.assertTrue(raised.exception.details["timed_out"])
+        self.assertLess(raised.exception.details["exit_code"], 0)
+
     def test_timeout_kills_children_before_they_can_write(self):
         with tempfile.TemporaryDirectory() as temp:
             marker = Path(temp) / "child-finished"

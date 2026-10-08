@@ -136,16 +136,18 @@ class IsolationTest(unittest.TestCase):
 
     def test_failed_native_command_keeps_bounded_private_output_without_exposing_it_in_exception(self):
         with tempfile.TemporaryDirectory() as temp:
-            report = Path(temp) / "terraform-command-error.json"
             code = "import sys;sys.stderr.write('fixture-secret-error');sys.stdout.write('x'*1200000);sys.exit(42)"
-            with self.assertRaisesRegex(attempt.PolicyError, "^command_failed$"):
-                attempt.command([sys.executable, "-c", code], failure_report=report)
-            value = json.loads(report.read_text())
-            self.assertEqual(value["exit_code"], 42)
-            self.assertEqual(value["stderr"], "fixture-secret-error")
-            self.assertEqual(len(value["stdout"]), 1024 * 1024)
-            self.assertTrue(value["truncated"])
-            self.assertEqual(report.stat().st_mode & 0o777, 0o600)
+            for name in ("terraform-command-error.json", "container-command-error.json"):
+                with self.subTest(name=name):
+                    report = Path(temp) / name
+                    with self.assertRaisesRegex(attempt.PolicyError, "^command_failed$"):
+                        attempt.command([sys.executable, "-c", code], failure_report=report)
+                    value = json.loads(report.read_text())
+                    self.assertEqual(value["exit_code"], 42)
+                    self.assertEqual(value["stderr"], "fixture-secret-error")
+                    self.assertEqual(len(value["stdout"]), 1024 * 1024)
+                    self.assertTrue(value["truncated"])
+                    self.assertEqual(report.stat().st_mode & 0o777, 0o600)
 
     def test_interrupted_native_command_preserves_private_failure_and_does_not_follow_report_links(self):
         with tempfile.TemporaryDirectory() as temp:

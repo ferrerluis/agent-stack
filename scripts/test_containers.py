@@ -20,7 +20,18 @@ LABEL = "agent-stack.container-test"
 
 
 class CheckFailed(Exception):
-    pass
+    def __init__(self, reason, details=None):
+        super().__init__(reason)
+        self.details = details
+
+
+def command_details(args, stdout, stderr, status, timed_out=False):
+    # Only the credential-free suite consumes these bounded diagnostics. Do
+    # not include arguments, environment variables or stdin in the report.
+    limit = 8192
+    return {"program": Path(args[0]).name[:64], "exit_code": status, "timed_out": timed_out,
+            "stdout": stdout[-limit:], "stderr": stderr[-limit:],
+            "truncated": len(stdout) > limit or len(stderr) > limit}
 
 
 def execute(args, env, timeout=60, input=None, check=True):
@@ -36,13 +47,14 @@ def execute(args, env, timeout=60, input=None, check=True):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.communicate()
+        stdout, stderr = process.communicate()
         if isinstance(error, subprocess.TimeoutExpired):
-            raise CheckFailed("command_timed_out") from None
+            raise CheckFailed("command_timed_out", command_details(args, stdout, stderr, process.returncode, True)) from None
         raise
     result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
     if check and result.returncode != 0:
-        raise CheckFailed("command_failed: " + Path(args[0]).name) from None
+        raise CheckFailed("command_failed: " + Path(args[0]).name,
+                          command_details(args, stdout, stderr, result.returncode)) from None
     return result
 
 

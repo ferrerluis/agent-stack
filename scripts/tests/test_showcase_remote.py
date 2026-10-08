@@ -31,6 +31,21 @@ DISK = "33333333-3333-3333-3333-333333333333"
 
 
 class RemoteChecksTest(unittest.TestCase):
+    def test_only_requested_native_container_command_uses_private_failure_capture(self):
+        self.checks.bootstrap()
+        target = self.checks.bind()
+        calls = []
+        def native(args, **kwargs):
+            calls.append(dict(kwargs))
+            kwargs.pop("failure_report", None)
+            return self.execute(args, **kwargs)
+        with patch.object(remote, "command", side_effect=native) as command:
+            self.checks.execute = command
+            self.checks.ssh(target, ["sudo", "-n", "python3", "-", self.checks.provider, CHECKSUM, "vol-a3", ""], input=remote.BOOTSTRAP.encode())
+            self.checks.ssh(target, ["sudo", "-n", "python3", "-", self.checks.provider, CHECKSUM, "vol-a3", ""], input=remote.BOOTSTRAP.encode(), capture_failure=True)
+        self.assertNotIn("failure_report", calls[0])
+        self.assertEqual(calls[1]["failure_report"], self.run / "container-command-error.json")
+
     def test_stale_provider_answers_fail_all_roles_and_cannot_replay_paid_work(self):
         for role in ("openclaw", "hermes", "codex", "claude"):
             fresh = RemoteChecksTest("runTest"); fresh.setUp(); self.addCleanup(fresh.doCleanups)

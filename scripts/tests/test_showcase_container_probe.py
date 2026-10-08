@@ -151,7 +151,8 @@ class VMFlowTest(unittest.TestCase):
 
     def run_vm(self):
         def factory():
-            return types.SimpleNamespace(ContainerChecks=lambda env, token: self.checker)
+            return types.SimpleNamespace(ContainerChecks=lambda env, token: self.checker,
+                                         CheckFailed=probe.checked_module(ROOT).CheckFailed)
         with patch.object(probe.os, "geteuid", return_value=0):
             return probe.run_vm(bundle(), execute=self.execute, now=lambda: next(self.times), suite_factory=factory, scratch=self.temp.name)
 
@@ -196,6 +197,33 @@ class VMFlowTest(unittest.TestCase):
         self.assertEqual(self.checker.cleaned, 1)
         self.assertEqual(report["cleanup"], "pass")
         self.assertNotIn("fixture-profile-secret", json.dumps(report))
+
+    def test_failed_suite_command_survives_cleanup_with_private_diagnostics(self):
+        suite = probe.checked_module(ROOT)
+        def fail(*args, **kwargs):
+            suite.execute([sys.executable, "-c", "import sys;sys.stderr.write('build-failed');sys.exit(42)"], self.env)
+        # Use the same checked exception class that run_vm receives.
+        factory = lambda: types.SimpleNamespace(ContainerChecks=lambda env, token: self.checker, CheckFailed=suite.CheckFailed)
+        with patch.object(self.checker, "profile", side_effect=fail), patch.object(probe.os, "geteuid", return_value=0):
+            report = probe.run_vm(bundle(), execute=self.execute, now=lambda: next(self.times), suite_factory=factory, scratch=self.temp.name)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["cleanup"], "pass")
+        self.assertEqual(report["watchdog"], "disarmed")
+        self.assertEqual(report["diagnostics"]["phase"], "legacy")
+        self.assertEqual(report["diagnostics"]["command"]["stderr"], "build-failed")
+        self.assertEqual(report["diagnostics"]["command"]["exit_code"], 42)
+        self.assertEqual(self.checker.cleaned, 1)
+        with self.assertRaises(probe.PolicyError):
+            probe.validate_proof(report, bundle(), BOOT)
+
+    def test_malformed_suite_diagnostics_cannot_emit_arbitrary_data(self):
+        suite = probe.checked_module(ROOT)
+        failure = suite.CheckFailed("workspace_ssh_timeout", {"secret": "fixture-private-value"})
+        factory = lambda: types.SimpleNamespace(ContainerChecks=lambda env, token: self.checker, CheckFailed=suite.CheckFailed)
+        with patch.object(self.checker, "profile", side_effect=failure), patch.object(probe.os, "geteuid", return_value=0):
+            report = probe.run_vm(bundle(), execute=self.execute, now=lambda: next(self.times), suite_factory=factory, scratch=self.temp.name)
+        self.assertEqual(report["diagnostics"], {"phase": "legacy", "reason": "workspace_ssh_timeout"})
+        self.assertNotIn("fixture-private-value", json.dumps(report))
 
     def test_unverified_cleanup_preserves_captured_timer_program(self):
         self.checker.clean = False

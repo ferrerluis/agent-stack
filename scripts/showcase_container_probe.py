@@ -192,11 +192,31 @@ def run_vm(bundle, execute=command, now=time.monotonic, suite_factory=None, scra
     checker = None
     armed = False
     success = False
+    suite = None
+    phase = "preflight"
+    diagnostics = None
     cleanup_file = directory / "cleanup.py"
     cleanup_file.write_text(cleanup_source(token))
     cleanup_file.chmod(0o600)
     def stop(_signum, _frame):
         raise PolicyError("container_deadline_reached")
+    def failure(error, stage):
+        # Unknown exceptions can carry operator secrets. Only the verified,
+        # credential-free suite's typed failures may supply private details.
+        error_type = getattr(suite, "CheckFailed", None)
+        if not isinstance(error_type, type) or not issubclass(error_type, Exception) or not isinstance(error, error_type):
+            return None
+        reason = str(error)
+        if re.fullmatch(r"[a-z_]{1,80}(?:: [A-Za-z0-9_.-]{1,64})?", reason) is None:
+            return None
+        detail = getattr(error, "details", None)
+        value = {"phase": stage, "reason": reason}
+        if isinstance(detail, dict) and set(detail) == {"program", "exit_code", "timed_out", "stdout", "stderr", "truncated"}:
+            if (isinstance(detail["program"], str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", detail["program"])
+                    and type(detail["exit_code"]) is int and type(detail["timed_out"]) is bool and type(detail["truncated"]) is bool
+                    and all(isinstance(detail[key], str) and len(detail[key]) <= 8192 for key in ("stdout", "stderr"))):
+                value["command"] = detail
+        return value
     old_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGALRM, signal.SIGTERM, signal.SIGHUP)}
     for sig in old_handlers:
         signal.signal(sig, stop)
@@ -225,6 +245,7 @@ def run_vm(bundle, execute=command, now=time.monotonic, suite_factory=None, scra
         signal.alarm(WORK_SECONDS)
         profiles = []
         for label, claude in (("legacy", None), ("showcase", bundle["pins"]["claude_release"])):
+            phase = label
             work = directory / label
             work.mkdir(mode=0o700)
             context = work / "context"
@@ -239,7 +260,8 @@ def run_vm(bundle, execute=command, now=time.monotonic, suite_factory=None, scra
             profiles.append(row)
         report.update({"schema": 1, "status": "pass", "request_id": bundle["request_id"], "source_revision": bundle["source_revision"],
                        "bundle_sha256": sha, "boot_id": boot, "profiles": profiles, "model_execution": "not_tested"})
-    except BaseException:
+    except BaseException as error:
+        diagnostics = failure(error, phase)
         report["status"] = "fail"
     finally:
         signal.alarm(CLEANUP_SECONDS)
@@ -256,7 +278,9 @@ def run_vm(bundle, execute=command, now=time.monotonic, suite_factory=None, scra
             if report["status"] == "pass":
                 validate_proof(report, bundle, boot)
                 success = True
-        except BaseException:
+        except BaseException as error:
+            if diagnostics is None:
+                diagnostics = failure(error, "cleanup")
             report["status"] = "fail"
         finally:
             signal.alarm(0)
@@ -266,7 +290,10 @@ def run_vm(bundle, execute=command, now=time.monotonic, suite_factory=None, scra
             if success or not armed or report["watchdog"] == "disarmed":
                 shutil.rmtree(directory)
     if not success:
-        return {"schema": 1, "status": "fail", "cleanup": report["cleanup"], "watchdog": report["watchdog"]}
+        result = {"schema": 1, "status": "fail", "cleanup": report["cleanup"], "watchdog": report["watchdog"]}
+        if diagnostics is not None:
+            result["diagnostics"] = diagnostics
+        return result
     return report
 
 
