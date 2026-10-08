@@ -135,6 +135,18 @@ class TermsTest(unittest.TestCase):
             self.tiered_haiku(); self.public.documents['anthropic_prices'] = doc
             with self.subTest(document=doc[:80]), self.assertRaises(PolicyError): self.measure()
 
+    def test_current_request_prompt_wording_preserves_highest_tier_bounds(self):
+        self.tiered_haiku()
+        current = HAIKU_PRICES.replace("a prompt of over ", "a request whose prompt is over ")
+        self.public.documents["anthropic_prices"] = current
+        result = self.measure()
+        self.assertEqual(result["roles"]["claude"]["input_usd_per_million_upper_bound"], "1.100000000")
+        self.assertEqual(result["roles"]["claude"]["output_usd_per_million_upper_bound"], "2.750000000")
+        for changed in (current.replace("prompt is over 100,000", "prompt is over 200,000"),
+                        current.replace("tokens pays higher prices.", "tokens pays unknown prices.")):
+            self.public.documents["anthropic_prices"] = changed
+            with self.assertRaisesRegex(PolicyError, "model_terms_price_unsupported"): self.measure()
+
     def test_simple_price_row_with_unbound_continuation_refuses(self):
         self.public.documents['anthropic_prices'] = ANTHROPIC_DOCUMENT.replace('<tr><td>Claude Sonnet', HAIKU_TIERS.split('\n')[1] + '<tr><td>Claude Sonnet')
         with self.assertRaisesRegex(PolicyError, 'model_terms_price_unsupported'): self.measure()

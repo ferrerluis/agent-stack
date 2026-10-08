@@ -188,8 +188,10 @@ def anthropic_terms(documents, model, metadata):
         upper = re.fullmatch(r"\$([0-9.]+) / MTok for prompts over " + re.escape(tier[2]) + r" tokens", higher[0])
         require(upper is not None and (index + 2 == len(prices) or len(prices[index + 2]) in (1, 6)),
                 "model_terms_price_unsupported")
-        require("Claude Haiku 5.5 is priced by prompt length: a prompt of over " + tier[2]
-                + " tokens pays higher prices." in pricing, "model_terms_price_unsupported")
+        require(any("Claude Haiku 5.5 is priced by prompt length: " + wording + tier[2]
+                    + " tokens pays higher prices." in pricing
+                    for wording in ("a prompt of over ", "a request whose prompt is over ")),
+                "model_terms_price_unsupported")
         tiers = [["$" + tier[1] + " / MTok", *row[2:]], ["$" + upper[1] + " / MTok", *higher[1:]]]
     else:
         require(index + 1 == len(prices) or len(prices[index + 1]) in (1, 6), "model_terms_price_unsupported")
