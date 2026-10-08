@@ -75,9 +75,10 @@ class IsolationTest(unittest.TestCase):
         profile=(attempt.ROOT/'examples/showcase/terraform.tfvars.example').read_text()
         ordinary=attempt.settings(value,'digitalocean','as7-fixture01','ssh-ed25519 fixture',profile)
         self.assertEqual(ordinary['showcase_trial_limits']['egress_cap_bytes'],1073741824)
-        value['trial_egress_cap_bytes']=536870912
-        bounded=attempt.settings(value,'digitalocean','as7-fixture01','ssh-ed25519 fixture',profile)
-        self.assertEqual(bounded['showcase_trial_limits']['egress_cap_bytes'],536870912)
+        for cap in (268435456, 536870912):
+            value['trial_egress_cap_bytes']=cap
+            bounded=attempt.settings(value,'digitalocean','as7-fixture01','ssh-ed25519 fixture',profile)
+            self.assertEqual(bounded['showcase_trial_limits']['egress_cap_bytes'],cap)
 
     def test_environment_ignores_personal_credentials_tf_cli_overrides_proxies_and_agents(self):
         poisoned = {key: "must-not-inherit" for key in ("TF_VAR_gateway_token", "TF_LOG", "TF_CLI_ARGS", "AWS_PROFILE", "AWS_ACCESS_KEY_ID",

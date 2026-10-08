@@ -49,19 +49,21 @@ class LaunchTest(unittest.TestCase):
             with self.assertRaises(PolicyError):launch.trial(self.a)
 
     def test_lower_egress_quota_prices_two_boots_and_refuses_an_unmatched_guest(self):
-        self.a.config['trial_egress_cap_bytes'] = 536870912
         r={'status':'resource_unit_prices_measured','provider':'aws','source_revision':'a'*40,
            'plan_sha256':'b'*64,'run_id':'as7-fixture01','currency':'USD',
            'vm_cpu_disks_ipv4_hourly_usd_upper_bound':'0.20'}
-        with patch.object(network,'measure_network',return_value={'usd_per_gib_upper_bound':'0.23'}):
-            q=launch.complete_quote(self.a,r)
-        self.assertEqual(Decimal(q['fixed_usd']),Decimal('0.92'))
-        settings={'showcase_trial_limits':{'deadline_utc':'1970-01-01 02:46:40 UTC','egress_cap_bytes':536870912}}
-        private_write(self.run/'terraform.tfvars.json',settings)
-        self.assertEqual(launch.trial(self.a),10000)
-        settings['showcase_trial_limits']['egress_cap_bytes']=1073741824
-        private_write(self.run/'terraform.tfvars.json',settings)
-        with self.assertRaisesRegex(PolicyError,'trial_cost_controls_required'):launch.trial(self.a)
+        for cap, fixed in ((268435456, '0.46'), (536870912, '0.92')):
+            with self.subTest(cap=cap):
+                self.a.config['trial_egress_cap_bytes'] = cap
+                with patch.object(network,'measure_network',return_value={'usd_per_gib_upper_bound':'0.23'}):
+                    q=launch.complete_quote(self.a,r)
+                self.assertEqual(Decimal(q['fixed_usd']),Decimal(fixed))
+                settings={'showcase_trial_limits':{'deadline_utc':'1970-01-01 02:46:40 UTC','egress_cap_bytes':cap}}
+                private_write(self.run/'terraform.tfvars.json',settings)
+                self.assertEqual(launch.trial(self.a),10000)
+                settings['showcase_trial_limits']['egress_cap_bytes']=1073741824
+                private_write(self.run/'terraform.tfvars.json',settings)
+                with self.assertRaisesRegex(PolicyError,'trial_cost_controls_required'):launch.trial(self.a)
 
     def test_native_network_catalog_tiers_mixed_units_and_missing_prices(self):
         row={'product':{'attributes':{'fromLocation':'US East (N. Virginia)','toLocation':'External','transferType':'AWS Outbound'}},
