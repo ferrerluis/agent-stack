@@ -27,11 +27,12 @@ class ProbeError(Exception):
 
 
 class ProbeCommandFailed(ProbeError):
-    """Bounded stdout in memory; exception text never includes child output."""
-    def __init__(self, returncode, stdout):
+    """Bounded child output in memory; exception text never includes it."""
+    def __init__(self, returncode, stdout, stderr=b""):
         super().__init__("probe_command_failed")
-        need(type(returncode) is int and isinstance(stdout, bytes) and len(stdout) <= LIMIT)
-        self.returncode, self.stdout = returncode, stdout
+        need(type(returncode) is int and isinstance(stdout, bytes) and isinstance(stderr, bytes)
+             and len(stdout) + len(stderr) <= LIMIT)
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
 
 
 def need(condition, reason="agent_proof_failed"):
@@ -168,7 +169,7 @@ def invoke(args, timeout=10, input=None, env=None, pass_fds=()):
          and all(type(fd) is int and 3 <= fd < 2147483648 for fd in pass_fds), 'probe_descriptor_invalid')
     child = subprocess.Popen(args, env=env, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, pass_fds=pass_fds)
-    output, size = bytearray(), 0
+    output, errors, size = bytearray(), bytearray(), 0
     deadline = time.monotonic() + timeout
     try:
         if input is not None:
@@ -189,12 +190,14 @@ def invoke(args, timeout=10, input=None, env=None, pass_fds=()):
                     need(size <= LIMIT, "probe_output_limit")
                     if key.fileobj is child.stdout:
                         output.extend(chunk)
+                    else:
+                        errors.extend(chunk)
             try:
                 child.wait(timeout=max(0.001, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 raise ProbeError("probe_command_timeout") from None
         if child.returncode != 0:
-            raise ProbeCommandFailed(child.returncode, bytes(output))
+            raise ProbeCommandFailed(child.returncode, bytes(output), bytes(errors))
         return bytes(output)
     except BaseException:
         try:

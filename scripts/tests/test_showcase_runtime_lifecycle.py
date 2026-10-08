@@ -27,6 +27,23 @@ import test_showcase_remote as remote_fixtures
 
 
 class RuntimeDisarmRegressionTest(unittest.TestCase):
+    def test_hermes_doctor_diagnostics_hash_private_text_and_keep_fixed_issue_flags(self):
+        secret = 'fixture-private-hermes-secret'
+        raw = ('\x1b[31m◆ Command Installation\x1b[0m\n  ✗ ' + secret + '\n'
+            '  Found 2 issue(s) to address:\n'
+            "  1. Missing ~/.local/bin/hermes symlink — run 'hermes doctor --fix'\n"
+            '  2. ' + secret + '\n').encode()
+        result = lifecycle.hermes_doctor_failure_summary(lifecycle.agents.ProbeCommandFailed(1, raw,
+            ('PermissionError: ' + secret).encode()))
+        self.assertEqual(result['issue_count'], 2)
+        self.assertEqual(result['sections'], ['Command Installation'])
+        self.assertTrue(result['missing_cli_link']); self.assertFalse(result['passed_summary'])
+        self.assertEqual(result['exception_kinds'], ['PermissionError'])
+        self.assertEqual(result['failed_rows'][0]['section'], 'Command Installation')
+        self.assertNotIn(secret, json.dumps(result))
+        malformed = lifecycle.hermes_doctor_failure_summary(lifecycle.agents.ProbeCommandFailed(1, b'\xff'))
+        self.assertEqual(malformed['report'], 'unparsed')
+
     def test_doctor_failure_summary_never_copies_arbitrary_identifiers_or_malformed_output(self):
         secret = 'fixture-private-doctor-secret'
         report = {'schemaVersion': 1, 'ok': False, 'checksRun': 1, 'checksSkipped': 0,
@@ -744,6 +761,32 @@ class LifecycleTest(unittest.TestCase):
             self.assertTrue(diagnostic['warning_entries_valid'])
             self.assertNotIn(secret, json.dumps(self.vm.failure))
             self.vm.restore(self.role)
+
+    def test_actual_nonzero_hermes_doctor_keeps_safe_stdout_and_stderr_diagnostics(self):
+        self.make('hermes'); self.prepare(); self.vm.verify(self.route, 'f' * 64)
+        secret = 'fixture-private-hermes-secret'; execute = self.vm.raw_execute
+        raw = HERMES_DOCTOR.replace(b'All checks passed!', b'Found 1 issue(s) to address:') + ('\n  1. ' + secret + '\n').encode()
+        def command(args, **options):
+            if 'doctor' in args:
+                return lifecycle.agents.invoke([sys.executable, '-c', 'import sys; sys.stdout.write(' + repr(raw.decode()) +
+                    '); sys.stderr.write(' + repr('PermissionError: ' + secret) + '); sys.exit(1)'])
+            return execute(args, **options)
+        self.vm.raw_execute = command
+        with self.assertRaises(lifecycle.agents.ProbeError): self.vm.doctor(self.route, 'a' * 32)
+        self.assertFalse(self.running); self.assertEqual(self.vm.failure['phase'], 'hermes_doctor_command')
+        diagnostic = self.vm.failure['doctor']; self.assertEqual(diagnostic['exit_code'], 1)
+        self.assertEqual(diagnostic['issue_count'], 1); self.assertEqual(diagnostic['exception_kinds'], ['PermissionError'])
+        self.assertNotIn(secret, json.dumps(self.vm.failure))
+        self.vm.restore(self.role)
+
+    def test_completed_rejected_hermes_doctor_keeps_safe_report(self):
+        self.make('hermes'); self.prepare(); self.vm.verify(self.route, 'f' * 64)
+        self.doctor_output = HERMES_DOCTOR.replace(b'All checks passed!', b'Found 1 issue(s) to address:')
+        with self.assertRaises(ValueError): self.vm.doctor(self.route, 'a' * 32)
+        self.assertEqual(self.vm.failure['phase'], 'hermes_doctor_result')
+        self.assertEqual(self.vm.failure['doctor']['exit_code'], 0)
+        self.assertEqual(self.vm.failure['doctor']['issue_count'], 1)
+        self.assertFalse(self.running); self.vm.restore(self.role)
 
     def test_openclaw_doctor_refuses_unrecognized_image_before_running_checks(self):
         self.make(); self.image_id = 'sha256:' + 'd' * 64

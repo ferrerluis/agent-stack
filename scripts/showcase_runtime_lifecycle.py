@@ -66,6 +66,41 @@ def doctor_failure_summary(error):
     return result
 
 
+def hermes_doctor_failure_summary(error):
+    """Fixed categories, counts and hashes from native text; no messages."""
+    result = {"exit_code": error.returncode, "output_sha256": routes.sha(error.stdout),
+              "stderr_sha256": routes.sha(error.stderr), "report": "unparsed"}
+    try:
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", (error.stdout + b"\n" + error.stderr).decode("utf-8")).replace("\r", "\n")
+        sections = {"Python Environment", "SSL / CA Certificates", "Required Packages", "Configuration Files",
+            "Directory Structure", "Command Installation", "API Connectivity", "Tool Availability",
+            "External Tools", "Security Advisories", "s6 Supervision"}
+        visited, failures, issues, current = [], [], [], "other"
+        for line in text.splitlines():
+            if line.startswith("◆ "):
+                current = line[2:] if line[2:] in sections else "other"
+                if current != "other" and current not in visited: visited.append(current)
+            if re.match(r"^\s*✗ ", line):
+                failures.append({"section": current, "row_sha256": routes.sha(line.strip().encode())})
+            match = re.fullmatch(r"\s+[0-9]{1,5}\. (.{1,1024})", line)
+            if match: issues.append(match[1])
+        need(len(failures) <= 512 and len(issues) <= 512)
+        counts = re.findall(r"Found ([0-9]{1,5}) issue\(s\) to address:", text)
+        need(len(counts) <= 1)
+        exceptions = [kind for kind in ("ModuleNotFoundError", "ImportError", "PermissionError", "FileNotFoundError",
+            "TypeError", "KeyError", "ValueError", "RuntimeError") if re.search(r"^" + kind + r":", text, re.M)]
+        result.update(report="text", sections=visited, failed_rows=failures,
+            issue_count=int(counts[0]) if counts else None,
+            issue_sha256=[routes.sha(issue.encode()) for issue in issues], exception_kinds=exceptions,
+            passed_summary=text.count("All checks passed!") == 1,
+            missing_cli_link="Missing ~/.local/bin/hermes symlink — run 'hermes doctor --fix'" in issues,
+            missing_provider_config="Run 'hermes setup' to configure API keys" in issues,
+            missing_tool_keys="Run 'hermes setup' to configure missing API keys for full tool access" in issues)
+    except (ValueError, TypeError, UnicodeError):
+        pass
+    return result
+
+
 def inline_source(payloads):
     code = "import builtins,types\nmods={}\ndef owned_import(name,*args,**kwargs):\n return mods[name] if name in mods else builtins.__import__(name,*args,**kwargs)\n"
     for name, (path, content) in payloads.items():
@@ -134,6 +169,8 @@ class RuntimeLifecycle:
         self.failure = {"phase": self.phase, "reason": reason}
         if self.phase == "openclaw_doctor_command" and isinstance(error, agents.ProbeCommandFailed):
             self.failure["doctor"] = doctor_failure_summary(error)
+        if self.phase == "hermes_doctor_command" and isinstance(error, agents.ProbeCommandFailed):
+            self.failure["doctor"] = hermes_doctor_failure_summary(error)
         programs = {"/usr/bin/docker": "docker", "systemctl": "systemctl", "systemd-run": "systemd-run"}
         if isinstance(args, list) and args and args[0] in programs:
             detail = {"program": programs[args[0]]}
@@ -349,6 +386,8 @@ class RuntimeLifecycle:
                 self.remember_failure(error)
                 if route["role"] == "openclaw" and isinstance(raw, bytes) and 0 < len(raw) <= agents.LIMIT:
                     self.failure.setdefault("doctor", doctor_failure_summary(agents.ProbeCommandFailed(0, raw)))
+                if route["role"] == "hermes" and isinstance(raw, bytes) and 0 < len(raw) <= agents.LIMIT:
+                    self.failure.setdefault("doctor", hermes_doctor_failure_summary(agents.ProbeCommandFailed(0, raw)))
                 try: self.stop(context)
                 except BaseException: pass
                 context["status"] = "uncertain"; self.save(context)
