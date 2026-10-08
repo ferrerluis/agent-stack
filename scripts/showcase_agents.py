@@ -26,6 +26,14 @@ class ProbeError(Exception):
     """Fixed, non-sensitive failure codes only."""
 
 
+class ProbeCommandFailed(ProbeError):
+    """Bounded stdout in memory; exception text never includes child output."""
+    def __init__(self, returncode, stdout):
+        super().__init__("probe_command_failed")
+        need(type(returncode) is int and isinstance(stdout, bytes) and len(stdout) <= LIMIT)
+        self.returncode, self.stdout = returncode, stdout
+
+
 def need(condition, reason="agent_proof_failed"):
     if not condition:
         raise ProbeError(reason)
@@ -185,7 +193,8 @@ def invoke(args, timeout=10, input=None, env=None, pass_fds=()):
                 child.wait(timeout=max(0.001, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 raise ProbeError("probe_command_timeout") from None
-        need(child.returncode == 0, "probe_command_failed")
+        if child.returncode != 0:
+            raise ProbeCommandFailed(child.returncode, bytes(output))
         return bytes(output)
     except BaseException:
         try:

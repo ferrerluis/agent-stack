@@ -27,6 +27,35 @@ import test_showcase_remote as remote_fixtures
 
 
 class RuntimeDisarmRegressionTest(unittest.TestCase):
+    def test_doctor_failure_summary_never_copies_arbitrary_identifiers_or_malformed_output(self):
+        secret = 'fixture-private-doctor-secret'
+        report = {'schemaVersion': 1, 'ok': False, 'checksRun': 1, 'checksSkipped': 0,
+                  'warnings': [{'message': secret}], 'findings': [{'checkId': secret,
+                  'errorCode': secret, 'severity': secret, 'message': secret}]}
+        raw = json.dumps(report).encode()
+        result = lifecycle.doctor_failure_summary(lifecycle.agents.ProbeCommandFailed(1, raw))
+        self.assertEqual(result['findings'][0]['severity'], 'other')
+        self.assertNotIn(secret, json.dumps(result))
+        for raw in (secret.encode(), b'{"schemaVersion":1,"schemaVersion":1}',
+                    json.dumps({**report, 'checksRun': True}).encode(),
+                    json.dumps({**report, 'findings': [{'checkId': '\ud800', 'errorCode': 'x'}]}).encode()):
+            result = lifecycle.doctor_failure_summary(lifecycle.agents.ProbeCommandFailed(1, raw))
+            self.assertEqual(set(result), {'exit_code', 'output_sha256', 'report'})
+            self.assertEqual(result['report'], 'unparsed')
+            self.assertNotIn(secret, json.dumps(result))
+
+    def test_pinned_doctor_optional_warning_array_and_error_codes_can_be_absent(self):
+        report = {'schemaVersion': 1, 'ok': False, 'checksRun': 37, 'checksSkipped': 30,
+                  'findings': [{'checkId': 'core/doctor/security', 'severity': 'warning',
+                               'requirement': 'gateway.bind_network_accessible', 'message': 'private text'}]}
+        result = lifecycle.doctor_failure_summary(lifecycle.agents.ProbeCommandFailed(1, json.dumps(report).encode()))
+        self.assertEqual(result['report'], 'json')
+        self.assertEqual(result['checks_skipped'], 30)
+        self.assertEqual(result['warning_count'], 0)
+        self.assertEqual(result['findings'][0]['requirement_sha256'], routes.sha(b'gateway.bind_network_accessible'))
+        self.assertNotIn('error_code_sha256', result['findings'][0])
+        self.assertNotIn('private text', json.dumps(result))
+
     def test_actual_disarm_does_not_stop_a_collected_transient_service(self):
         active = True
         calls = []
@@ -640,6 +669,34 @@ class LifecycleTest(unittest.TestCase):
                 self.assertFalse(self.running); self.assertTrue(self.timer)
                 self.assertEqual(json.loads(self.vm.path(role).read_text())["status"], "uncertain")
                 self.vm.restore(role); self.assertFalse(self.timer); self.assertFalse(self.running)
+
+    def test_actual_nonzero_doctor_keeps_failure_and_only_safe_diagnostic_fields(self):
+        self.make(); self.prepare(); self.vm.verify(self.route, "f" * 64)
+        secret = 'fixture-private-doctor-secret'
+        report = {'schemaVersion': 1, 'ok': False, 'checksRun': 7, 'checksSkipped': 0,
+                  'warnings': [], 'findings': [{'checkId': 'core/doctor/auth-profiles',
+                    'errorCode': 'AUTH_PROFILE_MISSING', 'severity': 'warning',
+                    'message': secret, 'path': secret, 'fixHint': secret}]}
+        execute = self.vm.raw_execute
+        def command(args, **options):
+            if 'doctor' in args:
+                return lifecycle.agents.invoke([sys.executable, '-c',
+                    'import sys; print(' + repr(json.dumps(report)) + '); sys.exit(1)'])
+            return execute(args, **options)
+        self.vm.raw_execute = command
+        with self.assertRaises(lifecycle.agents.ProbeError): self.vm.doctor(self.route, 'a' * 32)
+        self.assertFalse(self.running); self.assertTrue(self.timer)
+        self.assertEqual(self.vm.failure['phase'], 'openclaw_doctor_command')
+        diagnostic = self.vm.failure['doctor']
+        self.assertEqual(diagnostic['exit_code'], 1)
+        self.assertEqual(diagnostic['checks_run'], 7)
+        self.assertEqual(diagnostic['checks_skipped'], 0)
+        self.assertEqual(diagnostic['findings'][0]['severity'], 'warning')
+        self.assertEqual(diagnostic['findings'][0]['check_id_sha256'], routes.sha(b'core/doctor/auth-profiles'))
+        self.assertNotIn(secret, json.dumps(self.vm.failure))
+        self.assertNotIn('message', json.dumps(self.vm.failure))
+        self.assertEqual(json.loads(self.vm.path(self.role).read_text())['status'], 'uncertain')
+        self.vm.restore(self.role); self.assertFalse(self.timer)
 
     def test_doctor_changed_configuration_or_environment_cannot_keep_old_green_or_overwrite(self):
         for role in ("openclaw", "hermes"):

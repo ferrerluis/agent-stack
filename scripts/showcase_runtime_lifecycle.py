@@ -31,6 +31,38 @@ def need(value):
     if not value: raise ValueError("runtime_lifecycle_unverified")
 
 
+def doctor_failure_summary(error):
+    """Only counts, severities and hashes; never diagnostic text or paths."""
+    result = {"exit_code": error.returncode, "output_sha256": routes.sha(error.stdout), "report": "unparsed"}
+    try:
+        report = agents.strict_json(error.stdout)
+        need(isinstance(report, dict) and type(report.get("schemaVersion")) is int and report["schemaVersion"] == 1
+             and type(report.get("ok")) is bool)
+        for key in ("checksRun", "checksSkipped"):
+            need(type(report.get(key)) is int and 0 <= report[key] <= 100000)
+        findings, warnings = report.get("findings"), report.get("warnings", [])
+        need(isinstance(findings, list) and len(findings) <= 512
+             and isinstance(warnings, list) and len(warnings) <= 512)
+        rows = []
+        for finding in findings:
+            need(isinstance(finding, dict))
+            row = {"severity": finding.get("severity") if finding.get("severity") in
+                   ("info", "notice", "warning", "error") else "other"}
+            for source, target in (("checkId", "check_id_sha256"), ("errorCode", "error_code_sha256"),
+                                   ("requirement", "requirement_sha256")):
+                if source != "checkId" and source not in finding:
+                    continue
+                value = finding.get(source)
+                need(isinstance(value, str) and 0 < len(value) <= 256)
+                row[target] = routes.sha(value.encode())
+            rows.append(row)
+        result.update(report="json", ok=report["ok"], checks_run=report["checksRun"],
+                      checks_skipped=report["checksSkipped"], warning_count=len(warnings), findings=rows)
+    except (ValueError, agents.ProbeError, TypeError, UnicodeError):
+        pass
+    return result
+
+
 def inline_source(payloads):
     code = "import builtins,types\nmods={}\ndef owned_import(name,*args,**kwargs):\n return mods[name] if name in mods else builtins.__import__(name,*args,**kwargs)\n"
     for name, (path, content) in payloads.items():
@@ -97,6 +129,8 @@ class RuntimeLifecycle:
         if isinstance(error, probe.OpenClawNativeError) and str(error) in probe.OPENCLAW_NATIVE_ERRORS:
             reason = str(error)
         self.failure = {"phase": self.phase, "reason": reason}
+        if self.phase == "openclaw_doctor_command" and isinstance(error, agents.ProbeCommandFailed):
+            self.failure["doctor"] = doctor_failure_summary(error)
         programs = {"/usr/bin/docker": "docker", "systemctl": "systemctl", "systemd-run": "systemd-run"}
         if isinstance(args, list) and args and args[0] in programs:
             detail = {"program": programs[args[0]]}
@@ -276,7 +310,9 @@ class RuntimeLifecycle:
                 else:
                     command = ["env", "-i", "HOME=/opt/data", "HERMES_HOME=/opt/data", "NO_COLOR=1", "PYTHONDONTWRITEBYTECODE=1",
                         "PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin", "/opt/hermes/.venv/bin/hermes", "doctor"]
+                self.phase = route["role"] + "_doctor_command"
                 raw = self.execute(["/usr/bin/docker", "exec", "--user", str(routes.OWNERS[route["role"]]), context["container_id"], *command], timeout=90)
+                self.phase = route["role"] + "_doctor_result"
                 need(isinstance(raw, bytes) and 0 < len(raw) <= agents.LIMIT)
                 if route["role"] == "openclaw":
                     parsed = agents.strict_json(raw)

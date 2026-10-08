@@ -348,6 +348,16 @@ class BoundedCommandTest(unittest.TestCase):
         self.assertNotIn(SECRET, str(error.exception))
         self.assertEqual(agents.invoke([sys.executable, "-c", "import sys; print(sys.stdin.read())"], input=b"fixture").strip(), b"fixture")
 
+    def test_failed_child_keeps_bounded_stdout_separate_from_fixed_error_and_stderr(self):
+        with self.assertRaises(agents.ProbeError) as caught:
+            agents.invoke([sys.executable, "-c", "import sys; print('report'); print(" + repr(SECRET)
+                           + ", file=sys.stderr); sys.exit(3)"])
+        error = caught.exception
+        self.assertEqual(getattr(error, 'returncode', None), 3)
+        self.assertEqual(getattr(error, 'stdout', None), b'report\n')
+        self.assertEqual(str(error), 'probe_command_failed')
+        self.assertNotIn(SECRET, repr(error))
+
 
 class WatchdogDisarmTest(unittest.TestCase):
     def disarm(self, states, stop_error=None):
