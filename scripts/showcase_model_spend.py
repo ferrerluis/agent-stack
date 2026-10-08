@@ -181,6 +181,13 @@ def prepare_request(policy, role, path, raw):
     except (ValueError, UnicodeError, RecursionError):
         raise PolicyError("invalid_model_request") from None
     finite_shape(value)
+    # Claude sends client tracking metadata, not model input. Validate and
+    # discard it; it cannot select an upstream identity or a paid feature.
+    if role == "claude" and path == "/v1/messages" and isinstance(value, dict) and "metadata" in value:
+        metadata = value.pop("metadata")
+        require(isinstance(metadata, dict) and set(metadata) == {"user_id"}
+                and isinstance(metadata["user_id"], str) and 0 < len(metadata["user_id"]) <= 1024,
+                "model_request_scope_changed")
     require(isinstance(value, dict) and not value.keys() - FIELDS[path] and value.get("model") == terms["model"], "model_request_scope_changed")
     require(value.get("stream", False) in (True, False) and type(value.get("stream", False)) is bool
             and (value.get("background") is None or value.get("background") is False)

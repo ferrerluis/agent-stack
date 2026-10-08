@@ -232,7 +232,7 @@ class RemoteChecks:
                 and stat.S_IMODE(hosts.stat().st_mode) == 0o600, "private_known_hosts_required")
         wrapper = self.attempt.checkout / "bin/agent-stack-ssh"
         require(wrapper.is_file() and wrapper.stat().st_mode & 0o100, "verified_ssh_wrapper_required")
-        require(type(capture_failure) is bool or capture_failure in ("container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json", "host-doctor-command-error.json"),
+        require(type(capture_failure) is bool or capture_failure in ("container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json", "host-doctor-command-error.json", "workspace-command-error.json"),
                 "private_failure_report_refused")
         report = "container-command-error.json" if capture_failure is True else capture_failure
         options = {"failure_report": self.run / report} if report and self.execute is command else {}
@@ -631,7 +631,8 @@ class RemoteChecks:
             start = self.models.begin_task(cli)
             report = decoded(self.ssh(target, WORKSPACE + ["python3", "/usr/local/libexec/agent-stack-workspace-cli-task",
                 "--cli", cli, "--model", model, "--timeout", "180", "--model-gateway", "--challenge",
-                json.dumps(challenge, sort_keys=True, separators=(",", ":"))], input=json.dumps(bundle).encode(), timeout=195))
+                json.dumps(challenge, sort_keys=True, separators=(",", ":"))], input=json.dumps(bundle).encode(), timeout=195,
+                capture_failure="workspace-command-error.json"))
             usage, fixture, digest = report.get("model_usage"), report.get("fixture"), report.get("input_sha256")
             duration = report.get("duration_seconds")
             require(report.get("cli") == cli and report.get("status") == "pass" and report.get("verified") is True

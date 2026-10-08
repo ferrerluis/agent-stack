@@ -128,7 +128,9 @@ def command(cli, model, gateway=None):
         args.extend(["--max-budget-usd", "0.25"])
     else:
         args.extend(["--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'])
-    return args + [PROMPT]
+    # --mcp-config and --allowedTools accept multiple values. End option
+    # parsing explicitly so the task cannot become a config filename.
+    return args + ["--", PROMPT]
 
 
 def gateway_environment(cli, model, gateway, client_home):
@@ -146,6 +148,7 @@ def gateway_environment(cli, model, gateway, client_home):
         env.update({"CLAUDE_CONFIG_DIR": str(client_home / "claude"), "ANTHROPIC_BASE_URL": gateway["base_url"],
                     "ANTHROPIC_AUTH_TOKEN": gateway["credential"], "ANTHROPIC_MODEL": model,
                     "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
                     "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1"})
     return env
 

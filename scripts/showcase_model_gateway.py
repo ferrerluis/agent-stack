@@ -23,6 +23,10 @@ from showcase_policy import PolicyError, require
 
 FRAME_SECONDS = 5
 MAX_CLIENTS = 4
+# Decorations emitted by the pinned Claude CLI. They grant no upstream
+# feature: the gateway always forwards its own stable, bounded request.
+CLAUDE_SDK_MARKERS = {"interleaved-thinking-2025-05-14", "mid-conversation-system-2026-04-07",
+                     "claude-code-20250219", "effort-2025-11-24"}
 ERRORS = {
     "model_gateway_auth_required": (401, "authentication_error"),
     "model_gateway_route_refused": (404, "invalid_request_error"),
@@ -160,12 +164,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             gateway = self.server.gateway
-            match = re.fullmatch(r"/(openclaw|hermes|codex|claude)(/v1/(?:responses|chat/completions|messages)|/_transport)", self.path)
+            match = re.fullmatch(r"/(openclaw|hermes|codex|claude)(/v1/(?:responses|chat/completions|messages)|/_transport)(\?beta=true)?", self.path)
             require(match is not None, "model_gateway_route_refused")
-            role, path = match.groups()
+            role, path, query = match.groups()
+            require(query is None or (role == "claude" and path == "/v1/messages"), "model_gateway_route_refused")
             provider = gateway.spend.policy["roles"][role]["provider"]
             require(path == "/_transport" or (path == "/v1/messages" if provider == "anthropic" else path in ("/v1/responses", "/v1/chat/completions")), "model_gateway_route_refused")
-            for name in ("Authorization", "x-api-key", "Content-Length", "Content-Type", "Host", "anthropic-version"):
+            for name in ("Authorization", "x-api-key", "Content-Length", "Content-Type", "Host", "anthropic-version", "anthropic-beta"):
                 require(len(self.headers.get_all(name, [])) <= 1, "model_gateway_header_refused")
             auth, api_key = self.headers.get("Authorization"), self.headers.get("x-api-key")
             require(not (auth and api_key) and (provider == "anthropic" or api_key is None), "model_gateway_auth_required")
@@ -173,7 +178,13 @@ class Handler(BaseHTTPRequestHandler):
             require(isinstance(token, str) and re.fullmatch(r"[a-f0-9]{64}", token)
                     and gateway.authenticated(role, token), "model_gateway_auth_required")
             require(self.request_version == "HTTP/1.1" and self.headers.get("Host")
-                    and not any(self.headers.get_all(name) for name in ("Transfer-Encoding", "Content-Encoding", "Expect", "Origin", "anthropic-beta")), "model_gateway_header_refused")
+                    and not any(self.headers.get_all(name) for name in ("Transfer-Encoding", "Content-Encoding", "Expect", "Origin")), "model_gateway_header_refused")
+            beta = self.headers.get("anthropic-beta")
+            if beta is not None:
+                markers = beta.split(",")
+                require(role == "claude" and path == "/v1/messages" and 1 <= len(markers) <= len(CLAUDE_SDK_MARKERS)
+                        and len(markers) == len(set(markers)) and set(markers) <= CLAUDE_SDK_MARKERS,
+                        "model_gateway_header_refused")
             require(self.headers.get("anthropic-version") in (None, "2023-06-01"), "model_gateway_header_refused")
             require(self.headers.get("Content-Type", "").split(";", 1)[0].strip() == "application/json", "model_gateway_frame_refused")
             length = self.headers.get("Content-Length", "")

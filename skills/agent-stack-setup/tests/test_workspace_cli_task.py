@@ -197,6 +197,12 @@ class WorkspaceTaskTest(unittest.TestCase):
                 self.assertEqual(task.run_task("codex", "test-model", raw, 180, model_gateway=True)["reason"], "invalid_model_gateway")
             invoke.assert_not_called()
 
+    def test_claude_variadic_options_cannot_consume_the_task_prompt(self):
+        for gateway in (None, self.bundle("claude")):
+            args = task.command("claude", "test-model", gateway)
+            self.assertEqual(args[-2:], ["--", task.PROMPT])
+            self.assertEqual(args.count("--"), 1)
+
     def test_gateway_commands_use_explicit_auth_route_without_keys_or_automatic_codex_retries(self):
         bundle = self.bundle()
         args = task.command("codex", "test-model", bundle)
@@ -217,6 +223,9 @@ class WorkspaceTaskTest(unittest.TestCase):
         self.assertIn("--max-budget-usd", task.command("claude", "test-model"))
         self.assertEqual(claude[claude.index("--setting-sources") + 1], "")
         self.assertIn("--strict-mcp-config", claude)
+        # Claude's variadic --mcp-config must not swallow the positional task.
+        self.assertEqual(claude[-2:], ["--", task.PROMPT])
+        self.assertEqual(task.command("claude", "test-model")[-2:], ["--", task.PROMPT])
 
     def test_actual_fake_cli_processes_get_isolated_homes_and_no_inherited_auth_or_proxy(self):
         # These executables are fixtures, not native compatibility proof. They
@@ -247,6 +256,7 @@ else:
     assert os.environ["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:12345/claude"
     assert os.environ["CLAUDE_CONFIG_DIR"].startswith(os.environ["HOME"] + "/")
     assert os.environ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] == "1"
+    assert os.environ["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "1"
     assert "--max-budget-usd" not in args
 challenge = json.loads(pathlib.Path("input.json").read_text())
 pathlib.Path("result.json").write_text(json.dumps({"sum": challenge["lhs"] + challenge["rhs"], "nonce": challenge["nonce"]}))

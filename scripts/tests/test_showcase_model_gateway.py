@@ -111,6 +111,34 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(all(row["status"] == "response_received" for row in account["model_requests"]))
         self.assertNotIn(PRIVATE, json.dumps(account)); self.assertTrue(all(token not in json.dumps(account) for token in tokens))
 
+    def test_pinned_claude_sdk_decorations_are_validated_then_removed_upstream(self):
+        headers = self.headers("claude") | {"anthropic-version": "2023-06-01",
+                    "anthropic-beta": ",".join(sorted(gateway.CLAUDE_SDK_MARKERS))}
+        raw = body("/v1/messages", metadata={"user_id": "fixture-client-tracking"})
+        status, _, _ = self.request("claude", "/v1/messages?beta=true", raw, headers)
+        self.assertEqual(status, 200)
+        request = self.opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, spend.ORIGINS["anthropic"] + "/v1/messages")
+        self.assertNotIn("metadata", json.loads(request.data))
+        self.assertNotIn("anthropic-beta", {name.lower() for name, _ in request.header_items()})
+        self.assertEqual(json.loads(request.data)["max_tokens"], 128)
+        self.assertEqual(len(self.account()["model_requests"]), 1)
+
+    def test_claude_sdk_marker_allowance_cannot_enable_other_routes_or_unpriced_features(self):
+        for role, path in (("claude", "/v1/messages?beta=false"), ("claude", "/v1/messages?beta=true&extra=1"),
+                           ("hermes", "/v1/messages?beta=true"), ("codex", "/v1/responses?beta=true"),
+                           ("claude", "/_transport?beta=true")):
+            with self.subTest(role=role, path=path):
+                status, _, _ = self.request(role, path, body("/v1/messages"))
+                self.assertEqual(status, 404)
+        for role, marker in (("claude", "unpriced-feature"), ("claude", "effort-2025-11-24,effort-2025-11-24"),
+                             ("claude", ""), ("claude", "effort-2025-11-24 ,claude-code-20250219"), ("hermes", "effort-2025-11-24")):
+            with self.subTest(role=role, marker=marker):
+                status, _, _ = self.request(role, "/v1/messages", headers=self.headers(role) | {"anthropic-beta": marker})
+                self.assertEqual(status, 400)
+        self.assertFalse(self.account()["model_requests"])
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+
     def test_complete_sse_is_forwarded_incrementally_unchanged_and_recorded_after_terminal(self):
         frames = [completions.frame(row) for row in completions.stream_rows(completions.response())]
         waiting, release = threading.Event(), threading.Event()

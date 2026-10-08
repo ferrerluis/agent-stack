@@ -227,6 +227,18 @@ class RequestValidationTest(unittest.TestCase):
             with self.assertRaises(PolicyError): spend.prepare_request(self.policy, "codex", path, body())
         with self.assertRaises(PolicyError): spend.prepare_request(self.policy, "claude", "/v1/responses", body())
 
+    def test_claude_tracking_is_bounded_discarded_and_not_available_to_other_roles(self):
+        _, prepared = spend.prepare_request(self.policy, "claude", "/v1/messages",
+                                           body("/v1/messages", metadata={"user_id": "fixture-session"}))
+        self.assertNotIn("metadata", json.loads(prepared))
+        for metadata in ({}, {"user_id": ""}, {"user_id": "x" * 1025}, {"user_id": 1},
+                         {"user_id": "fixture", "service_tier": "priority"}, "fixture", None):
+            with self.subTest(metadata=metadata), self.assertRaises(PolicyError):
+                spend.prepare_request(self.policy, "claude", "/v1/messages", body("/v1/messages", metadata=metadata))
+        for role, path in (("hermes", "/v1/messages"), ("codex", "/v1/responses")):
+            with self.assertRaises(PolicyError):
+                spend.prepare_request(self.policy, role, path, body(path, metadata={"user_id": "fixture"}))
+
     def test_function_tools_text_history_cache_blocks_and_clamped_output_are_supported(self):
         value = body(input=[{"type": "function_call_output", "call_id": "fixture-id", "output": "fixture-result"}],
                      tools=[{"type": "function", "name": "write_file", "parameters": {"type": "object"}}])
