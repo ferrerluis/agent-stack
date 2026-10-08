@@ -122,6 +122,8 @@ run "accepts_openclaw_host_network_with_loopback_native_tailnet" {
     tailscale_mode                = "host"
     tailscale_auth_key            = "tskey-auth-agent-stack-tests"
     public_domain_enabled         = false
+    hermes_dashboard_password     = "hermes-password-agent-stack-tests"
+    hermes_dashboard_secret       = "hermes-session-secret-agent-stack-tests"
   }
   assert {
     condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=loopback") && strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "network_mode: \"host\"") && !strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "ports:")
