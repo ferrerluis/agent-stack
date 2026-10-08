@@ -147,7 +147,9 @@ class Runner:
         self.environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(home), "LANG": "C.UTF-8",
             "npm_config_cache": str(home / "cache"), "npm_config_userconfig": str(home / "user.npmrc"),
             "npm_config_globalconfig": str(home / "global.npmrc"), "npm_config_registry": "https://registry.npmjs.org/",
-            "npm_config_fetch_retries": "0", "npm_config_fetch_timeout": "30000", "npm_config_install_links": "false"}
+            "npm_config_fetch_retries": "2", "npm_config_fetch_retry_mintimeout": "1000",
+            "npm_config_fetch_retry_maxtimeout": "3000", "npm_config_fetch_timeout": "30000",
+            "npm_config_install_links": "false"}
 
     def __call__(self, command, cwd):
         self.returncode = None

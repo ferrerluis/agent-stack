@@ -131,6 +131,10 @@ class HermesNpmPatchTest(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_API_KEY", environment)
         self.assertNotIn("OPENAI_API_KEY", environment)
         self.assertEqual(environment["npm_config_userconfig"], str(home / "user.npmrc"))
+        self.assertEqual(environment["npm_config_fetch_retries"], "2")
+        self.assertEqual(environment["npm_config_fetch_retry_mintimeout"], "1000")
+        self.assertEqual(environment["npm_config_fetch_retry_maxtimeout"], "3000")
+        self.assertEqual(environment["npm_config_fetch_timeout"], "30000")
         self.assertEqual((home / "user.npmrc").read_bytes(), b"")
         self.assertEqual(launch.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
@@ -142,6 +146,19 @@ class HermesNpmPatchTest(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 runner(["npm", "ci"], self.root)
         kill.assert_called_once_with(process.pid, npm.signal.SIGKILL)
+
+    def test_retries_share_the_install_and_build_deadline(self):
+        with patch.object(npm.time, "monotonic", return_value=100):
+            runner = npm.Runner(self.root.parent / "npm-home", seconds=480, owner=os.geteuid())
+        process = Mock(returncode=0)
+        process.communicate.return_value = (b"", None)
+        with patch.object(npm.subprocess, "Popen", return_value=process) as launch, \
+                patch.object(npm.time, "monotonic", side_effect=[570, 581]):
+            runner(["npm", "ci"], self.root)
+            process.communicate.assert_called_once_with(timeout=10)
+            with self.assertRaises(ValueError):
+                runner(["npm", "run", "build"], self.root)
+        launch.assert_called_once()
 
     def test_failure_details_report_exact_stage_and_numeric_facts_without_exception_text(self):
         runner = npm.Runner(self.root.parent / "npm-home", owner=os.geteuid())
