@@ -110,6 +110,20 @@ class StrictHealthTest(unittest.TestCase):
         self.assertFalse(doctor.doctor_healthy([]))
         self.assertFalse(doctor.doctor_healthy({"findings": []}))
 
+    def test_pinned_default_coverage_requires_exact_version_counts_and_a_clean_report(self):
+        report = {'schemaVersion': 1, 'ok': True, 'checksRun': 37, 'checksSkipped': 30, 'findings': []}
+        for version in ('OpenClaw 2026.9.8', 'OpenClaw 2026.9.8 (fc23bc8)\n'):
+            coverage = doctor.doctor_default_coverage(version)
+            self.assertEqual(coverage, '2026.9.8'); self.assertTrue(doctor.doctor_healthy(report, coverage))
+        for version in ('OpenClaw 2026.9.9', 'OpenClaw 2026.9.8-beta.1', 'private text', ''):
+            self.assertIsNone(doctor.doctor_default_coverage(version))
+            self.assertFalse(doctor.doctor_healthy(report, doctor.doctor_default_coverage(version)))
+        for change in ({'checksRun': 36}, {'checksRun': True}, {'checksSkipped': 29}, {'checksSkipped': True},
+                       {'schemaVersion': True}, {'ok': False}, {'findings': [{'severity': 'warning'}]},
+                       {'findings': [{'severity': 'info', 'errorCode': 'OPENCLAW_STATE_LEASE_ABORTED'}]},
+                       {'warnings': [{'errorCode': 'OPENCLAW_STATE_LEASE_ABORTED'}]}):
+            self.assertFalse(doctor.doctor_healthy({**report, **change}, '2026.9.8'))
+
     def hermes_report(self):
         return "\n".join("◆ " + section + "\n  ✓ fixture passed" for section in (
             "Python Environment", "Required Packages", "Configuration Files", "Directory Structure", "API Connectivity"

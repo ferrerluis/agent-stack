@@ -4,9 +4,13 @@ services:
     image: ${openclaw_image}
     restart: unless-stopped
     env_file: .env
+%{ if openclaw_host_network_enabled }
+    network_mode: "host"
+%{ else }
     ports:
       - "127.0.0.1:18789:18789"
       - "127.0.0.1:18793:18793"
+%{ endif }
     volumes:
       - /opt/agent-stack/data/openclaw:/home/node/.openclaw
 %{ if openclaw_version == "2026.6.8" || openclaw_version == "2026.6.9-beta.1" }

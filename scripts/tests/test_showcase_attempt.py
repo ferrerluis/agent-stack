@@ -52,6 +52,7 @@ class IsolationTest(unittest.TestCase):
             settings = attempt.settings(value, provider, "as7-fixture01", "ssh-ed25519 fixture test", profile)
             self.assertEqual(settings["enabled_services"], ["openclaw", "hermes", "workspace"])
             self.assertFalse(settings["public_domain_enabled"])
+            self.assertTrue(settings['openclaw_host_network_enabled'])
             self.assertEqual(settings["allowed_ssh_cidr"], "203.0.113.42/32")
             self.assertEqual(settings["workspace_codex_release"], value["pins"]["codex_release"])
             self.assertEqual(settings["workspace_claude_release"], value["pins"]["claude_release"])

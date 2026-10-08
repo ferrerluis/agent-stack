@@ -94,6 +94,41 @@ run "rejects_unknown_cloud_provider" {
   ]
 }
 
+run "rejects_openclaw_host_network_without_native_tailnet" {
+  command = plan
+  variables {
+    openclaw_host_network_enabled = true
+    tailscale_enabled             = false
+  }
+  expect_failures = [var.openclaw_host_network_enabled]
+}
+
+run "rejects_openclaw_host_network_with_sidecar_tailnet" {
+  command = plan
+  variables {
+    openclaw_host_network_enabled = true
+    tailscale_enabled             = true
+    tailscale_mode                = "sidecar"
+    tailscale_auth_key            = "tskey-auth-agent-stack-tests"
+  }
+  expect_failures = [var.openclaw_host_network_enabled]
+}
+
+run "accepts_openclaw_host_network_with_loopback_native_tailnet" {
+  command = plan
+  variables {
+    openclaw_host_network_enabled = true
+    tailscale_enabled             = true
+    tailscale_mode                = "host"
+    tailscale_auth_key            = "tskey-auth-agent-stack-tests"
+    public_domain_enabled         = false
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=loopback") && strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "network_mode: \"host\"") && !strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "ports:")
+    error_message = "Opt-in OpenClaw host networking must bind loopback without Docker port publication."
+  }
+}
+
 run "rejects_root_admin_user" {
   command = plan
 

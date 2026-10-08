@@ -414,13 +414,18 @@ class LifecycleTest(unittest.TestCase):
         if getattr(self, "files", None): self.files.doCleanups()
         files = route_fixtures.TransactionTest("runTest"); files.setUp(); self.addCleanup(files.doCleanups)
         self.files, self.role, self.route = files, role, route_fixtures.route(role, provider)
+        if role == "openclaw":
+            original = {'gateway': {'mode': 'local', 'bind': 'loopback',
+                'auth': {'mode': 'token', 'token': 'fixture-gateway-key'},
+                'controlUi': {'allowedOrigins': ['http://localhost:18789', 'https://as7-fixture.test.ts.net']}}}
+            files.before[role] = routes.encoded(original); files.target(role).write_bytes(files.before[role])
         self.original_environment = b"OPENAI_API_KEY=as7-model-gateway-not-active\nANTHROPIC_API_KEY=as7-model-gateway-not-active\nAPI_SERVER_KEY=fixture-server-key\n"
         self.environment_path = files.root / "hermes/.env"
         self.environment_path.write_bytes(self.original_environment); self.environment_path.chmod(0o600)
         self.running, self.timer, self.clock, self.health = True, False, 0.0, "healthy"
         self.identifier, self.image_ref, self.image_id, self.restarts = CONTAINER, image(role), IMAGE_ID, 0
         self.calls = []; self.native_mutation = self.probe_mutation = None
-        self.doctor_output = (json.dumps({"schemaVersion": 1, "ok": True, "checksRun": 12, "checksSkipped": 0,
+        self.doctor_output = (json.dumps({"schemaVersion": 1, "ok": True, "checksRun": 37, "checksSkipped": 30,
             "findings": [], "warnings": []}).encode() if role == "openclaw" else HERMES_DOCTOR)
         self.doctor_failure = self.doctor_change = False
         self.stop_on_disarm = False
@@ -443,6 +448,7 @@ class LifecycleTest(unittest.TestCase):
         if args[:len(lifecycle.COMPOSE)] == lifecycle.COMPOSE: return self.identifier.encode()
         if args[:2] == ["/usr/bin/docker", "inspect"]:
             return json.dumps({"id": self.identifier, "image_id": self.image_id, "image_ref": self.image_ref,
+                "network_mode": getattr(self, 'network_mode', "host" if self.role == "openclaw" else "agent-stack_default"),
                 "state": {"Running": self.running, "Restarting": False, "Dead": False, "Health": {"Status": self.health}},
                 "restarts": self.restarts, "labels": {"com.docker.compose.project": "agent-stack", "com.docker.compose.service": self.role},
                 "mounts": [{"Destination": "/home/node/.openclaw" if self.role == "openclaw" else "/opt/data", "Type": "bind", "RW": True,
@@ -457,6 +463,7 @@ class LifecycleTest(unittest.TestCase):
             return b""
         if args[:2] == ["systemctl", "show"]: return b"active" if self.timer else b"inactive"
         if args[:2] == ["/usr/bin/docker", "exec"]:
+            if args[-1] == '--version': return b'OpenClaw 2026.9.8 (fc23bc8)\n'
             if input is not None and json.loads(input).get('action') == 'source_configuration':
                 self.assertEqual(self.role, 'hermes'); self.assertIn('10000', args); self.assertIn('-I', args)
                 packet = json.loads(input); raw = self.files.target(self.role).read_bytes()
@@ -480,6 +487,7 @@ class LifecycleTest(unittest.TestCase):
                     params = json.loads(args[args.index("--params") + 1])
                     self.assertEqual(params["sessionId"], agent_fixtures.ID); self.assertEqual(params["idempotencyKey"], agent_fixtures.ID)
                     self.assertFalse(params["deliver"])
+                    self.assertNotIn('model', params); self.assertNotIn('provider', params)
                     value["result"]["meta"]["agentMeta"]["provider"] = self.route["provider"]
                 else:
                     value["runtime"]["requested"] = {"provider": "as7-budget", "model": self.route["model"]}
@@ -657,6 +665,23 @@ class LifecycleTest(unittest.TestCase):
                 with self.assertRaises(ValueError): self.vm.doctor(self.route, "b" * 32)
                 self.assertEqual(len(self.calls), before)
                 self.vm.restore(role); self.assertFalse(self.running); self.assertEqual(self.environment_path.read_bytes(), self.original_environment)
+
+    def test_changed_secret_file_blocks_doctor_and_preserves_unknown_data_for_recovery(self):
+        self.make(); self.prepare(); self.vm.verify(self.route, 'f' * 64)
+        secret = self.files.root / routes.OPENCLAW_SECRET_FILE; secret.write_bytes(b'operator change')
+        before = len(self.calls)
+        with self.assertRaises(ValueError): self.vm.doctor(self.route, 'a' * 32)
+        self.assertFalse(self.running)
+        self.assertFalse(any('doctor' in args for args, _, _ in self.calls[before:]))
+        with self.assertRaises(ValueError): self.vm.restore(self.role)
+        self.assertEqual(secret.read_bytes(), b'operator change')
+        self.assertTrue(self.files.journal().exists())
+
+    def test_openclaw_bridge_mode_is_refused_before_configuration_changes(self):
+        self.make(); original = self.files.target().read_bytes(); self.network_mode = 'agent-stack_default'
+        with self.assertRaises(ValueError): self.prepare()
+        self.assertEqual(self.files.target().read_bytes(), original)
+        self.assertFalse(self.files.journal().exists())
 
     def test_native_failed_incomplete_doctor_or_timeout_keeps_recovery_and_stops_captured_container(self):
         for role in ("openclaw", "hermes"):

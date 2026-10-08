@@ -392,6 +392,17 @@ variable "openclaw_config_mode" {
   }
 }
 
+variable "openclaw_host_network_enabled" {
+  description = "Run OpenClaw on the Linux host network, bound to loopback behind native host Tailscale. Ordinary Docker bridge networking remains the default."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.openclaw_host_network_enabled || (var.tailscale_enabled && var.tailscale_mode == "host" && !var.public_domain_enabled)
+    error_message = "OpenClaw host networking requires native host Tailscale and public domains disabled."
+  }
+}
+
 variable "agent_channel" {
   description = "Primary channel plugin to bootstrap: telegram, whatsapp or none for dashboard/API-only operation."
   type        = string

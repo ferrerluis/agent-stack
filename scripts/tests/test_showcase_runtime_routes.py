@@ -148,6 +148,67 @@ class TransactionTest(unittest.TestCase):
     def target(self, role="openclaw"): return self.root / routes.FILES[role]
     def journal(self, role="openclaw"): return self.transaction.journal / (role + ".json")
 
+    def secure_original(self):
+        config = {'gateway': {'mode': 'local', 'bind': 'loopback',
+            'auth': {'mode': 'token', 'token': 'fixture-original-gateway-secret'},
+            'controlUi': {'allowedOrigins': ['https://fixture', 'https://fixture.test.ts.net']}}}
+        self.before['openclaw'] = routes.encoded(config); self.target().write_bytes(self.before['openclaw'])
+        return config
+
+    def test_secretrefs_keep_credentials_out_of_config_and_restore_removes_only_owned_secret_file(self):
+        self.secure_original(); original_mode = stat.S_IMODE(self.target().stat().st_mode)
+        with self.transaction.lock(): result = self.transaction._install(binding(), route(), file_secrets=True)
+        target = self.transaction.verify_secret_file(binding())
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertEqual(routes.decoded(target.read_bytes()), {'gateway': 'fixture-original-gateway-secret', 'model': CAPABILITY})
+        config = routes.decoded(self.target().read_bytes())
+        self.assertNotIn(CAPABILITY, self.target().read_text()); self.assertNotIn('fixture-original-gateway-secret', self.target().read_text())
+        self.assertEqual(config['gateway']['publicOrigin'], 'https://fixture.test.ts.net')
+        self.assertEqual(config['models']['providers']['openai']['apiKey'], {'source': 'file', 'provider': 'as7-budget', 'id': '/model'})
+        self.assertEqual(config['agents']['defaults']['utilityModel'], '')
+        self.assertFalse(config['memory']['search']['enabled'])
+        self.assertEqual(config['skills']['workshop']['autonomous']['mode'], 'off')
+        self.assertNotIn(CAPABILITY, json.dumps(result))
+        self.transaction.restore(binding(), 'openclaw')
+        self.assertEqual(self.target().read_bytes(), self.before['openclaw'])
+        self.assertEqual(stat.S_IMODE(self.target().stat().st_mode), original_mode)
+        self.assertFalse(target.exists()); self.assertFalse(self.journal().exists())
+
+    def test_existing_or_changed_secret_file_cannot_be_overwritten_or_removed(self):
+        self.secure_original(); secret = self.root / routes.OPENCLAW_SECRET_FILE
+        secret.write_bytes(b'operator data'); secret.chmod(0o600)
+        with self.assertRaises(ValueError): self.transaction._install(binding(), route(), file_secrets=True)
+        self.assertFalse(self.journal().exists()); self.assertEqual(secret.read_bytes(), b'operator data')
+        secret.unlink(); self.transaction._install(binding(), route(), file_secrets=True)
+        installed = self.target().read_bytes(); secret.write_bytes(b'operator change')
+        with self.assertRaises(ValueError): self.transaction.restore(binding(), 'openclaw')
+        self.assertEqual(self.target().read_bytes(), installed); self.assertEqual(secret.read_bytes(), b'operator change')
+        self.assertTrue(self.journal().exists())
+
+    def test_crash_before_secret_or_config_write_keeps_recoverable_exact_original(self):
+        for fail_secret in (True, False):
+            self.secure_original(); original = self.target().read_bytes()
+            write = routes.atomic_write; secret = self.root / routes.OPENCLAW_SECRET_FILE
+            def crash(path, *args, **kwargs):
+                if path == (secret if fail_secret else self.target()): raise RuntimeError('fixture interrupted write')
+                return write(path, *args, **kwargs)
+            with patch.object(routes, 'atomic_write', side_effect=crash), self.assertRaises(RuntimeError):
+                self.transaction._install(binding(), route(), file_secrets=True)
+            self.assertTrue(self.journal().exists()); self.assertEqual(self.target().read_bytes(), original)
+            self.transaction.restore(binding(), 'openclaw')
+            self.assertEqual(self.target().read_bytes(), original); self.assertFalse(secret.exists())
+
+    def test_secure_profile_refuses_nonlocal_bind_ambiguous_origin_and_preexisting_secret_providers(self):
+        original = self.secure_original()
+        cases = [copy.deepcopy(original) for _ in range(3)]
+        cases[0]['gateway']['bind'] = 'lan'
+        cases[1]['gateway']['controlUi']['allowedOrigins'].append('https://other.test.ts.net')
+        cases[2]['secrets'] = {'providers': {'operator': {'source': 'env'}}}
+        for config in cases:
+            self.target().write_bytes(routes.encoded(config))
+            with self.assertRaises(ValueError): self.transaction._install(binding(), route(), file_secrets=True)
+            self.assertFalse(self.journal().exists())
+
     def test_real_private_journal_precedes_atomic_change_and_exact_original_bytes_mode_are_restored(self):
         for role in routes.OWNERS:
             result = self.transaction.install(binding(), route(role))

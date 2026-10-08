@@ -454,7 +454,8 @@ locals {
     tailscale_auth_key                             = var.tailscale_auth_key
     openclaw_version                               = var.openclaw_version
     openclaw_image                                 = var.openclaw_image_digest != "" ? "ghcr.io/openclaw/openclaw@${var.openclaw_image_digest}" : "ghcr.io/openclaw/openclaw:${var.openclaw_version}"
-    openclaw_gateway_bind                          = local.tailscale_sidecar_enabled ? "loopback" : "lan"
+    openclaw_gateway_bind                          = local.tailscale_sidecar_enabled || var.openclaw_host_network_enabled ? "loopback" : "lan"
+    openclaw_host_network_enabled                  = var.openclaw_host_network_enabled
     openclaw_node_options                          = var.openclaw_node_options
     openclaw_swap_size_mb                          = var.openclaw_swap_size_mb
     openclaw_health_start_period_seconds           = var.openclaw_health_start_period_seconds

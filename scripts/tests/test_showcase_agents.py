@@ -201,6 +201,7 @@ class AgentTransportTest(unittest.TestCase):
                 self.assertEqual(params["idempotencyKey"], ID)
                 self.assertEqual(params["sessionId"], ID)
                 self.assertIs(params["deliver"], False)
+                self.assertNotIn('model', params); self.assertNotIn('provider', params)
                 return json.dumps(self.raw or response("openclaw")).encode()
             self.assertEqual(json.loads(input)["request_id"], ID)
             self.assertEqual(args[-1], agents.HERMES_SOURCE)

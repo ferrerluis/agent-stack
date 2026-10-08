@@ -131,6 +131,15 @@ def native_openclaw(snapshot, route):
     openclaw_need(snapshot["appliedConfigHash"] == revision, "openclaw_applied_revision_unverified")
     config = snapshot.get("config"); openclaw_need(isinstance(config, dict), "openclaw_config_invalid")
     openclaw_need(isinstance(config.get("tools"), dict) and config["tools"].get("deny") == ["*"], "openclaw_tools_unverified")
+    skills, plugins = config.get("skills"), config.get("plugins")
+    openclaw_need(config.get("memory") == {"search": {"enabled": False}}
+                  and isinstance(skills, dict) and isinstance(skills.get("workshop"), dict)
+                  and skills["workshop"].get("autonomous") == {"mode": "off"}
+                  and isinstance(plugins, dict) and isinstance(plugins.get("slots"), dict)
+                  and plugins["slots"].get("memory") == "none"
+                  and isinstance(plugins.get("entries"), dict)
+                  and plugins["entries"].get("memory-core") == {"enabled": False},
+                  "openclaw_agent_route_unverified")
     models = config.get("models")
     openclaw_need(isinstance(models, dict) and models.get("mode") == "replace", "openclaw_provider_set_unverified")
     providers = models.get("providers")
@@ -150,6 +159,7 @@ def native_openclaw(snapshot, route):
     defaults = agents.get("defaults"); reference = route["provider"] + "/" + route["model"]
     openclaw_need(isinstance(defaults, dict) and defaults.get("model") == {"primary": reference, "fallbacks": []}
                   and defaults.get("models") == {reference: {}}
+                  and defaults.get("utilityModel") == ""
                   and not any(defaults.get(k) for k in ("agentRuntime", "cliBackends")), "openclaw_agent_route_unverified")
     # v2026.9.8 materializes these defaults in config.get. Accept only the
     # known nonrouting values; model/provider overrides and extra keys fail.

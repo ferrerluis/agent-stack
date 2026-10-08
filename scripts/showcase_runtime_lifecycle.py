@@ -23,7 +23,7 @@ import showcase_runtime_environment as environment
 import showcase_runtime_probe as probe
 
 COMPOSE = ["/usr/bin/docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml"]
-INSPECT = '{"id":{{json .Id}},"image_id":{{json .Image}},"image_ref":{{json .Config.Image}},"state":{{json .State}},"restarts":{{json .RestartCount}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}'
+INSPECT = '{"id":{{json .Id}},"image_id":{{json .Image}},"image_ref":{{json .Config.Image}},"network_mode":{{json .HostConfig.NetworkMode}},"state":{{json .State}},"restarts":{{json .RestartCount}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}'
 SOURCES = ("showcase_runtime_routes", "showcase_agents", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe", "showcase_runtime_task", "showcase_strict_health", "showcase_runtime_lifecycle")
 
 
@@ -152,8 +152,9 @@ class RuntimeLifecycle:
         identifier = self.execute(COMPOSE + ["ps", "-a", "-q", role], timeout=10).decode().strip()
         need(re.fullmatch(r"[a-f0-9]{64}", identifier))
         row = agents.strict_json(self.execute(["/usr/bin/docker", "inspect", "--format", INSPECT, identifier], timeout=10))
-        need(isinstance(row, dict) and set(row) == {"id", "image_id", "image_ref", "state", "restarts", "labels", "mounts"}
+        need(isinstance(row, dict) and set(row) == {"id", "image_id", "image_ref", "network_mode", "state", "restarts", "labels", "mounts"}
              and row["id"] == identifier and row["image_ref"] == image
+             and isinstance(row["network_mode"], str) and (role != "openclaw" or row["network_mode"] == "host")
              and isinstance(row["image_id"], str) and re.fullmatch(r"sha256:[a-f0-9]{64}", row["image_id"])
              and type(row["restarts"]) is int and row["restarts"] == 0)
         need(isinstance(row["labels"], dict) and row["labels"].get("com.docker.compose.project") == "agent-stack"
@@ -284,6 +285,7 @@ class RuntimeLifecycle:
         info = routes.checked_path(target, owner=routes.OWNERS[route["role"]])
         modes = (0o600, 0o640) if context["role"] == "hermes" else (0o600,)
         need(info.st_mode & 0o777 in modes and routes.sha(target.read_bytes()) == context["config_sha256"])
+        if route["role"] == "openclaw": self.tx.verify_secret_file(self.binding)
         if route["role"] == "hermes":
             info = routes.checked_path(self.environment.target, owner=routes.OWNERS["hermes"])
             need(info.st_mode & 0o777 == 0o600 and routes.sha(self.environment.target.read_bytes()) == context["environment_sha256"])
@@ -305,6 +307,10 @@ class RuntimeLifecycle:
                 need(self.execute(["systemctl", "is-active", context["unit"] + ".timer"], timeout=10).strip() == b"active")
                 self.current_files(context, route); need(self.native(context, route) == context["native_route"])
                 if route["role"] == "openclaw":
+                    self.phase = "openclaw_doctor_version"
+                    version = self.execute(["/usr/bin/docker", "exec", "--user", "1000", context["container_id"],
+                        "env", "-i", "HOME=/home/node", "PATH=/usr/local/bin:/usr/bin:/bin", "openclaw", "--version"], timeout=10)
+                    need(DOCTOR_MODULE.doctor_default_coverage(version.decode("utf-8")) == "2026.9.8")
                     command = ["env", "-i", "HOME=/home/node", "PATH=/usr/local/bin:/usr/bin:/bin",
                         "openclaw", "doctor", "--lint", "--json", "--severity-min", "warning"]
                 else:
@@ -317,7 +323,7 @@ class RuntimeLifecycle:
                 if route["role"] == "openclaw":
                     parsed = agents.strict_json(raw)
                     need(isinstance(parsed, dict) and type(parsed.get("schemaVersion")) is int)
-                    passed = DOCTOR_MODULE.doctor_healthy(parsed)
+                    passed = DOCTOR_MODULE.doctor_healthy(parsed, default_coverage="2026.9.8")
                 else: passed = DOCTOR_MODULE.hermes_doctor_healthy(raw.decode("utf-8"))
                 need(passed); self.current_files(context, route)
                 checks = {"service." + route["role"]: "pass", route["role"] + ".doctor": "pass"}
@@ -375,7 +381,7 @@ class RuntimeLifecycle:
                 if role == "openclaw":
                     params = {"message": agents.prompt(challenge), "sessionId": request_id,
                         "sessionKey": "agent:main:as7-" + request_id, "agentId": "main", "idempotencyKey": request_id,
-                        "model": model, "deliver": False, "timeout": 180}
+                        "deliver": False, "timeout": 180}
                     raw = self.execute(prefix + ["agent", "--expect-url", "ws://127.0.0.1:18789", "--expect-final",
                         "--timeout", "185000", "--json", "--params", json.dumps(params, separators=(",", ":"))], timeout=190)
                     turn = agents.parse_turn(role, agents.strict_json(raw), model, challenge, request_id)
@@ -442,7 +448,7 @@ class RuntimeLifecycle:
                     context["environment_sha256"] = self.environment._install(self.binding, route); self.save(context)
                 self.phase = "configuration_install"
                 installed = (self.tx._install(self.binding, route, source=source) if role == "hermes"
-                             else self.tx._install(self.binding, route))
+                             else self.tx._install(self.binding, route, file_secrets=True))
                 context.update(config_sha256=installed["config_sha256"], status="installed"); self.save(context)
                 self.start(context)
                 context.update(native_route=self.native(context, route), status="reload_verified"); self.save(context)

@@ -310,7 +310,7 @@ def run_probe(runtime, model, challenge, request_id, execute=invoke, now=time.mo
         need(execute(["systemctl", "is-active", unit + ".timer"]).strip() == b"active", "watchdog_not_verified")
         if runtime == "openclaw":
             params = {"message": prompt(challenge), "sessionId": request_id, "sessionKey": "agent:main:as7-" + request_id,
-                "agentId": "main", "idempotencyKey": request_id, "model": model, "deliver": False, "timeout": 180}
+                "agentId": "main", "idempotencyKey": request_id, "deliver": False, "timeout": 180}
             raw = strict_json(execute(["/usr/bin/docker", "exec", container, "openclaw", "gateway", "call", "agent",
                 "--expect-url", "ws://127.0.0.1:18789", "--expect-final", "--timeout", "185000", "--json",
                 "--params", json.dumps(params)], timeout=190))

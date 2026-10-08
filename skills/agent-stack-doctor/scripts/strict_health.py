@@ -71,19 +71,31 @@ def accepted(report, required):
     return required <= by_name.keys() and all(status == "pass" for status in by_name.values())
 
 
-def doctor_healthy(report):
-    if not isinstance(report, dict) or report.get("schemaVersion") != 1 or report.get("ok") is not True:
+def doctor_default_coverage(version):
+    # Image identity is checked separately; this binds the JSON coverage
+    # contract to the actual CLI release, with or without a stamped commit.
+    return "2026.9.8" if isinstance(version, str) and re.fullmatch(
+        r"OpenClaw 2026\.9\.8(?: \([a-f0-9]{7,40}\))?", version.strip()) else None
+
+
+def doctor_healthy(report, default_coverage=None):
+    if not isinstance(report, dict) or type(report.get("schemaVersion")) is not int or report["schemaVersion"] != 1 or report.get("ok") is not True:
         return False
     count = report.get("checksRun")
     skipped = report.get("checksSkipped")
     findings = report.get("findings")
     warnings = report.get("warnings", [])
-    if type(skipped) is not int or skipped != 0 or not isinstance(warnings, list) or any(
+    # The pinned default lint set selects 37 checks from 67 registered checks.
+    # Its 30 default-disabled optional checks are intentionally excluded, not
+    # failed inspections. Require this exact coverage only after version proof.
+    coverage = (count, skipped) == (37, 30) if default_coverage == "2026.9.8" else skipped == 0
+    if default_coverage not in (None, "2026.9.8") or type(skipped) is not int or not coverage or not isinstance(warnings, list) or any(
         not isinstance(item, dict) or item.get("errorCode") == "OPENCLAW_STATE_LEASE_ABORTED" for item in warnings
     ):
         return False
     return type(count) is int and count > 0 and isinstance(findings, list) and all(
-        isinstance(item, dict) and item.get("severity") in ("info", "notice") for item in findings
+        isinstance(item, dict) and item.get("severity") in ("info", "notice")
+        and item.get("errorCode") != "OPENCLAW_STATE_LEASE_ABORTED" for item in findings
     )
 
 
@@ -138,9 +150,11 @@ def remote_report(services, require_claude, check_tailscale, tailscale_mode, rou
         health = state.get("Health")
         record("service." + service, code == 0 and state.get("Running") is True and isinstance(health, dict) and health.get("Status") == "healthy")
         if service == "openclaw":
+            version_code, version = run(["docker", "exec", container, "openclaw", "--version"]) if container else (1, "")
+            coverage = doctor_default_coverage(version) if version_code == 0 else None
             code, output = run(["docker", "exec", container, "openclaw", "doctor", "--lint", "--json", "--severity-min", "warning"]) if container else (1, "")
             report = parse_json(output)
-            record("openclaw.doctor", code == 0 and doctor_healthy(report))
+            record("openclaw.doctor", code == 0 and doctor_healthy(report, default_coverage=coverage))
         elif service == "hermes":
             python = "/opt/hermes/.venv/bin/python"
             code, output = run(["docker", "exec", "--user", "10000:10000", container, python, "-c", HERMES_CONFIG_PROBE]) if container else (1, "")
