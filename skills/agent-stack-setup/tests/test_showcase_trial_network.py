@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import errno
 import os
 from pathlib import Path
 import shutil
@@ -14,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 
@@ -47,8 +47,19 @@ def endpoint():
                 with socket.socket(socket.AF_INET6 if ":" in row["address"] else socket.AF_INET, socket.SOCK_DGRAM) as sender:
                     sender.sendto(bytes(row["bytes"]), (row["address"], 19007))
                 result = True
+            elif row["action"] == "listen_tcp":
+                listener = socket.socket(socket.AF_INET6 if ":" in row["address"] else socket.AF_INET, socket.SOCK_STREAM)
+                listener.bind((row["address"], 19008)); listener.listen()
+                def serve(listener=listener):
+                    while True:
+                        client, _ = listener.accept()
+                        with client:
+                            if client.recv(4) == b"ping":
+                                client.sendall(b"pong")
+                threading.Thread(target=serve, daemon=True).start()
+                result = True
             elif row["action"] == "connect":
-                result = blocked_tcp(row["address"])
+                result = tcp_exchange(row["address"])
             else:
                 try:
                     result = len(receiver.recv(4096))
@@ -78,19 +89,13 @@ def send(address: str, size: int, may_drop: bool = False):
                 raise
 
 
-def blocked_tcp(address: str):
-    started = time.monotonic()
-    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sender:
-        sender.settimeout(.75)
-        try:
-            sender.connect((address, 19007))
-            return {"errno": None, "timed_out": False}
-        except OSError as error:
-            return {"errno": error.errno, "timed_out": isinstance(error, TimeoutError),
-                    "seconds": time.monotonic() - started}
+def tcp_exchange(address: str):
+    with socket.create_connection((address, 19008), timeout=.75) as sender:
+        sender.sendall(b"ping")
+        return sender.recv(4).decode()
 
 
-def network_fixture(script_path: Path):
+def network_fixture(script_path: Path, tcp: bool = False):
     # All interfaces, sysctls and firewall rules below belong to the unshared
     # namespace. No real host network, Docker daemon or cloud is involved.
     peers = []
@@ -121,59 +126,66 @@ def network_fixture(script_path: Path):
         command("ip", "route", "add", "default", "via", "192.0.2.2", "dev", "eth0")
         Path("/proc/sys/net/ipv4/ip_forward").write_text("1\n")
         Path("/proc/sys/net/ipv6/conf/all/forwarding").write_text("1\n")
+        # Static neighbours replace discovery in this controlled fabric. Keep
+        # asynchronous multicast reports out of the tiny packet-count test.
+        command("ip6tables", "-t", "raw", "-I", "OUTPUT", "1", "-d", "ff00::/8", "-j", "DROP")
         subprocess.run(["bash", str(script_path)], check=True, capture_output=True, timeout=5)
+        # Real host and forwarded connections must work over either protocol.
+        # Blocking IPv6 broke Docker Hub token requests on a dual-stack VM.
+        if tcp:
+            for address in ("192.0.2.2", "2001:db8:1::2"):
+                assert request(outside, action="listen_tcp", address=address)
+                assert tcp_exchange(address) == "pong"
+                assert request(container, action="connect", address=address) == "pong"
+            for firewall in ("iptables", "ip6tables"):
+                counters = command(firewall, "-t", "mangle", "-L", "AS7_EGRESS", "-nvx")
+                accepted = re.findall(r"^\s*([0-9]+)\s+([0-9]+)\s+ACCEPT\b", counters, re.MULTILINE)
+                assert len(accepted) == 1 and int(accepted[0][0]) > 0 and 0 < int(accepted[0][1]) < 32768
+            print(json.dumps({"status": "pass", "host_and_forwarded_tcp": "both_protocols", "total_quota_bytes": 65536}))
+            return
         assert request(container, action="listen", address="198.51.100.2") is True
         assert request(outside, action="listen", address="192.0.2.2") is True
         # A forwarded download exceeds the entire outbound quota and must
         # still arrive. This reproduces the historical broad-hook failure.
         assert request(outside, action="send", address="198.51.100.2", bytes=2048) is True
         assert request(container, action="receive") == 2048, "inbound container download consumed outbound quota"
-        # 128-byte payloads consume 156 IPv4 bytes each. Host and container
-        # traffic share the one 512-byte quota, independent of filter ACCEPT.
-        command("iptables", "-I", "FORWARD", "1", "-j", "ACCEPT")
-        send("192.0.2.2", 128)
-        assert request(outside, action="receive") == 128
-        assert request(container, action="send", address="192.0.2.2", bytes=128) is True
-        assert request(outside, action="receive") == 128
-        send("192.0.2.2", 128)
-        assert request(outside, action="receive") == 128
-        for origin in ("host", "container"):
-            if origin == "host":
-                send("192.0.2.2", 128, may_drop=True)
-            else:
-                request(container, action="send", address="192.0.2.2", bytes=128)
-            assert request(outside, action="receive") is None, origin + " bypassed the shared quota"
-        # Internal container traffic remains usable after external exhaustion.
-        send("198.51.100.2", 128)
-        assert request(container, action="receive") == 128
-        request(outside, action="listen", address="2001:db8:1::2")
-        send("2001:db8:1::2", 128, may_drop=True)
-        assert request(outside, action="receive") is None, "external IPv6 bypassed cost controls"
-        # A silent drop makes Docker's IPv6-first metadata lookup hang. Both
-        # host and forwarded connections must fail locally and promptly.
-        for origin, result in (("host", blocked_tcp("2001:db8:1::2")),
-                               ("container", request(container, action="connect", address="2001:db8:1::2"))):
-            assert result["errno"] == errno.ECONNREFUSED and not result["timed_out"], origin + " IPv6 result: " + json.dumps(result)
-            assert result["seconds"] < .5, origin + " IPv6 rejection was delayed"
-        for chain in ("OUTPUT", "FORWARD"):
-            counters = command("ip6tables", "-L", chain, "-nvx")
-            rejected = re.findall(r"^\s*([0-9]+)\s+[0-9]+\s+REJECT\s+tcp\b", counters, re.MULTILINE)
-            assert len(rejected) == 1 and int(rejected[0]) >= 1, chain + " rejection did not handle the real connection"
-        # Docker may insert earlier filter accepts. The final hook must still
-        # deny unmetered IPv6 from both origins without blocking internal IPv6.
-        for chain in ("OUTPUT", "FORWARD"):
-            command("ip6tables", "-I", chain, "1", "-j", "ACCEPT")
-        send("2001:db8:1::2", 128, may_drop=True)
-        assert request(outside, action="receive") is None, "host filter ACCEPT bypassed IPv6 guard"
-        request(container, action="send", address="2001:db8:1::2", bytes=128)
-        assert request(outside, action="receive") is None, "forwarded filter ACCEPT bypassed IPv6 guard"
-        request(container, action="listen", address="2001:db8:2::2")
-        send("2001:db8:2::2", 128)
-        assert request(container, action="receive") == 128, "internal IPv6 was blocked"
+        # Each family receives half the 512-byte total. Host and forwarded
+        # traffic share that family's allowance, despite earlier filter ACCEPTs.
+        accepted_total = 0
+        for firewall, external, internal, packet_bytes in (
+            ("iptables", "192.0.2.2", "198.51.100.2", 92),
+            ("ip6tables", "2001:db8:1::2", "2001:db8:2::2", 112),
+        ):
+            for chain in ("OUTPUT", "FORWARD"):
+                command(firewall, "-I", chain, "1", "-j", "ACCEPT")
+            request(outside, action="listen", address=external)
+            request(container, action="listen", address=internal)
+            request(outside, action="send", address=internal, bytes=2048)
+            assert request(container, action="receive") == 2048, "inbound download consumed " + firewall + " quota"
+            try:
+                send(external, 64)
+            except OSError:
+                raise AssertionError(firewall + " host packet missing: " + command(firewall, "-t", "mangle", "-L", "AS7_EGRESS", "-nvx")) from None
+            assert request(outside, action="receive") == 64
+            request(container, action="send", address=external, bytes=64)
+            assert request(outside, action="receive") == 64, firewall + " forwarded packet missing: " + command(firewall, "-t", "mangle", "-L", "AS7_EGRESS", "-nvx")
+            for origin in ("host", "container"):
+                if origin == "host":
+                    send(external, 64, may_drop=True)
+                else:
+                    request(container, action="send", address=external, bytes=64)
+                assert request(outside, action="receive") is None, origin + " bypassed " + firewall + " quota"
+            send(internal, 64)
+            assert request(container, action="receive") == 64, "internal traffic blocked after exhaustion"
+            counters = command(firewall, "-t", "mangle", "-L", "AS7_EGRESS", "-nvx")
+            accepted = re.findall(r"^\s*([0-9]+)\s+([0-9]+)\s+ACCEPT\b", counters, re.MULTILINE)
+            assert len(accepted) == 1 and int(accepted[0][0]) == 2 and int(accepted[0][1]) == 2 * packet_bytes
+            accepted_total += int(accepted[0][1])
+        assert accepted_total == 408 and accepted_total <= 512
         print(json.dumps({"status": "pass", "inbound_container_bytes": 2048,
-                          "shared_outbound_bytes": 468, "quota_bytes": 512,
+                          "shared_outbound_bytes": accepted_total, "quota_bytes": 512,
                           "host_and_forwarded_overflow": "dropped", "internal_after_overflow": "passed",
-                          "external_ipv6": "rejected_promptly", "ipv6_accept_bypass": "dropped",
+                          "external_ipv6": "metered", "ipv6_accept_bypass": "dropped",
                           "internal_ipv6": "passed"}))
     finally:
         for peer in peers:
@@ -182,11 +194,11 @@ def network_fixture(script_path: Path):
             os.waitpid(peer[0], 0)
 
 
-def boot_script(root: Path, template: str) -> Path:
+def boot_script(root: Path, template: str, quota: int = 512) -> Path:
     script = textwrap.dedent(template.split("bootcmd:\n  - |\n", 1)[1].split("%{ endif }", 1)[0])
     script = script.replace("/etc/systemd/system", str(root / "systemd"))
     script = script.replace("/var/lib/agent-stack-trial", str(root / "trial"))
-    script = script.replace("${showcase_trial_limits.egress_cap_bytes}", "512")
+    script = script.replace("${showcase_trial_limits.egress_cap_bytes}", str(quota))
     script = script.replace("${showcase_trial_limits.deadline_utc}", "2099-01-01 00:00:00 UTC")
     # A malformed guard may never shut down the real test host.
     shutdown = root / "shutdown"
@@ -204,14 +216,21 @@ def boot_script(root: Path, template: str) -> Path:
 class TrialNetworkTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "linux" and hasattr(os, "unshare"), "Linux namespaces required")
     def test_downloads_do_not_consume_the_real_shared_outbound_quota(self):
+        self.run_network_fixture()
+
+    @unittest.skipUnless(sys.platform == "linux" and hasattr(os, "unshare"), "Linux namespaces required")
+    def test_host_and_forwarded_tcp_work_over_both_metered_protocols(self):
+        self.run_network_fixture(tcp=True)
+
+    def run_network_fixture(self, tcp: bool = False):
         if not all(shutil.which(name) for name in ("unshare", "nsenter", "ip", "iptables", "ip6tables")):
             self.skipTest("namespace/firewall tools unavailable")
         probe = subprocess.run(["unshare", "-Urn", "true"], capture_output=True)
         if probe.returncode:
             self.skipTest("host prohibits disposable user/network namespaces")
         with tempfile.TemporaryDirectory() as directory:
-            path = boot_script(Path(directory), TEMPLATE.read_text())
-            process = subprocess.Popen(["unshare", "-Urn", sys.executable, "-B", __file__, "--network-fixture", str(path)],
+            path = boot_script(Path(directory), TEMPLATE.read_text(), quota=65536 if tcp else 512)
+            process = subprocess.Popen(["unshare", "-Urn", sys.executable, "-B", __file__, "--network-fixture", str(path), *( ["tcp"] if tcp else [] )],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
             try:
                 output, errors = process.communicate(timeout=15)
@@ -244,7 +263,7 @@ class TrialNetworkTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--network-fixture":
-        network_fixture(Path(sys.argv[2]))
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "--network-fixture":
+        network_fixture(Path(sys.argv[2]), tcp=len(sys.argv) == 4)
     else:
         unittest.main()

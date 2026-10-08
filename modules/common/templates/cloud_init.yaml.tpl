@@ -5,8 +5,9 @@
 
 %{ if showcase_trial_limits != null }
 # Install limits before package downloads. Host and forwarded external traffic
-# share one IPv4 quota per boot at the final routing hook. Downloads delivered
-# to a Docker bridge are internal traffic and must not consume this allowance.
+# share a quota per protocol and boot at the final routing hook. Each protocol
+# gets half the total allowance. Downloads delivered to a Docker bridge are
+# internal traffic and must not consume this allowance.
 bootcmd:
   - |
     set -eu
@@ -28,15 +29,18 @@ bootcmd:
     echo "$count" > /var/lib/agent-stack-trial/boots
     echo "$egress_interface" > /var/lib/agent-stack-trial/egress-interface
     [ "$count" -le 2 ] || { /sbin/shutdown -h now; exit 1; }
+    protocol_quota=$(( ${showcase_trial_limits.egress_cap_bytes} / 2 ))
     iptables -t mangle -N AS7_EGRESS
-    iptables -t mangle -A AS7_EGRESS -m quota --quota ${showcase_trial_limits.egress_cap_bytes} -j ACCEPT
+    iptables -t mangle -A AS7_EGRESS -m quota --quota "$protocol_quota" -j ACCEPT
     iptables -t mangle -A AS7_EGRESS -j DROP
     iptables -t mangle -I POSTROUTING 1 -o "$egress_interface" -j AS7_EGRESS
-    # Reject external IPv6 TCP promptly so download clients can use
-    # metered IPv4. Retain the final drop even if Docker inserts an ACCEPT.
-    ip6tables -I OUTPUT 1 -o "$egress_interface" -p tcp -j REJECT --reject-with tcp-reset
-    ip6tables -I FORWARD 1 -o "$egress_interface" -p tcp -j REJECT --reject-with tcp-reset
-    ip6tables -t mangle -I POSTROUTING 1 -o "$egress_interface" -j DROP
+    # Meter IPv6 too: registry clients can use either address family. The two
+    # quotas together cannot exceed the total priced allowance, and Docker's
+    # filter ACCEPT rules cannot bypass these final routing hooks.
+    ip6tables -t mangle -N AS7_EGRESS
+    ip6tables -t mangle -A AS7_EGRESS -m quota --quota "$protocol_quota" -j ACCEPT
+    ip6tables -t mangle -A AS7_EGRESS -j DROP
+    ip6tables -t mangle -I POSTROUTING 1 -o "$egress_interface" -j AS7_EGRESS
     cat > /etc/systemd/system/agent-stack-trial-deadline.service <<'AS7_SERVICE'
     [Unit]
     Description=Stop temporary AgentStack showcase VM
