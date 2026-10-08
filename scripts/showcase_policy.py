@@ -78,6 +78,16 @@ def trial_egress_cap(config):
     return value
 
 
+def valid_attempt_limit(value):
+    """None means no count limit; cash, lifetime and cleanup gates still apply."""
+    return value is None or type(value) is int and value >= 1
+
+
+def attempt_limit_within(selected, approved):
+    return valid_attempt_limit(selected) and valid_attempt_limit(approved) and (
+        approved is None or selected is not None and selected <= approved)
+
+
 def secret_ref(value):
     # Require field-level references; never accept values, CLI commands or
     # item exports that could include unrelated secrets.
@@ -98,7 +108,7 @@ def validate_inputs(config, provider):
                 "prepaid_caps_usd": {"openai": "1.00", "anthropic": "1.00"}}, "funding_exceeds_approval")
         require(models_approved(config.get("models")), "approved_models_required")
     require(type(config["attempt_seconds"]) is int and 900 < config["attempt_seconds"] <= 14400, "lifetime_exceeds_approval")
-    require(type(config["max_attempts"]) is int and 1 <= config["max_attempts"] <= 2, "retries_exceed_approval")
+    require(valid_attempt_limit(config["max_attempts"]), "invalid_attempt_limit")
     object_fields(config["runner"], ("ssh_cidr",), ("peer_ssh", "local_peer"))
     require(not ('peer_ssh' in config['runner'] and 'local_peer' in config['runner']), 'one_peer_transport_required')
     if 'local_peer' in config['runner']:
@@ -461,7 +471,7 @@ class Reservations:
             object_fields(state.get("limits"), ("budget_usd", "max_attempts", "attempt_seconds"))
             require(state.get("funding") == self.config.get("funding"), "ledger_funding_changed")
             require(money(self.config["budget_usd"]) <= money(state["limits"]["budget_usd"])
-                    and self.config["max_attempts"] <= state["limits"]["max_attempts"]
+                    and attempt_limit_within(self.config["max_attempts"], state["limits"]["max_attempts"])
                     and self.config["attempt_seconds"] <= state["limits"]["attempt_seconds"], "ledger_scope_mismatch")
             for attempt in state["attempts"]:
                 object_fields(attempt, ("run_id", "provider", "reserved_usd", "started_at", "deadline", "work_deadline", "status"),
@@ -548,6 +558,25 @@ class Reservations:
                 + sum((trial_bound(row) for row in state["attempts"]), Decimal(0))
                 + sum((money(row["reserved_usd"]) for row in state.get("peer_reservations", [])), Decimal(0)))
 
+    def approve_attempt_limit(self, limit, authorization, now=None):
+        """Record a directly approved count change without resetting any costs.
+
+        Call only after the user authorizes the change. Use the previously
+        approved config to open the ledger; ordinary launches cannot raise it.
+        No budget, funding, provider binding, duration or past attempt changes.
+        """
+        now = time.time() if now is None else now
+        require(valid_attempt_limit(limit) and text(authorization)
+                and type(now) in (int, float) and math.isfinite(now), "invalid_attempt_authorization")
+        def update(state):
+            require(not any(row["status"] == "active" for row in state["attempts"]), "cleanup_required_before_launch")
+            previous = state["limits"]["max_attempts"]
+            state.setdefault("attempt_limit_authorizations", []).append({"previous": previous, "approved": limit,
+                "approved_at": now, "authorization": authorization})
+            state["limits"]["max_attempts"] = limit
+            return {"previous": previous, "approved": limit, "budget_usd": state["limits"]["budget_usd"]}
+        return self.operate(update)
+
     def reserve(self, provider, run_id, quote, now=None):
         now = time.time() if now is None else now
         validate_inputs(self.config, provider)
@@ -558,7 +587,8 @@ class Reservations:
             attempts = state["attempts"]
             require(not any(item["status"] == "active" for item in attempts), "cleanup_required_before_launch")
             require(not any(item["run_id"] == run_id for item in attempts), "run_id_already_used")
-            require(sum(item["provider"] == provider for item in attempts) < self.config["max_attempts"], "attempt_limit_reached")
+            require(self.config["max_attempts"] is None
+                    or sum(item["provider"] == provider for item in attempts) < self.config["max_attempts"], "attempt_limit_reached")
             require(self.committed_cash(state) + amount <= money(self.config["budget_usd"]), "insufficient_budget")
             cloud = self.config["providers"][provider]
             binding = {"account_id": cloud["account_id"], "project_id": cloud.get("project_id", ""),

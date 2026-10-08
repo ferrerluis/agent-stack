@@ -60,6 +60,22 @@ class ClosedCostTest(unittest.TestCase):
             self.reserve(run="as7-fixture03")
         self.assertEqual(len(self.state()["attempts"]), 2)
 
+    def test_approved_unlimited_iterations_preserve_closed_proofs_and_prepaid_caps(self):
+        for run in ("as7-fixture01", "as7-fixture02"):
+            self.reserve(run=run)
+            self.ledger.confirm_cleanup(run, self.receipt())
+            self.ledger.reconcile_cleanup(run, NOW + 100)
+        before = self.state(); bound = self.ledger.committed_cash(before)
+        self.ledger.approve_attempt_limit(None, "User approved attempts within unchanged $25 cap", NOW)
+        after = self.state()
+        self.assertEqual(after["funding"], before["funding"])
+        self.assertEqual(after["attempts"], before["attempts"])
+        self.assertEqual(after["provider_bindings"], before["provider_bindings"])
+        self.assertEqual(self.ledger.committed_cash(after), bound)
+        self.config["max_attempts"] = None
+        self.reserve(run="as7-fixture03")
+        self.assertEqual(self.ledger.committed_cash(self.state()), bound + money("1.00"))
+
     def test_active_attempt_and_unproved_historical_quote_keep_full_allowance(self):
         self.reserve()
         with self.assertRaisesRegex(PolicyError, "closed_cost_proof_required"):

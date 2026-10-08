@@ -79,7 +79,7 @@ class InputTest(unittest.TestCase):
 
     def test_expanded_limits_plaintext_secret_existing_project_and_mutable_pins_fail(self):
         mutations = (
-            lambda c: c.update(budget_usd="25.01"), lambda c: c.update(attempt_seconds=14401), lambda c: c.update(max_attempts=3),
+            lambda c: c.update(budget_usd="25.01"), lambda c: c.update(attempt_seconds=14401), lambda c: c.update(max_attempts=True),
             lambda c: c["secret_refs"].update(openai_api_key="private-plaintext-secret"), lambda c: c["pins"].update(hermes_image="nousresearch/hermes-agent:latest"),
             lambda c: c["providers"]["gcp"].update(isolated_project=False), lambda c: c["runner"].update(ssh_cidr="0.0.0.0/0"),
             lambda c: c["providers"]["gcp"].update(existing_volume_id="operator-disk"), lambda c: c["pins"].update(openclaw_digest=[]),
@@ -89,6 +89,15 @@ class InputTest(unittest.TestCase):
             mutate(value)
             with self.assertRaises(policy.PolicyError):
                 policy.validate_inputs(value, "gcp")
+
+    def test_count_limit_can_be_removed_without_raising_cash_or_lifetime_limits(self):
+        for limit in (None, 3, 100):
+            value = config(); value["max_attempts"] = limit
+            self.assertEqual(policy.validate_inputs(value, "aws")["status"], "inputs_complete")
+        for limit in (False, 0, -1, "unlimited", 2.5):
+            value = config(); value["max_attempts"] = limit
+            with self.assertRaisesRegex(policy.PolicyError, "invalid_attempt_limit"):
+                policy.validate_inputs(value, "aws")
 
     def test_cli_never_prints_config_contents_and_requires_private_file(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -138,6 +147,47 @@ class ReservationTest(unittest.TestCase):
             self.ledger.reserve("aws", "as7-fixture03", quote(), now=NOW)
         state = json.loads((self.ledger.directory / "reservations.json").read_text())
         self.assertEqual(sum(policy.money(row["reserved_usd"]) for row in state["attempts"]), 4)
+
+    def test_count_change_requires_explicit_ledger_approval_and_preserves_history(self):
+        for run in ("as7-fixture01", "as7-fixture02"):
+            self.ledger.reserve("aws", run, quote(), now=NOW)
+            self.ledger.confirm_cleanup(run, self.receipt())
+        path = self.ledger.directory / "reservations.json"
+        before = json.loads(path.read_text())
+        unlimited = copy.deepcopy(self.config); unlimited["max_attempts"] = None
+        expanded = policy.Reservations(self.ledger.directory, unlimited)
+        with self.assertRaisesRegex(policy.PolicyError, "ledger_scope_mismatch"):
+            expanded.reserve("aws", "as7-fixture03", quote(), now=NOW)
+        self.ledger.approve_attempt_limit(None, "User approved iterations within the same cash cap", now=NOW)
+        after = json.loads(path.read_text())
+        self.assertEqual(after["attempts"], before["attempts"])
+        self.assertEqual(after["provider_bindings"], before["provider_bindings"])
+        self.assertEqual({k:v for k,v in after["limits"].items() if k != "max_attempts"},
+                         {k:v for k,v in before["limits"].items() if k != "max_attempts"})
+        self.assertEqual(expanded.committed_cash(after), self.ledger.committed_cash(before))
+        self.assertEqual(after["attempt_limit_authorizations"][-1]["previous"], 2)
+        expanded.reserve("aws", "as7-fixture03", quote(), now=NOW)
+        self.assertEqual(len(json.loads(path.read_text())["attempts"]), 3)
+
+    def test_unlimited_attempts_still_stop_at_cash_cap_and_require_cleanup(self):
+        self.config.update(max_attempts=None, budget_usd="6.00")
+        for n in range(1,4):
+            run = "as7-fixture0" + str(n)
+            self.ledger.reserve("aws", run, quote(), now=NOW)
+            with self.assertRaisesRegex(policy.PolicyError, "cleanup_required_before_launch"):
+                self.ledger.reserve("aws", "as7-fixture04", quote(), now=NOW)
+            self.ledger.confirm_cleanup(run, self.receipt())
+        with self.assertRaisesRegex(policy.PolicyError, "insufficient_budget"):
+            self.ledger.reserve("aws", "as7-fixture04", quote(), now=NOW)
+        self.assertEqual(len(json.loads((self.ledger.directory / "reservations.json").read_text())["attempts"]), 3)
+
+    def test_count_approval_refuses_active_attempt_or_invalid_authorization(self):
+        self.ledger.reserve("aws", "as7-fixture01", quote(), now=NOW)
+        with self.assertRaisesRegex(policy.PolicyError, "cleanup_required_before_launch"):
+            self.ledger.approve_attempt_limit(None, "User approval", now=NOW)
+        for limit, reason in ((True,"User approval"), (0,"User approval"), (None,"")):
+            with self.assertRaisesRegex(policy.PolicyError, "invalid_attempt_authorization"):
+                self.ledger.approve_attempt_limit(limit, reason, now=NOW)
 
     def test_simultaneous_runners_cannot_both_reserve(self):
         def reserve(run):
