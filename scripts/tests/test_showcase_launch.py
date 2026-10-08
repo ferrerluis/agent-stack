@@ -7,13 +7,13 @@ from types import SimpleNamespace
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import showcase_launch as launch
 import showcase_network_prices as network
-from showcase_policy import PolicyError
+from showcase_policy import PolicyError, ACCEPTANCE_MODES
 from showcase_cleanup import private_write
 from showcase_policy import Reservations
 from test_showcase_prepaid import funded
@@ -26,6 +26,30 @@ class LaunchTest(unittest.TestCase):
         self.a=SimpleNamespace(run=self.run,checkout=self.run,provider='aws',prefix='as7-fixture01',
             prepared={'source_revision':'a'*40},record=lambda:{'plan_sha256':'b'*64},now=lambda:1000,
             config={'attempt_seconds':10800})
+
+    def test_light_launch_skips_model_reads_extra_builds_and_second_peer_but_keeps_watchdog(self):
+        self.a.config = funded() | {"acceptance_modes": dict(ACCEPTANCE_MODES)}
+        self.a.resource_unit_prices = Mock(return_value={"native": "measured"})
+        self.a.model_unit_prices = Mock(side_effect=AssertionError("light must not read model credentials or terms"))
+        with patch.object(launch, "local_checks") as local, patch.object(launch, "trial", return_value=9000), \
+             patch.object(launch, "complete_quote", return_value={"native": "bounded"}), \
+             patch.object(launch, "private_read", return_value={}), patch.object(launch, "RunController") as controller, \
+             patch.object(launch, "check_peer_lifetime", side_effect=AssertionError("no light peer check")), \
+             patch.object(launch, "prepare_container_deferral", side_effect=AssertionError("no light extra build")), \
+             patch.object(launch, "ModelSession") as models, patch.object(launch, "start_watchdog") as watchdog:
+            controller.return_value.run_attempt.return_value = {"acceptance_mode": "light"}
+            self.assertEqual(launch.launch(self.a, "fixture-ledger"), {"acceptance_mode": "light"})
+            local.assert_called_once_with(self.a)
+            self.a.resource_unit_prices.assert_called_once_with()
+            self.a.model_unit_prices.assert_not_called()
+            models.from_measured_terms.assert_not_called()
+            watchdog.assert_called_once_with(self.a, 9000)
+            readiness, quote = controller.return_value.run_attempt.call_args.args
+            self.assertEqual(readiness["acceptance_mode"], "light")
+            self.assertEqual(readiness["checks"], {key: "pass" for key in launch.LIGHT_LAUNCH_CHECKS})
+            measured = json.loads((self.run / "launch-measurements.json").read_text())
+            self.assertIsNone(measured["model_prices_sha256"])
+            self.assertIsNone(measured["peer_deadline"])
 
     def test_quote_uses_actual_catalog_rate_and_counts_traffic_adjustments_cleanup(self):
         r={'status':'resource_unit_prices_measured','provider':'aws','source_revision':'a'*40,

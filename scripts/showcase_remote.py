@@ -21,8 +21,8 @@ import types
 import uuid
 
 from showcase_attempt import KEY_PATH, command, isolated_environment, remaining_timeout, verify_prepared
-from showcase_cleanup import capture, private_read, private_write
-from showcase_policy import PolicyError, require
+from showcase_cleanup import capture, private_read, private_write, scope
+from showcase_policy import PolicyError, require, acceptance_mode
 from showcase_preflight import PreflightError, check_tailnet, field, objects, segment
 from showcase_terraform import exclusive, guard_state
 import showcase_task_evidence as task_evidence
@@ -198,7 +198,7 @@ class RemoteChecks:
             require(evidence["checks"].get("container_tests") == "pass" and evidence.get("containers", {}).get("status") == "pass"
                     and evidence["containers"].get("bundle_sha256") == record.get("container_bundle_sha256"), "container_proof_required")
 
-    def bind(self):
+    def bind(self, require_tailnet=True):
         self.ensure()
         inventory_path = self.run / "inventory.json"
         previous = private_read(inventory_path) if inventory_path.exists() else None
@@ -216,10 +216,14 @@ class RemoteChecks:
             checksum = checksum.get("value")
         require(isinstance(checksum, str) and re.fullmatch(HEX, checksum), "runtime_checksum_required")
         nodes = inventory["tailnet"]["devices"]
-        require(len(nodes) == 1 and re.fullmatch(re.escape(self.run.name) + r"\.[a-z0-9.-]+\.ts\.net", nodes[0]["name"]), "one_owned_tailnet_node_required")
-        return {"host": "admin@" + matching_address(self.attempt.session.adapter, self.provider, vms[0]),
-                "checksum": checksum, "dns": nodes[0]["name"], "data_volume_id": str(disks[0]["id"]),
+        if require_tailnet:
+            require(len(nodes) == 1 and re.fullmatch(re.escape(self.run.name) + r"\.[a-z0-9.-]+\.ts\.net", nodes[0]["name"]), "one_owned_tailnet_node_required")
+        result = {"host": "admin@" + matching_address(self.attempt.session.adapter, self.provider, vms[0]),
+                "checksum": checksum, "dns": nodes[0]["name"] if require_tailnet else None, "data_volume_id": str(disks[0]["id"]),
                 "data_volume_name": disks[0].get("name") or (disks[0].get("tags") or {}).get("Name")}
+        if not require_tailnet:
+            result["vm_id"] = str(vms[0]["id"])
+        return result
 
     def ssh(self, target, args, input=None, timeout=60, capture_failure=False):
         _, active = self.ensure()
@@ -232,10 +236,55 @@ class RemoteChecks:
                 "private_failure_report_refused")
         report = "container-command-error.json" if capture_failure is True else capture_failure
         options = {"failure_report": self.run / report} if report and self.execute is command else {}
-        return self.execute([str(wrapper), "--batch", *( ["--pinned"] if self.models is not None else [] ),
+        pinned = self.models is not None or (acceptance_mode(self.config, self.provider) == "light" and hosts.stat().st_size > 0)
+        return self.execute([str(wrapper), "--batch", *( ["--pinned"] if pinned else [] ),
                              "--known-hosts", str(hosts), "--key", str(self.attempt.checkout / KEY_PATH),
                              "--host", target["host"], "--", shlex.join(args)], env=isolated_environment(self.run),
                             input=input, timeout=remaining_timeout(active, timeout, now=self.now()), **options)
+
+    @exclusive
+    def light(self):
+        import showcase_light as light
+        require(acceptance_mode(self.config, self.provider) == "light" and self.models is None
+                and self.attempt.record().get("container_tests_gate") == "light_runtime_pending", "light_scope_required")
+        evidence = self.evidence()
+        require("light" not in evidence, "light_already_invoked")
+        evidence["checks"]["vm_and_containers"] = "started"
+        private_write(self.path, evidence)
+        samples, baseline, first = [], None, None
+        until = self.now() + 900
+        try:
+            while self.now() < until:
+                try:
+                    target = self.bind(require_tailnet=False)
+                    report = light.snapshot(decoded(self.ssh(target, ["sudo", "-n", "python3", "-B", "-I", "-", target["checksum"]],
+                        input=light.REMOTE.encode(), timeout=40)), target["checksum"], self.config["pins"])
+                except PolicyError as error:
+                    if samples or str(error) not in ("command_failed", "command_timed_out", "light_snapshot_invalid", "owned_vm_not_running"):
+                        raise
+                    self.sleep(10)
+                    continue
+                instant = time.monotonic()
+                if first is None:
+                    first, baseline = instant, target
+                require(target == baseline, "light_target_changed")
+                samples.append({"elapsed_seconds": instant - first, "snapshot": report})
+                require(len(samples) == 1 or report == samples[0]["snapshot"], "light_stability_unverified")
+                if instant - first >= light.STEADY_SECONDS:
+                    proof = {"schema": 1, "status": "vm_and_containers_verified", "run_id": self.run.name,
+                             "source_revision": evidence["source_revision"], "scope": scope(self.config, self.provider),
+                             "target": {key: target[key] for key in ("vm_id", "checksum")}, "samples": samples}
+                    light.validate(proof, self.run.name, evidence["source_revision"], scope(self.config, self.provider), self.config["pins"])
+                    evidence["light"] = proof
+                    evidence["checks"]["vm_and_containers"] = "pass"
+                    private_write(self.path, evidence)
+                    return proof
+                self.sleep(20)
+            raise PolicyError("light_startup_or_stability_timeout")
+        except BaseException:
+            evidence["checks"]["vm_and_containers"] = "uncertain"
+            private_write(self.path, evidence)
+            raise
 
     def probe(self, target, timeout=180):
         report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", self.provider, target["checksum"],
@@ -623,8 +672,9 @@ class RemoteChecks:
         required = self.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         baseline = evidence["baseline"]
         require(isinstance(baseline, dict) and all(cli in evidence["tasks"] and evidence["tasks"][cli].get("status") == "pass"
-                for cli in ("codex", "claude")) and all(evidence["agents"].get(runtime, {}).get("status") == "pass"
-                for runtime in ("openclaw", "hermes")), "persistence_baseline_required")
+                for cli in ("codex", "claude")) and (acceptance_mode(self.config, self.provider) == "full"
+                or all(evidence["agents"].get(runtime, {}).get("status") == "pass"
+                for runtime in ("openclaw", "hermes"))), "persistence_baseline_required")
         require(evidence["network"].get("before_reboot", {}).get("status") == "pass", "peer_baseline_required")
         require(type(resume) is bool and ((resume and evidence["checks"].get("reboot") in ("started", "uncertain"))
                 or (not resume and "reboot" not in evidence["checks"])), "reboot_already_invoked")

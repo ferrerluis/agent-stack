@@ -25,7 +25,7 @@ from showcase_attempt import (HASH_PATTERN, command, isolated_environment, priva
 from showcase_cleanup import (capture, identity, owned_name, private_read, private_write, query,
                               receipt, scope, state_empty, validate_record)
 from showcase_policy import (PolicyError, require, validate_fresh_plan,
-                             validate_inputs)
+                             validate_inputs, acceptance_mode)
 from showcase_preflight import (AWS, DigitalOcean, Google, Hetzner, JsonHTTP, PreflightError,
                                 check_dependencies, check_tailnet, field, objects, read_secret, segment, text)
 
@@ -40,6 +40,7 @@ KINDS = {
 }
 LOCAL_TYPES = {"random_password", "terraform_data", "local_file"}
 LAUNCH_CHECKS = {"local_tests", "container_tests", "permissions_and_quotas", "prices", "model_access", "tailnet_peer_and_cleanup"}
+LIGHT_LAUNCH_CHECKS = {"local_tests", "permissions_and_quotas", "prices", "tailnet_cleanup"}
 
 
 def exclusive(method):
@@ -483,6 +484,12 @@ print(json.dumps({'schema':1,'uid':os.geteuid(),'logs':logs}))
         require(isinstance(readiness, dict) and readiness.get("source_revision") == self.prepared["source_revision"]
                 and readiness.get("scope") == scope(self.config, self.provider), "measured_launch_gates_required")
         checks = readiness.get("checks")
+        if acceptance_mode(self.config, self.provider) == "light":
+            require(set(readiness) == {"source_revision", "scope", "checks", "acceptance_mode"}
+                    and readiness["acceptance_mode"] == "light"
+                    and checks == {key: "pass" for key in LIGHT_LAUNCH_CHECKS}, "measured_launch_gates_required")
+            return "light_runtime_pending"
+        require("acceptance_mode" not in readiness, "measured_launch_gates_required")
         if checks == {key: "pass" for key in LAUNCH_CHECKS}:
             require("container_deferral" not in readiness, "container_deferral_invalid")
             return "pass"

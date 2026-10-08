@@ -20,6 +20,9 @@ REF = "op://fixture-vault/fixture-item/fixture-field"
 
 def config():
     value = json.loads((SCRIPT.parents[1] / "examples/showcase/execution-inputs.example.json").read_text())
+    # Legacy recovery fixtures retain their original immutable contract.
+    value.pop("acceptance_modes", None)
+    value.update(budget_usd="25.00", max_attempts=2)
     value["runner"]["ssh_cidr"] = "203.0.113.42/32"
     value["pins"].update(openclaw_version="2026.10.1", openclaw_digest="sha256:" + "a" * 64,
                          hermes_image="ghcr.io/nousresearch/hermes-agent@sha256:" + "b" * 64, codex_release="0.145.0", claude_release="2.1.211")
@@ -79,7 +82,7 @@ class InputTest(unittest.TestCase):
 
     def test_expanded_limits_plaintext_secret_existing_project_and_mutable_pins_fail(self):
         mutations = (
-            lambda c: c.update(budget_usd="25.01"), lambda c: c.update(attempt_seconds=14401), lambda c: c.update(max_attempts=True),
+            lambda c: c.update(budget_usd="35.01"), lambda c: c.update(attempt_seconds=14401), lambda c: c.update(max_attempts=True),
             lambda c: c["secret_refs"].update(openai_api_key="private-plaintext-secret"), lambda c: c["pins"].update(hermes_image="nousresearch/hermes-agent:latest"),
             lambda c: c["providers"]["gcp"].update(isolated_project=False), lambda c: c["runner"].update(ssh_cidr="0.0.0.0/0"),
             lambda c: c["providers"]["gcp"].update(existing_volume_id="operator-disk"), lambda c: c["pins"].update(openclaw_digest=[]),
@@ -89,6 +92,17 @@ class InputTest(unittest.TestCase):
             mutate(value)
             with self.assertRaises(policy.PolicyError):
                 policy.validate_inputs(value, "gcp")
+
+    def test_new_budget_and_explicit_modes_preserve_legacy_attempts(self):
+        value = config(); value.update(budget_usd="35", acceptance_modes=dict(policy.ACCEPTANCE_MODES))
+        for provider, mode in policy.ACCEPTANCE_MODES.items():
+            self.assertEqual(policy.acceptance_mode(value, provider), mode)
+            self.assertEqual(policy.validate_inputs(value, provider)["live_matrix"], "not_tested")
+        self.assertEqual(policy.acceptance_mode(config(), "aws"), "legacy_full")
+        for modes in ({}, {**policy.ACCEPTANCE_MODES, "digitalocean": "light"},
+                      {**policy.ACCEPTANCE_MODES, "aws": "skip"}, {**policy.ACCEPTANCE_MODES, "unknown": "light"}):
+            with self.subTest(modes=modes), self.assertRaisesRegex(policy.PolicyError, "acceptance_scope_invalid"):
+                policy.validate_inputs(value | {"acceptance_modes": modes}, "aws")
 
     def test_count_limit_can_be_removed_without_raising_cash_or_lifetime_limits(self):
         for limit in (None, 3, 100):

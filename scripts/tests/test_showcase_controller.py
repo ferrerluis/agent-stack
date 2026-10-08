@@ -19,6 +19,8 @@ import test_showcase_terraform as tf_fixtures
 import test_showcase_remote as remote_fixtures
 import test_showcase_container_probe as container_fixtures
 from test_showcase_policy import NOW, quote, REF
+from test_showcase_light import snapshot as light_snapshot
+from showcase_policy import ACCEPTANCE_MODES
 
 SOURCES = ("scripts/showcase_container_probe.py", "scripts/test_containers.py")
 
@@ -253,9 +255,15 @@ class FullRunTest(unittest.TestCase):
         with self.assertRaisesRegex(terraform.PolicyError, "model_task_provider_mismatch"):
             value.controller.verdict(observed, evidence)
 
-    def make(self):
+    def make(self, mode=None):
         fixture = remote_fixtures.RemoteChecksTest("runTest")
-        fixture.setUp()
+        if mode is None:
+            fixture.setUp()
+        else:
+            config = remote_fixtures.config()
+            config["acceptance_modes"] = dict(ACCEPTANCE_MODES, aws=mode)
+            with patch.object(remote_fixtures, "config", return_value=config):
+                fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         # The shared construction fixture starts applied. This scenario starts
         # before its first fake reservation; no real history/state is touched.
@@ -299,6 +307,79 @@ class FullRunTest(unittest.TestCase):
         fixture.readiness = {"source_revision": fixture.prepared["source_revision"], "scope": cleanup.scope(fixture.config, "aws"),
                              "checks": {name: "pass" for name in terraform.LAUNCH_CHECKS}}
         return fixture
+
+    def test_full_scope_keeps_doctors_cli_receipts_browser_and_reboot_without_runtime_turns(self):
+        value = self.make("full")
+        report = value.controller.run_attempt(value.readiness, quote())
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["acceptance_mode"], "full")
+        self.assertEqual(report["cells"], {name: "unverified" if name == "documentation_and_linked_plans" else "pass"
+                                         for name in controller.FULL_GROUPS})
+        evidence = cleanup.private_read(value.checks.path)
+        self.assertFalse(evidence["agents"])
+        self.assertEqual(set(evidence["tasks"]), {"claude", "codex"})
+        account = value.controller.reservation()
+        self.assertEqual({hold["role"] for hold in account["model_requests"]}, {"claude", "codex"})
+        self.assertEqual(len(account["model_requests"]), 2)
+        self.assertNotEqual(evidence["baseline"]["boot_id"], evidence["after_reboot"]["boot_id"])
+        self.assertEqual(set(evidence["doctor_stages"]), {"before_reboot", "after_reboot"})
+        self.assertEqual(set(evidence["network"]), {"before_reboot", "after_reboot"})
+        observed = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
+        for mutate in (lambda e: e["tasks"].pop("codex"), lambda e: e["network"]["after_reboot"].update(status="fail"),
+                       lambda e: e["after_reboot"].update(boot_id=e["baseline"]["boot_id"]),
+                       lambda e: e["model_channels"]["before_reboot"]["runtime_doctors"]["hermes"].update(uid=0)):
+            changed = copy.deepcopy(evidence); mutate(changed)
+            with self.assertRaises(terraform.PolicyError): value.controller.verdict(observed, changed)
+
+    def light_fixture(self):
+        value = self.make("light")
+        value.controller.models = value.checks.models = None
+        value.readiness = {"source_revision": value.prepared["source_revision"], "scope": cleanup.scope(value.config, "aws"),
+                           "acceptance_mode": "light", "checks": {name: "pass" for name in terraform.LIGHT_LAUNCH_CHECKS}}
+        # The owned VM remains verifiable when its Tailscale enrollment is absent.
+        native = value.session.inventory
+        value.session.inventory = lambda *args: native(*args) | {"tailnet": {"devices": []}}
+        value.checks.ssh = Mock(return_value=json.dumps(light_snapshot(value.config["pins"])).encode())
+        return value
+
+    def test_light_uses_native_binding_and_stable_containers_without_full_checks_and_cleans(self):
+        value = self.light_fixture()
+        with patch.object(remote_fixtures.remote.time, "monotonic", side_effect=lambda: value.clock):
+            report = value.controller.run_attempt(value.readiness, quote())
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["acceptance_mode"], "light")
+        self.assertEqual(report["cells"], {"vm_and_containers": "pass"})
+        self.assertEqual(report["cleanup"], "verified")
+        evidence = cleanup.private_read(value.checks.path)
+        self.assertEqual(evidence["light"]["samples"][-1]["elapsed_seconds"], 120)
+        self.assertFalse(evidence["tasks"] or evidence["agents"] or evidence["network"])
+        self.assertNotIn("model_policy", value.controller.reservation())
+        self.assertEqual([step["name"] for step in cleanup.private_read(value.controller.path)["steps"]], ["apply", "light"])
+        self.assertEqual(value.controller.recover()["status"], "pass")
+
+    def test_light_restart_or_unverified_deletion_cannot_pass(self):
+        for failure in ("restart", "cleanup"):
+            value = self.light_fixture()
+            if failure == "restart":
+                changed = light_snapshot(value.config["pins"]); changed["roles"]["hermes"]["restarts"] = 1
+                value.checks.ssh.side_effect = [json.dumps(light_snapshot(value.config["pins"])).encode(), json.dumps(changed).encode()]
+            else:
+                value.fail_destroy = True
+            with patch.object(remote_fixtures.remote.time, "monotonic", side_effect=lambda: value.clock):
+                report = value.controller.run_attempt(value.readiness, quote())
+            self.assertEqual(report["status"], "fail")
+            self.assertEqual(report["cells"], {"vm_and_containers": "unverified"})
+            self.assertEqual(report["cleanup"], "verified" if failure == "restart" else "uncertain")
+
+    def test_light_readiness_cannot_downgrade_full_contract_or_accept_unmeasured_gate(self):
+        value = self.make("full")
+        readiness = {"source_revision": value.prepared["source_revision"], "scope": cleanup.scope(value.config, "aws"),
+                     "acceptance_mode": "light", "checks": {name: "pass" for name in terraform.LIGHT_LAUNCH_CHECKS}}
+        with self.assertRaises(terraform.PolicyError): value.attempt.launch_gates(readiness)
+        value = self.light_fixture()
+        for name in terraform.LIGHT_LAUNCH_CHECKS:
+            changed = copy.deepcopy(value.readiness); changed["checks"][name] = "pending"
+            with self.assertRaises(terraform.PolicyError): value.attempt.launch_gates(changed)
 
     def test_actual_components_sequence_one_apply_tasks_peer_reboot_and_cleanup(self):
         value = self.make()

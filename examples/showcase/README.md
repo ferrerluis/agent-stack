@@ -2,7 +2,7 @@
 
 One fresh VM runs OpenClaw, Hermes and a workspace containing Claude Code and Codex. The repository's ordinary deployment defaults remain unchanged.
 
-Acceptance requires all 24 cells across AWS, DigitalOcean, GCP and Hetzner at the same final revision, followed by independently verified cleanup. Code, local tests, CLI installation and healthy containers each establish only part of that result. Read the selected batch's private receipts for its current status.
+The current acceptance scope requires six groups on DigitalOcean and a light deployment pass on Hetzner, AWS and GCP. Every cloud requires independently verified cleanup. Each proof remains tied to its exact source revision; no hash carryover or selective invalidation is implemented. Code and local tests alone cannot establish live acceptance. Read the selected batch's private receipts for its current status.
 
 Use [the named settings](terraform.tfvars.example) and [private input example](execution-inputs.example.json) in an isolated checkout with new state and test-only SSH keys. `variables.tf` remains the schema and true-default source; examples supply suggestions and required placeholders.
 
@@ -22,7 +22,7 @@ Keep private inputs outside Git with mode 0600. `terraform.tfvars`, state, gatew
 
 ## Bounded execution
 
-The approved ceiling is $25 total cloud/model spend and four hours per attempt. The user now permits as many test or bug-fix attempts as fit that cash cap. Set `max_attempts` to `null` for this authorization, or retain a positive integer for a stricter count limit. Changing an existing batch's count limit requires an explicit recorded approval; it preserves all original attempts, purchases, cost proofs and other limits. The cost-reduced private inputs use a 105-minute maximum and 128 MiB of outbound traffic per boot; 256/512 MiB are also supported and 1 GiB remains the default. Delete resources immediately after success or failure. Incoming image downloads do not consume the outbound allowance, and internal Docker traffic must not consume it.
+The approved ceiling is $35 total cloud/model spend and four hours per attempt. The user now permits as many test or bug-fix attempts as fit that cash cap. Set `max_attempts` to `null` for this authorization, or retain a positive integer for a stricter count limit. Changing an existing batch's count limit requires an explicit recorded approval; it preserves all original attempts, purchases, cost proofs and other limits. The cost-reduced private inputs use a 105-minute maximum and 128 MiB of outbound traffic per boot; 256/512 MiB are also supported and 1 GiB remains the default. Delete resources immediately after success or failure. Incoming image downloads do not consume the outbound allowance, and internal Docker traffic must not consume it.
 
 A proposed 70-minute maximum leaves only 55 minutes before cleanup, less than the container phase's required 3,400-second window even before deployment. The chosen maximum allows the 30-minute apply timeout followed by that window, with 15 minutes reserved for cleanup. Refresh the complete quote for the chosen duration; Hetzner rounds a full 105-minute VM lifetime to two hours.
 
@@ -57,14 +57,26 @@ After native absence proof, `Reservations.reconcile_cleanup` can tighten an orig
 
 ## Required live evidence
 
-For every cloud, require all of the following before declaring its six cells verified:
+Select the scope in private inputs with `acceptance_modes`:
 
-- Applied owned deployment and SSH access; exact selected images, releases and source files.
-- Both runtime doctors green for OpenClaw and Hermes, plus strict workspace/CLI and host Tailscale checks.
-- Independently verified real agent turns and unattended API-key tasks from both coding tools as the workspace user. Installation/version output cannot substitute for actual tasks.
-- Direct authenticated OpenClaw and Hermes URLs from a second native tailnet peer, without a proxy or forwarded browser origin.
-- Reboot, persisted workspace data/configuration and repeated required doctor/browser checks.
-- Cleanup of every owned cloud resource, temporary key and tailnet node, independently checked through the native APIs.
+```json
+{"digitalocean":"full","hetzner":"light","aws":"light","gcp":"light"}
+```
+
+DigitalOcean requires these six groups:
+
+- Both runtime doctors green, with independently checked native identities and workspace diagnostics.
+- Real unattended Claude Code and Codex API-key tasks as workspace user 1000, matched independently to actual provider completions.
+- Direct authenticated Tailscale URLs for both apps, checked from a second native peer.
+- Reboot, persisted workspace data/configuration, and fresh doctor/browser checks afterward.
+- A README matched to the evidence and saved implementation/test plans linked from TODO #7.
+- Verified deletion of every owned cloud resource, temporary key and tailnet node through the native APIs.
+
+The full trial controller proves the first four groups and cleanup. Its `documentation_and_linked_plans` result stays `unverified` until the final evidence and saved plans are reviewed; a successful trial alone cannot complete all six groups. The two coding tasks are required paid calls. Extra native OpenClaw/Hermes model conversations are outside this revised contract.
+
+On Hetzner, AWS and GCP, the light controller verifies the applied VM through its provider API and checks all three selected containers over at least two minutes. Container IDs, resolved images, start times and restart counts must stay unchanged; stopped, restarting, dead or out-of-memory containers fail. The light path runs no runtime doctors, model tasks, browser checks, reboot or extra container-test builds. Tailscale access is still needed to remove any owned enrollment, but its availability does not establish or gate the light deployment result. Resource pricing, account ownership, local tests, fixed lifetime, traffic quota, independent watchdog and cleanup still apply. The unused prepaid-model allocation in the conservative quote does not create a model session, make a request or add another credit purchase.
+
+Results explicitly identify `full` or `light`; a light result cannot stand in for a full group. Inputs without `acceptance_modes` retain the original full contract for old attempt recovery, including its extra runtime tasks. A new configuration can select stricter full checks on another cloud, but cannot reduce DigitalOcean to light. Historical checkpoints below retain their original scope, cap and failures; they are not current acceptance claims.
 
 Use the shared [setup skill](../../skills/agent-stack-setup/SKILL.md) and [doctor skill](../../skills/agent-stack-doctor/SKILL.md) for deployment/repair. Prefer the repo-local `bin/` SSH helpers for inspection. The driver stores private plans, inventories, source hashes, task proofs, browser evidence, reservations and cleanup receipts together in the selected batch.
 

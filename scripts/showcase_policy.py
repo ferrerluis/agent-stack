@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from showcase_model_completion import validate_proof
 
 PROVIDERS = ("aws", "digitalocean", "gcp", "hetzner")
+ACCEPTANCE_MODES = {"digitalocean": "full", "aws": "light", "gcp": "light", "hetzner": "light"}
 RESOURCE_TYPES = {
     "aws": {"aws_vpc", "aws_subnet", "aws_internet_gateway", "aws_route_table", "aws_route_table_association", "aws_security_group", "aws_key_pair", "aws_ebs_volume", "aws_instance", "aws_volume_attachment"},
     "digitalocean": {"digitalocean_ssh_key", "digitalocean_vpc", "digitalocean_volume", "digitalocean_droplet", "digitalocean_volume_attachment", "digitalocean_firewall", "digitalocean_project_resources"},
@@ -96,13 +97,26 @@ def secret_ref(value):
                                      or file_path(value) is not None)
 
 
+def acceptance_mode(config, provider):
+    """Old immutable attempts keep their original contract during recovery."""
+    if "acceptance_modes" not in config:
+        return "legacy_full"
+    modes = config["acceptance_modes"]
+    require(isinstance(modes, dict) and set(modes) == set(PROVIDERS)
+            and all(value in ("full", "light") for value in modes.values())
+            and modes["digitalocean"] == "full", "acceptance_scope_invalid")
+    require(provider in PROVIDERS, "invalid_provider")
+    return config["acceptance_modes"][provider]
+
+
 def validate_inputs(config, provider):
     require(provider in PROVIDERS, "invalid_provider")
-    object_fields(config, ("schema", "profile", "owner", "budget_usd", "attempt_seconds", "max_attempts", "runner", "pins", "models", "secret_refs", "tailnet", "providers"), ("funding", "trial_egress_cap_bytes"))
+    object_fields(config, ("schema", "profile", "owner", "budget_usd", "attempt_seconds", "max_attempts", "runner", "pins", "models", "secret_refs", "tailnet", "providers"), ("funding", "trial_egress_cap_bytes", "acceptance_modes"))
+    acceptance_mode(config, provider)
     trial_egress_cap(config)
     require(type(config["schema"]) is int and config["schema"] == 1 and config["profile"] == "showcase", "invalid_profile")
     require(text(config["owner"]), "owner_required")
-    require(0 < money(config["budget_usd"]) <= 25, "budget_exceeds_approval")
+    require(0 < money(config["budget_usd"]) <= 35, "budget_exceeds_approval")
     if "funding" in config:
         require(config["funding"] == {"purchased_usd": "10.30", "peer_reserved_usd": "1.00",
                 "prepaid_caps_usd": {"openai": "1.00", "anthropic": "1.00"}}, "funding_exceeds_approval")

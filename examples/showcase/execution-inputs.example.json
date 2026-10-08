@@ -2,9 +2,10 @@
   "schema": 1,
   "profile": "showcase",
   "owner": "agent-stack-todo-7",
-  "budget_usd": "25.00",
+  "budget_usd": "35.00",
   "attempt_seconds": 14400,
-  "max_attempts": 2,
+  "max_attempts": null,
+  "acceptance_modes": {"digitalocean": "full", "hetzner": "light", "aws": "light", "gcp": "light"},
   "runner": {"ssh_cidr": "REPLACE_WITH_RUNNER_PUBLIC_IPV4/32"},
   "pins": {
     "openclaw_version": "REPLACE_WITH_EXACT_RELEASE",
@@ -34,7 +35,7 @@
     "aws": {
       "account_id": "REPLACE_WITH_12_DIGIT_ACCOUNT_ID",
       "region": "REPLACE_WITH_REGION",
-      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_4_GIB",
       "credential_refs": {
         "access_key": "op://VAULT_ID/ITEM_ID/FIELD_ID",
         "secret_key": "op://VAULT_ID/ITEM_ID/FIELD_ID"
@@ -45,7 +46,7 @@
       "project_id": "REPLACE_WITH_DEDICATED_NEW_PROJECT_UUID",
       "isolated_project": true,
       "region": "REPLACE_WITH_REGION",
-      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_4_GIB",
       "credential_refs": {"token": "op://VAULT_ID/ITEM_ID/FIELD_ID"}
     },
     "gcp": {
@@ -54,7 +55,7 @@
       "isolated_project": true,
       "region": "REPLACE_WITH_REGION",
       "zone": "REPLACE_WITH_ZONE_IN_REGION",
-      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_4_GIB",
       "credential_refs": {"service_account_json": "op://VAULT_ID/ITEM_ID/FIELD_ID"}
     },
     "hetzner": {
@@ -62,7 +63,7 @@
       "project_id": "REPLACE_WITH_DEDICATED_NEW_NUMERIC_PROJECT_ID",
       "isolated_project": true,
       "region": "REPLACE_WITH_LOCATION",
-      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_8_GIB",
+      "size": "REPLACE_WITH_X86_64_SIZE_AT_LEAST_4_GIB",
       "credential_refs": {"token": "op://VAULT_ID/ITEM_ID/FIELD_ID"}
     }
   }

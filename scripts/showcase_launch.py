@@ -17,8 +17,8 @@ from showcase_attempt import ROOT, verify_prepared
 from showcase_cleanup import private_read, private_write, scope
 from showcase_controller import RunController, prepare_container_deferral, proof_hash
 from showcase_model_session import ModelSession
-from showcase_policy import PolicyError, require, money, trial_egress_cap, Reservations
-from showcase_terraform import LAUNCH_CHECKS
+from showcase_policy import PolicyError, require, money, trial_egress_cap, Reservations, acceptance_mode
+from showcase_terraform import LAUNCH_CHECKS, LIGHT_LAUNCH_CHECKS
 
 RATES = {"aws": "vm_cpu_disks_ipv4_hourly_usd_upper_bound", "digitalocean": "vm_and_disk_hourly_usd",
          "gcp": "vm_disks_ipv4_hourly_usd_upper_bound", "hetzner": "vm_disk_ips_hourly_upper_bound"}
@@ -151,24 +151,29 @@ def start_watchdog(attempt, deadline):
 def launch(attempt, ledger):
     require("funding" in attempt.config, "approved_test_funding_required")
     local_checks(attempt)
-    check_peer_lifetime(attempt)
+    mode = acceptance_mode(attempt.config, attempt.provider)
+    peer_deadline = None if mode == "light" else check_peer_lifetime(attempt)
     deadline = trial(attempt)
     resource = attempt.resource_unit_prices()
-    terms = attempt.model_unit_prices()
+    terms = None if mode == "light" else attempt.model_unit_prices()
     quote = complete_quote(attempt, resource)
     remote = RunController(attempt, ledger)
-    limits = {role:{"max_requests":32,"output_tokens_upper_bound":1024} for role in attempt.config["models"]}
-    remote.models = ModelSession.from_measured_terms(remote.remote, terms, limits)
+    if mode != "light":
+        limits = {role:{"max_requests":32,"output_tokens_upper_bound":1024} for role in attempt.config["models"]}
+        remote.models = ModelSession.from_measured_terms(remote.remote, terms, limits)
     readiness = {"source_revision":attempt.prepared["source_revision"], "scope":scope(attempt.config,attempt.provider),
                  "checks":{key:"pass" for key in LAUNCH_CHECKS}}
-    if not __import__('shutil').which('docker'):
+    if mode == "light":
+        readiness.update(acceptance_mode="light", checks={key:"pass" for key in LIGHT_LAUNCH_CHECKS})
+    elif not __import__('shutil').which('docker'):
         readiness['checks']['container_tests']='deferred_owned_vm'
         readiness['container_deferral']=prepare_container_deferral(attempt)
     else:
         raise PolicyError("local_container_receipt_required")
     private_write(attempt.run / "launch-measurements.json", {"local":private_read(attempt.run.parent.parent/'local-checks.json'),
         "preflight":private_read(attempt.run/'preflight.json'),"resource_prices_sha256":proof_hash(resource),
-        "model_prices_sha256":proof_hash(terms),"quote":quote,"peer_deadline":check_peer_lifetime(attempt),
+        "acceptance_mode":mode,"model_prices_sha256":None if terms is None else proof_hash(terms),
+        "quote":quote,"peer_deadline":peer_deadline,
         "trial_deadline":deadline,"purpose":"bounded acceptance attempt; live checks remain pending"})
     start_watchdog(attempt, deadline)
     return remote.run_attempt(readiness, quote)

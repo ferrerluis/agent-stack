@@ -17,14 +17,22 @@ import time
 
 from showcase_attempt import private_directory, verify_prepared
 from showcase_cleanup import private_read, private_write, scope
-from showcase_policy import PolicyError, require
+from showcase_policy import PolicyError, require, acceptance_mode
 from showcase_preflight import PreflightError
 from showcase_remote import RemoteChecks
 import showcase_task_evidence as task_evidence
 import showcase_runtime_evidence as runtime_evidence
 
 CELLS = ("launch_ssh", "openclaw", "hermes", "claude", "codex", "tailscale")
-SOURCES = ("modules/common/runtime/hermes_health.py",) + tuple("scripts/" + name + ".py" for name in ("showcase_launch", "showcase_network_prices", "showcase_watchdog", "showcase_credentials", "showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
+FULL_GROUPS = ("runtime_doctors", "workspace_api_key_tasks", "authenticated_tailscale_urls", "reboot_persistence",
+               "documentation_and_linked_plans", "verified_cleanup")
+
+
+def cell_names(mode):
+    return ("vm_and_containers",) if mode == "light" else FULL_GROUPS if mode == "full" else CELLS
+
+
+SOURCES = ("modules/common/runtime/hermes_health.py",) + tuple("scripts/" + name + ".py" for name in ("showcase_light", "showcase_launch", "showcase_network_prices", "showcase_watchdog", "showcase_credentials", "showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
     "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_task", "showcase_runtime_evidence", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
@@ -55,6 +63,8 @@ def controller_lock(run):
 
 def public_report(record):
     report = {key: record[key] for key in ("status", "run_id", "provider", "source_revision", "cells", "cleanup")}
+    if "acceptance_mode" in record:
+        report["acceptance_mode"] = record["acceptance_mode"]
     if record["status"] != "pass":
         report["reason"] = record["reason"]
         report["failed_step"] = record.get("failure_stage", "acceptance")
@@ -82,16 +92,31 @@ class RunController:
         self.remote = RemoteChecks(attempt, ledger) if remote is None else remote
         self.now = now
         self.models = models
+        self.mode = acceptance_mode(self.config, self.provider)
         self.path = self.run / "showcase-run.json"
 
     def verdict(self, observed, evidence=None):
         evidence = self.remote.evidence() if evidence is None else evidence
         require(evidence.get("source_revision") == self.attempt.prepared["source_revision"], "acceptance_source_changed")
+        if self.mode == "light":
+            from showcase_light import validate
+            require(set(observed) == {"apply", "light"} and observed["apply"] == {
+                    "deployment": "applied", "acceptance": "pending", "live_matrix": "not_tested"}
+                    and evidence["checks"] == {"vm_and_containers": "pass"}
+                    and not evidence.get("tasks") and not evidence.get("agents") and not evidence.get("model_channels")
+                    and not evidence.get("network") and evidence.get("baseline") is None
+                    and observed["light"] == evidence.get("light"), "light_proof_invalid")
+            validate(observed["light"], self.run.name, evidence["source_revision"], scope(self.config, self.provider), self.config["pins"])
+            row = self.reservation()
+            require(row is not None and not row.get("model_requests") and "model_policy" not in row, "light_model_authority_forbidden")
+            return {"vm_and_containers": "pass"}
+        runtime_tasks = self.mode == "legacy_full"
         required = self.remote.doctor_module().required_checks(["openclaw", "hermes", "workspace"], True, True)
         runtime_required = self.remote.doctor_module().required_checks(["openclaw", "hermes"], False, False)
         checks = evidence["checks"]
-        require(all(checks.get(name) == "pass" for name in (required - runtime_required) | {"launch_ssh", "reboot", "reboot_boot", "tailscale.acceptance",
-                "openclaw.agent_turn", "hermes.agent_turn", "workspace.codex.execution", "workspace.claude.execution"}), "acceptance_incomplete")
+        task_checks = {"openclaw.agent_turn", "hermes.agent_turn"} if runtime_tasks else set()
+        require(all(checks.get(name) == "pass" for name in (required - runtime_required) | task_checks | {"launch_ssh", "reboot", "reboot_boot", "tailscale.acceptance",
+                "workspace.codex.execution", "workspace.claude.execution"}), "acceptance_incomplete")
         # Verified close restores files while stopped. Historical diagnostics
         # prove the tested boots; current runtime service status must be uncertain.
         require(all(checks.get(name) == "uncertain" for name in runtime_required), "runtime_shutdown_proof_changed")
@@ -103,7 +128,7 @@ class RunController:
         require(observed["bootstrap"] == before and observed["reboot"] == {"reboot": "pass", "workspace_files": "preserved", "doctors": "pending"}
                 and observed["reboot_verified"] == {"reboot": "pass", "workspace_files": "preserved", "doctors": "pass"},
                 "persistence_proof_required")
-        for runtime in ("openclaw", "hermes"):
+        for runtime in (("openclaw", "hermes") if runtime_tasks else ()):
             row = evidence.get("agents", {}).get(runtime, {})
             expected = observed[runtime]
             require(row.get("status") == "pass" and row.get("model") == self.config["models"][runtime]
@@ -132,7 +157,7 @@ class RunController:
             binding = {"run_id": self.run.name, "source_revision": evidence["source_revision"],
                        "boot_id": baseline["boot_id"], "checksum": baseline["checksum"]}
             stage_proof = evidence.get("doctor_stages", {}).get(stage, {})
-            require(set(channel.get("runtime_tasks", {})) == ({"openclaw", "hermes"} if stage == "before_reboot" else set()),
+            require(set(channel.get("runtime_tasks", {})) == ({"openclaw", "hermes"} if runtime_tasks and stage == "before_reboot" else set()),
                     "runtime_task_proof_changed")
             require(stage_proof == observed[receipt_name] and set(stage_proof) == {"schema", "status", "run_id", "source_revision",
                     "boot_id", "checksum", "checks", "runtime_reports_sha256", "runtime_routes_sha256"}
@@ -171,7 +196,7 @@ class RunController:
                 from showcase_runtime_probe import native_proof_valid
                 try: native_proof_valid(public_route, doctor["native_route"])
                 except (ValueError, TypeError, KeyError): raise PolicyError("runtime_doctor_proof_changed") from None
-                if stage == "before_reboot":
+                if runtime_tasks and stage == "before_reboot":
                     row = evidence["agents"][role]; task = channel["runtime_tasks"][role]
                     try:
                         checked = runtime_evidence.validate(task, route, doctor, public_route, binding, image,
@@ -194,7 +219,7 @@ class RunController:
                         and restored.get("binding") == binding and restored.get("status") == "runtime_config_restored"
                         and isinstance(restored.get("original_sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", restored["original_sha256"]), "runtime_shutdown_proof_changed")
         require(len(set(nonces)) == 4, "runtime_doctor_proof_changed")
-        for role in ("openclaw", "hermes", "codex", "claude"):
+        for role in (("openclaw", "hermes", "codex", "claude") if runtime_tasks else ("codex", "claude")):
             receipt = observed[role].get("gateway_receipt")
             expected = [hold for hold in model_account["model_requests"] if hold["role"] == role]
             require(isinstance(receipt, dict) and set(receipt) == {"schema", "status", "run_id", "source_revision", "scope", "role",
@@ -242,6 +267,10 @@ class RunController:
         self.remote.require_container_gate(evidence)
         if "containers" in observed:
             require(evidence.get("containers") == observed["containers"] and checks.get("container_tests") == "pass", "container_proof_changed")
+        if self.mode == "full":
+            require(not evidence.get("agents") and not any(hold["role"] in ("openclaw", "hermes")
+                    for hold in model_account["model_requests"]), "unexpected_runtime_task")
+            return {key: "pass" if key in FULL_GROUPS[:4] else "unverified" for key in FULL_GROUPS}
         return {key: "pass" for key in CELLS}
 
     def reservation(self):
@@ -261,11 +290,13 @@ class RunController:
         require(not self.path.exists() and not self.path.is_symlink(), "showcase_recovery_required")
         require(self.attempt.record().get("stage") == "planned", "fresh_planned_attempt_required")
         from showcase_model_session import ModelSession
-        require(isinstance(self.models, ModelSession) and self.models.checks is self.remote, "measured_model_session_required")
+        require((self.models is None if self.mode == "light" else isinstance(self.models, ModelSession)
+                and self.models.checks is self.remote), "measured_model_session_required")
         gate = self.attempt.launch_gates(readiness)
         record = {"schema": 1, "run_id": self.run.name, "provider": self.provider, "scope": scope(self.config, self.provider),
                   "source_revision": prepared["source_revision"], "stage": "reserving", "started_at": self.now(), "steps": [],
-                  "container_tests_gate": gate, "cells": {key: "unverified" for key in CELLS}, "cleanup": "not_started"}
+                  "acceptance_mode": self.mode, "container_tests_gate": gate,
+                  "cells": {key: "unverified" for key in cell_names(self.mode)}, "cleanup": "not_started"}
         private_write(self.path, record)
         observed = {}
         acceptance = False
@@ -284,29 +315,10 @@ class RunController:
             record["stage"] = "reserved"
             private_write(self.path, record)
             observed["apply"] = step("apply", lambda: self.attempt.apply(self.ledger, readiness))
-            observed["bootstrap"] = step("bootstrap", self.remote.bootstrap)
-            if gate == "deferred_owned_vm":
-                observed["containers"] = step("containers", self.remote.container_tests)
-            observed["model_channel"] = step("model_channel", lambda: self.models.start("before_reboot"))
-            for runtime in ("openclaw", "hermes"):
-                observed[runtime + "_activation"] = step(runtime + "_activation", lambda runtime=runtime: self.models.activate_runtime(runtime))
-            observed["doctors"] = step("doctors", self.remote.doctors)
-            observed["doctor_evidence"] = step("doctor_evidence", self.remote.doctor_receipt)
-            for runtime in ("openclaw", "hermes"):
-                observed[runtime] = step(runtime, lambda runtime=runtime: self.remote.runtime_task(runtime))
-            for cli in ("claude", "codex"):
-                observed[cli] = step(cli, lambda cli=cli: self.remote.workspace_task(cli))
-            observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
-            observed["model_channel_closed"] = step("model_channel_closed", self.models.close)
-            observed["reboot"] = step("reboot", lambda: self.remote.reboot(defer_doctors=True))
-            observed["model_channel_after_reboot"] = step("model_channel_after_reboot", lambda: self.models.start("after_reboot"))
-            for runtime in ("openclaw", "hermes"):
-                observed[runtime + "_activation_after_reboot"] = step(runtime + "_activation_after_reboot", lambda runtime=runtime: self.models.activate_runtime(runtime))
-            observed["doctors_after_reboot"] = step("doctors_after_reboot", self.remote.doctors)
-            observed["doctor_evidence_after_reboot"] = step("doctor_evidence_after_reboot", self.remote.doctor_receipt)
-            observed["reboot_verified"] = step("reboot_verified", self.remote.complete_reboot)
-            observed["after_reboot"] = step("after_reboot", lambda: self.remote.network_checks("after_reboot"))
-            observed["model_channel_after_reboot_closed"] = step("model_channel_after_reboot_closed", self.models.close)
+            if self.mode == "light":
+                observed["light"] = step("light", self.remote.light)
+            else:
+                self.full_steps(step, observed, gate)
             evidence = self.remote.evidence()
             record["cells"] = self.verdict(observed, evidence)
             record["acceptance"] = {"status": "verified", "observed": observed,
@@ -354,10 +366,37 @@ class RunController:
                     record["failure_stage"] = "acceptance"
             record.update(stage="finished", finished_at=self.now(), status="pass" if acceptance and record["cleanup"] == "verified" else "fail")
             if record["status"] != "pass":
-                record["cells"] = {key: "unverified" for key in CELLS}
+                record["cells"] = {key: "unverified" for key in cell_names(self.mode)}
                 record["reason"] = failure or "showcase_acceptance_incomplete"
+            elif self.mode == "full":
+                record["cells"]["verified_cleanup"] = "pass"
             private_write(self.path, record)
         return public_report(record)
+
+    def full_steps(self, step, observed, gate):
+        observed["bootstrap"] = step("bootstrap", self.remote.bootstrap)
+        if gate == "deferred_owned_vm":
+            observed["containers"] = step("containers", self.remote.container_tests)
+        observed["model_channel"] = step("model_channel", lambda: self.models.start("before_reboot"))
+        for runtime in ("openclaw", "hermes"):
+            observed[runtime + "_activation"] = step(runtime + "_activation", lambda runtime=runtime: self.models.activate_runtime(runtime))
+        observed["doctors"] = step("doctors", self.remote.doctors)
+        observed["doctor_evidence"] = step("doctor_evidence", self.remote.doctor_receipt)
+        for runtime in (("openclaw", "hermes") if self.mode == "legacy_full" else ()):
+            observed[runtime] = step(runtime, lambda runtime=runtime: self.remote.runtime_task(runtime))
+        for cli in ("claude", "codex"):
+            observed[cli] = step(cli, lambda cli=cli: self.remote.workspace_task(cli))
+        observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
+        observed["model_channel_closed"] = step("model_channel_closed", self.models.close)
+        observed["reboot"] = step("reboot", lambda: self.remote.reboot(defer_doctors=True))
+        observed["model_channel_after_reboot"] = step("model_channel_after_reboot", lambda: self.models.start("after_reboot"))
+        for runtime in ("openclaw", "hermes"):
+            observed[runtime + "_activation_after_reboot"] = step(runtime + "_activation_after_reboot", lambda runtime=runtime: self.models.activate_runtime(runtime))
+        observed["doctors_after_reboot"] = step("doctors_after_reboot", self.remote.doctors)
+        observed["doctor_evidence_after_reboot"] = step("doctor_evidence_after_reboot", self.remote.doctor_receipt)
+        observed["reboot_verified"] = step("reboot_verified", self.remote.complete_reboot)
+        observed["after_reboot"] = step("after_reboot", lambda: self.remote.network_checks("after_reboot"))
+        observed["model_channel_after_reboot_closed"] = step("model_channel_after_reboot_closed", self.models.close)
 
     def recover(self):
         with controller_lock(self.run):
@@ -365,10 +404,11 @@ class RunController:
             record = private_read(self.path)
             require(record.get("schema") == 1 and record.get("run_id") == self.run.name and record.get("provider") == self.provider
                     and record.get("scope") == scope(self.config, self.provider)
-                    and record.get("source_revision") == prepared["source_revision"], "showcase_recovery_scope_changed")
+                    and record.get("source_revision") == prepared["source_revision"]
+                    and record.get("acceptance_mode", "legacy_full") == self.mode, "showcase_recovery_scope_changed")
             # Cleanup is always available, even if acceptance is incomplete or
             # damaged. Do not replay any original model/apply/reboot step.
-            record.update(stage="cleanup", cleanup="started", status="fail", cells={key: "unverified" for key in CELLS})
+            record.update(stage="cleanup", cleanup="started", status="fail", cells={key: "unverified" for key in cell_names(self.mode)})
             private_write(self.path, record)
             try:
                 reservation = self.reservation()
@@ -392,11 +432,13 @@ class RunController:
                         rows = [row for row in record["steps"] if row["name"] == name and row["status"] == "pass"]
                         require(len(rows) == 1 and rows[0]["proof_sha256"] == proof_hash(value), "acceptance_incomplete")
                     record["cells"] = self.verdict(proof["observed"], private_read(self.remote.path))
+                    if self.mode == "full":
+                        record["cells"]["verified_cleanup"] = "pass"
                     record["status"] = "pass"
                     record.pop("reason", None)
                     record.pop("failure_stage", None)
                 except BaseException:
-                    record.update(reason="showcase_acceptance_incomplete", cells={key: "unverified" for key in CELLS})
+                    record.update(reason="showcase_acceptance_incomplete", cells={key: "unverified" for key in cell_names(self.mode)})
             record.update(stage="finished", finished_at=self.now())
             private_write(self.path, record)
             return public_report(record)
