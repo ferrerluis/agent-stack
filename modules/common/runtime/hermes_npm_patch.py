@@ -55,6 +55,7 @@ def atomic(path, data, mode=0o644):
 class Patch:
     def __init__(self, root=ROOT, bundle=BUNDLE, owner=0):
         self.root, self.owner = Path(root), owner
+        self.stage = "inputs"
         self.directory(self.root)
         raw = regular(Path(bundle), owner)
         need(sha(raw) == BUNDLE_SHA256)
@@ -108,23 +109,32 @@ class Patch:
 
     def apply(self, runner):
         if (self.root / MARKER).exists() or (self.root / MARKER).is_symlink():
+            self.stage = "restart_verify"
             return self.verify()
+        self.stage = "manifests"
         for name, entry in self.bundle["files"].items():
             atomic(self.path(name), entry["content"].encode())
+        self.stage = "npm_install"
         runner(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund",
                 "--workspace", "web", "--workspace", "ui-tui", "--include-workspace-root"], self.root)
         for name in ("web", "ui-tui"):
+            self.stage = "web_build" if name == "web" else "tui_build"
             runner(["npm", "run", "build"], self.root / name)
+        self.stage = "installed_verify"
         self.installed()
+        self.stage = "outputs_verify"
         marker = {"schema": 1, "bundle_sha256": BUNDLE_SHA256,
                   "upstream_revision": REVISION, "outputs": self.output_hashes()}
+        self.stage = "marker_write"
         atomic(self.root / MARKER, (json.dumps(marker, sort_keys=True) + "\n").encode())
+        self.stage = "marker_verify"
         return self.verify()
 
 
 class Runner:
     def __init__(self, home=Path("/var/cache/agent-stack-hermes-npm"), seconds=480, owner=0):
         self.deadline = time.monotonic() + seconds
+        self.returncode = None
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = home.lstat()
         need(stat.S_ISDIR(info.st_mode) and info.st_uid == owner and stat.S_IMODE(info.st_mode) == 0o700)
@@ -139,6 +149,7 @@ class Runner:
             "npm_config_fetch_retries": "0", "npm_config_fetch_timeout": "30000", "npm_config_install_links": "false"}
 
     def __call__(self, command, cwd):
+        self.returncode = None
         remaining = self.deadline - time.monotonic()
         need(remaining > 0)
         process = subprocess.Popen(command, cwd=cwd, env=self.environment, stdin=subprocess.DEVNULL,
@@ -154,23 +165,51 @@ class Runner:
             raise
         # Children have a cleared environment; bounded output is useful for
         # installation/build failures and contains only public package data.
+        self.returncode = process.returncode
         if process.returncode:
             sys.stderr.buffer.write(output[-65536:])
             raise ValueError("hermes_npm_patch_command_failed")
 
 
+def failure_details(error, stage, runner):
+    """Fixed stages and numeric OS/process facts only; never exception text."""
+    stages = {"inputs", "restart_verify", "manifests", "npm_install", "web_build", "tui_build",
+              "installed_verify", "outputs_verify", "marker_write", "marker_verify", "runner", "dispatcher"}
+    result = {"stage": stage if stage in stages else "inputs", "kind": "verification"}
+    if isinstance(error, subprocess.TimeoutExpired):
+        result["kind"] = "timeout"
+    elif isinstance(error, OSError):
+        result["kind"] = "os_error"
+        if type(error.errno) is int:
+            result["errno"] = error.errno
+    elif isinstance(error, KeyError):
+        result["kind"] = "missing_field"
+    code = getattr(runner, "returncode", None)
+    if stage in {"npm_install", "web_build", "tui_build"} and type(code) is int and code != 0:
+        result.update(kind="command_exit", returncode=code)
+    return result
+
+
 def main():
+    patch, runner, stage = None, None, "inputs"
     try:
         patch = Patch()
         if sys.argv[1:] == ["--verify"]:
             print(json.dumps(patch.verify(), sort_keys=True))
             return 0
         need(os.geteuid() == 0)
-        patch.apply(Runner())
+        stage = "runner"
+        runner = Runner()
+        stage = "inputs"
+        patch.apply(runner)
+        stage = "dispatcher"
         print("[hermes] Pinned npm dependency repair and interface builds verified.", flush=True)
         os.execv("/opt/hermes/docker/entrypoint-dispatch.sh", ["entrypoint-dispatch.sh", *sys.argv[1:]])
-    except (ValueError, OSError, KeyError, subprocess.SubprocessError):
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         print("[hermes] Pinned npm dependency repair failed; startup refused.", file=sys.stderr)
+        detail_stage = stage if stage in {"runner", "dispatcher"} else getattr(patch, "stage", stage)
+        print("[hermes] Repair failure details: " + json.dumps(failure_details(error, detail_stage, runner), sort_keys=True),
+              file=sys.stderr)
         return 1
 
 

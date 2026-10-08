@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -126,6 +128,32 @@ class HermesNpmPatchTest(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 runner(["npm", "ci"], self.root)
         kill.assert_called_once_with(process.pid, npm.signal.SIGKILL)
+
+    def test_failure_details_report_exact_stage_and_numeric_facts_without_exception_text(self):
+        runner = npm.Runner(self.root.parent / "npm-home", owner=os.geteuid())
+        process = Mock(returncode=-9)
+        process.communicate.return_value = (b"", None)
+        with patch.object(npm.subprocess, "Popen", return_value=process):
+            with self.assertRaises(ValueError) as failure:
+                runner(["npm", "ci"], self.root)
+        self.assertEqual(npm.failure_details(failure.exception, "npm_install", runner),
+                         {"stage": "npm_install", "kind": "command_exit", "returncode": -9})
+        self.assertEqual(npm.failure_details(subprocess.TimeoutExpired("private-fixture", 1), "web_build", None),
+                         {"stage": "web_build", "kind": "timeout"})
+        self.assertEqual(npm.failure_details(FileNotFoundError(2, "private-fixture"), "installed_verify", runner),
+                         {"stage": "installed_verify", "kind": "os_error", "errno": 2})
+        instance = self.instance()
+        def fail(command, cwd):
+            raise PermissionError(13, "private-fixture")
+        with patch.object(npm, "Patch", return_value=instance), patch.object(npm, "Runner", return_value=fail), \
+                patch.object(npm.os, "geteuid", return_value=0), patch.object(npm.sys, "argv", ["patch"]), \
+                contextlib.redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(npm.main(), 1)
+        self.assertEqual(instance.stage, "npm_install")
+        self.assertIn('"stage": "npm_install"', output.getvalue())
+        self.assertIn('"errno": 13', output.getvalue())
+        self.assertNotIn("private-fixture", output.getvalue())
+        self.assertFalse((self.root / npm.MARKER).exists())
 
     def test_repository_bundle_contains_only_verified_public_patch_inputs(self):
         path = ROOT / "modules/common/runtime/hermes_npm_patch.json"
