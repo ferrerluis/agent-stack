@@ -22,6 +22,51 @@ from showcase_policy import PolicyError
 import test_showcase_runtime_routes as route_fixtures
 import test_showcase_model_session as model_fixtures
 import test_showcase_remote as remote_fixtures
+
+
+class RuntimeDisarmRegressionTest(unittest.TestCase):
+    def test_actual_disarm_does_not_stop_a_collected_transient_service(self):
+        active = True
+        calls = []
+        def execute(args, timeout=10):
+            nonlocal active
+            calls.append(args)
+            if args[:2] == ["systemctl", "show"]:
+                return b"active\n" if active and args[-1].endswith('.timer') else b"inactive\n"
+            if args[:2] == ["systemctl", "stop"]:
+                active = False
+                if len(args) != 3 or args[-1].endswith('.service'):
+                    raise lifecycle.agents.ProbeError('probe_command_failed')
+                return b""
+            raise AssertionError('unexpected manager command')
+        vm = object.__new__(lifecycle.RuntimeLifecycle)
+        vm.execute = execute
+        vm.disarm({'unit': 'as7-route-fixture'})
+        self.assertFalse(active)
+        self.assertEqual([args for args in calls if 'stop' in args], [['systemctl', 'stop', 'as7-route-fixture.timer']])
+
+    def test_first_command_failure_survives_containment_without_raw_arguments_or_output(self):
+        vm = object.__new__(lifecycle.RuntimeLifecycle)
+        vm.phase, vm.failure = 'watchdog_disarm', None
+        vm.raw_execute = Mock(side_effect=[lifecycle.agents.ProbeError('probe_command_failed'), RuntimeError('fixture-private-secret')])
+        with self.assertRaises(lifecycle.agents.ProbeError):
+            vm.command(['systemctl', 'stop', 'as7-route-fixture.timer'])
+        vm.phase = 'runtime_stop'
+        with self.assertRaises(RuntimeError):
+            vm.command(['/usr/bin/docker', 'stop', 'fixture-private-secret'], input=b'fixture-private-secret')
+        self.assertEqual(vm.failure, {'phase': 'watchdog_disarm', 'reason': 'probe_command_failed',
+                                     'command': {'program': 'systemctl', 'operation': 'stop'}})
+        self.assertNotIn('fixture-private-secret', json.dumps(vm.failure))
+
+    def test_unknown_exception_and_command_arguments_are_redacted(self):
+        vm = object.__new__(lifecycle.RuntimeLifecycle)
+        vm.phase, vm.failure = 'native_route', None
+        vm.raw_execute = Mock(side_effect=RuntimeError('fixture-private-secret'))
+        with self.assertRaises(RuntimeError):
+            vm.command(['/usr/bin/docker', 'exec', 'fixture-private-secret'], input=b'fixture-private-secret')
+        self.assertEqual(vm.failure, {'phase': 'native_route', 'reason': 'runtime_lifecycle_unverified',
+                                     'command': {'program': 'docker', 'operation': 'exec'}})
+        self.assertNotIn('fixture-private-secret', json.dumps(vm.failure))
 import test_showcase_agents as agent_fixtures
 
 ROOT = Path(__file__).resolve().parents[2]

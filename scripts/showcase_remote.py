@@ -228,7 +228,10 @@ class RemoteChecks:
                 and stat.S_IMODE(hosts.stat().st_mode) == 0o600, "private_known_hosts_required")
         wrapper = self.attempt.checkout / "bin/agent-stack-ssh"
         require(wrapper.is_file() and wrapper.stat().st_mode & 0o100, "verified_ssh_wrapper_required")
-        options = {"failure_report": self.run / "container-command-error.json"} if capture_failure and self.execute is command else {}
+        require(type(capture_failure) is bool or capture_failure in ("container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json"),
+                "private_failure_report_refused")
+        report = "container-command-error.json" if capture_failure is True else capture_failure
+        options = {"failure_report": self.run / report} if report and self.execute is command else {}
         return self.execute([str(wrapper), "--batch", *( ["--pinned"] if self.models is not None else [] ),
                              "--known-hosts", str(hosts), "--key", str(self.attempt.checkout / KEY_PATH),
                              "--host", target["host"], "--", shlex.join(args)], env=isolated_environment(self.run),

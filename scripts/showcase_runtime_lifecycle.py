@@ -82,9 +82,34 @@ def image_valid(role, value):
 class RuntimeLifecycle:
     def __init__(self, binding, execute=agents.invoke, transaction=None, now=time.monotonic, sleep=time.sleep):
         need(os.geteuid() == 0); routes.binding_valid(binding)
-        self.binding, self.execute, self.now, self.sleep = copy.deepcopy(binding), execute, now, sleep
+        self.binding, self.raw_execute, self.now, self.sleep = copy.deepcopy(binding), execute, now, sleep
+        self.phase, self.failure = "preflight", None
+        self.execute = self.command
         self.tx = routes.ConfigurationTransaction() if transaction is None else transaction
         self.environment = environment.EnvironmentTransaction(self.tx)
+
+    def remember_failure(self, error, args=None):
+        if self.failure is not None:
+            return
+        allowed = {"probe_input_limit", "probe_descriptor_invalid", "probe_output_limit", "probe_command_timeout",
+                   "probe_command_failed", "watchdog_disarm_unverified"}
+        reason = str(error) if isinstance(error, agents.ProbeError) and str(error) in allowed else "runtime_lifecycle_unverified"
+        self.failure = {"phase": self.phase, "reason": reason}
+        programs = {"/usr/bin/docker": "docker", "systemctl": "systemctl", "systemd-run": "systemd-run"}
+        if isinstance(args, list) and args and args[0] in programs:
+            detail = {"program": programs[args[0]]}
+            if len(args) > 1 and args[1] in {"exec", "inspect", "stop", "start", "show", "is-active", "compose"}:
+                detail["operation"] = args[1]
+            self.failure["command"] = detail
+
+    def command(self, args, **options):
+        try:
+            return self.raw_execute(args, **options)
+        except BaseException as error:
+            # Preserve the original failure before containment or restoration
+            # performs another command. Never retain arguments or raw output.
+            self.remember_failure(error, args)
+            raise
 
     def capture(self, role, image):
         image_valid(role, image)
@@ -139,12 +164,14 @@ class RuntimeLifecycle:
         return context
 
     def stop(self, context):
+        self.phase = "runtime_stop"
         self.known(context)
         self.execute(["/usr/bin/docker", "stop", "-t", "5", context["container_id"]], timeout=15)
         row = self.known(context)
         need(not row["state"]["Running"] and not row["state"]["Restarting"])
 
     def start(self, context):
+        self.phase = "runtime_start"
         row = self.known(context); need(not row["state"]["Running"] and not row["state"]["Restarting"])
         self.execute(["/usr/bin/docker", "start", context["container_id"]], timeout=10)
         end = self.now() + 90
@@ -156,6 +183,7 @@ class RuntimeLifecycle:
         raise ValueError("runtime_lifecycle_unverified")
 
     def native(self, context, route):
+        self.phase = "native_route"
         need(self.healthy(self.known(context)))
         if route["role"] == "openclaw":
             raw = self.execute(["/usr/bin/docker", "exec", "--user", "1000", context["container_id"],
@@ -166,6 +194,7 @@ class RuntimeLifecycle:
         return report["native_route"]
 
     def container(self, context, route, action, nonce):
+        self.phase = {"native": "container_native", "transport": "container_transport", "readiness": "container_readiness"}.get(action, "container_probe")
         packet = {"action": action, "route": route, "config_sha256": context["config_sha256"],
                   "source_revision": self.binding["source_revision"], "nonce": nonce}
         if route["role"] == "hermes": packet["environment_sha256"] = context["environment_sha256"]
@@ -192,10 +221,11 @@ class RuntimeLifecycle:
         return result
 
     def disarm(self, context):
-        self.execute(["systemctl", "stop", context["unit"] + ".timer", context["unit"] + ".service"], timeout=10)
-        need(self.execute(["systemctl", "show", "--property=ActiveState", "--value", context["unit"] + ".timer"], timeout=10).strip() == b"inactive")
+        self.phase = "watchdog_disarm"
+        agents.disarm_watchdog(context["unit"], self.execute)
 
     def current_files(self, context, route):
+        self.phase = "file_verification"
         target = self.tx.root / routes.FILES[route["role"]]
         info = routes.checked_path(target, owner=routes.OWNERS[route["role"]])
         need(info.st_mode & 0o777 == 0o600 and routes.sha(target.read_bytes()) == context["config_sha256"])
@@ -206,6 +236,7 @@ class RuntimeLifecycle:
 
     def doctor(self, route, request_id):
         """Run the native read-only doctor unchanged; never grant model access."""
+        self.phase = "doctor"
         routes.route_valid(route); need(isinstance(request_id, str) and re.fullmatch(r"[a-f0-9]{32}", request_id))
         need(DOCTOR_MODULE is not None)
         with self.tx.lock():
@@ -246,7 +277,8 @@ class RuntimeLifecycle:
                     **{key: context[key] for key in ("role", "container_id", "image_ref", "image_id", "config_sha256", "native_route", "doctor_sha256")},
                     **({"environment_sha256": context["environment_sha256"]} if route["role"] == "hermes" else {}),
                     "uid": routes.OWNERS[route["role"]], "health": "healthy", "watchdog": "disarmed", "checks": checks, **readiness}
-            except BaseException:
+            except BaseException as error:
+                self.remember_failure(error)
                 try: self.stop(context)
                 except BaseException: pass
                 context["status"] = "uncertain"; self.save(context)
@@ -259,6 +291,7 @@ class RuntimeLifecycle:
         missing controller grant still prevents any upstream model request.
         Persisting the start before execution makes a lost reply nonrepeatable.
         """
+        self.phase = "task"
         routes.route_valid(route); agents.challenge_valid(challenge)
         need(isinstance(request_id, str) and re.fullmatch(agents.REQUEST, request_id))
         started = self.now()
@@ -312,13 +345,15 @@ class RuntimeLifecycle:
                                                    "doctor_sha256", "request_id", "challenge_sha256")},
                     **({"environment_sha256": context["environment_sha256"]} if role == "hermes" else {}),
                     "uid": routes.OWNERS[role], "health": "healthy", "watchdog": "disarmed", "turn": turn}
-            except BaseException:
+            except BaseException as error:
+                self.remember_failure(error)
                 try: self.stop(context)
                 except BaseException: pass
                 context["status"] = "uncertain"; self.save(context)
                 raise
 
     def prepare(self, route, image, request_id):
+        self.phase = "prepare"
         routes.route_valid(route); image_valid(route["role"], image)
         need(isinstance(request_id, str) and re.fullmatch(r"[a-f0-9]{32}", request_id))
         with self.tx.lock():
@@ -353,13 +388,15 @@ class RuntimeLifecycle:
                     **{key: context[key] for key in ("role", "container_id", "image_ref", "image_id", "config_sha256", "native_route")},
                     **({"environment_sha256": context["environment_sha256"]} if role == "hermes" else {}),
                     "watchdog": "armed"}
-            except BaseException:
+            except BaseException as error:
+                self.remember_failure(error)
                 try: self.stop(context)
                 except BaseException: pass
                 context["status"] = "uncertain"; self.save(context)
                 raise
 
     def verify(self, route, nonce):
+        self.phase = "verify"
         routes.route_valid(route); need(isinstance(nonce, str) and re.fullmatch(r"[a-f0-9]{64}", nonce))
         with self.tx.lock():
             context = self.load(route["role"]); need(context["status"] == "reload_verified")
@@ -374,13 +411,15 @@ class RuntimeLifecycle:
                     **{key: context[key] for key in ("role", "container_id", "image_ref", "image_id", "config_sha256", "native_route")},
                     **({"environment_sha256": context["environment_sha256"]} if route["role"] == "hermes" else {}),
                     "container_probe": result, "watchdog": "disarmed"}
-            except BaseException:
+            except BaseException as error:
+                self.remember_failure(error)
                 try: self.stop(context)
                 except BaseException: pass
                 context["status"] = "uncertain"; self.save(context)
                 raise
 
     def restore(self, role):
+        self.phase = "restore"
         with self.tx.lock():
             context = self.load(role)
             self.stop(context)
@@ -407,6 +446,7 @@ DOCTOR_MODULE = None  # The same loader supplies the checked strict parser.
 
 
 def main():
+    lifecycle = None
     try:
         need(os.geteuid() == 0)
         raw = sys.stdin.buffer.read(4097); need(0 < len(raw) <= 4096); packet = routes.decoded(raw)
@@ -431,8 +471,12 @@ def main():
         else:
             need(action == "restore" and set(packet) == {"action", "binding", "role"})
             report = lifecycle.restore(packet["role"])
-    except BaseException:
+    except BaseException as error:
         report = {"schema": 1, "status": "runtime_lifecycle_unverified"}
+        if lifecycle is not None:
+            lifecycle.remember_failure(error)
+            report["diagnostics"] = {"action": action if action in {"prepare", "verify", "doctor", "task", "restore"} else "preflight",
+                                     **lifecycle.failure}
     print(json.dumps(report))
     return 1 if report["status"] == "runtime_lifecycle_unverified" else 0
 

@@ -180,7 +180,7 @@ class AgentTransportTest(unittest.TestCase):
         if args[:2] == ["systemctl", "is-active"]:
             return b"active\n"
         if args[:2] == ["systemctl", "show"]:
-            return b"active" if self.bad_disarm else b"inactive\n"
+            return b"active" if self.bad_disarm or (args[-1].endswith('.timer') and self.timer) else b"inactive\n"
         if args[:2] == ["systemctl", "stop"]:
             self.timer = self.bad_disarm
             return b""
@@ -347,6 +347,40 @@ class BoundedCommandTest(unittest.TestCase):
             agents.invoke([sys.executable, "-c", "import sys; print(" + repr(SECRET) + "); sys.exit(1)"])
         self.assertNotIn(SECRET, str(error.exception))
         self.assertEqual(agents.invoke([sys.executable, "-c", "import sys; print(sys.stdin.read())"], input=b"fixture").strip(), b"fixture")
+
+
+class WatchdogDisarmTest(unittest.TestCase):
+    def disarm(self, states, stop_error=None):
+        calls = []
+        def execute(args, timeout=10):
+            calls.append(args)
+            if "show" in args:
+                return next(states)
+            if stop_error is not None:
+                raise stop_error
+            return b""
+        agents.disarm_watchdog("as7-agent-fixture", execute)
+        return calls
+
+    def test_collected_unused_service_needs_no_stop(self):
+        calls = self.disarm(iter((b"active\n", b"inactive\n", b"inactive\n")))
+        self.assertEqual([args for args in calls if "stop" in args], [["systemctl", "stop", "as7-agent-fixture.timer"]])
+
+    def test_already_running_service_must_be_stopped_and_verified(self):
+        calls = self.disarm(iter((b"active\n", b"inactive\n", b"active\n", b"inactive\n")))
+        self.assertEqual([args[-1] for args in calls if "stop" in args], ["as7-agent-fixture.timer", "as7-agent-fixture.service"])
+
+    def test_failed_stop_requires_fresh_inactive_proof(self):
+        self.disarm(iter((b"active\n", b"inactive\n", b"inactive\n")), agents.ProbeError("probe_command_failed"))
+        for state in (b"active\n", b"", b"unknown\n"):
+            with self.subTest(state=state), self.assertRaisesRegex(agents.ProbeError, "watchdog_disarm_unverified"):
+                self.disarm(iter((b"active\n", state)), agents.ProbeError("probe_command_failed"))
+
+    def test_timeout_and_unavailable_manager_cannot_be_ignored(self):
+        with self.assertRaisesRegex(agents.ProbeError, "probe_command_timeout"):
+            self.disarm(iter((b"active\n",)), agents.ProbeError("probe_command_timeout"))
+        with self.assertRaisesRegex(agents.ProbeError, "probe_command_failed"):
+            agents.disarm_watchdog("as7-agent-fixture", Mock(side_effect=agents.ProbeError("probe_command_failed")))
 
 
 if __name__ == "__main__":

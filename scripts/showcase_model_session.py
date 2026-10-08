@@ -237,7 +237,8 @@ class ModelSession:
         verify_prepared(self.checks.run, self.checks.config, self.checks.provider)
         from showcase_remote import decoded
         return decoded(self.checks.ssh(target, source_command(self.checks.attempt.checkout),
-                                       input=json.dumps(packet).encode(), timeout=timeout))
+                                       input=json.dumps(packet).encode(), timeout=timeout,
+                                       capture_failure="runtime-restore-error.json" if packet["action"] == "restore" else "runtime-command-error.json"))
 
     def activate_runtime(self, role):
         """Reload/probe one pinned runtime. Doctor/task authorization is separate."""

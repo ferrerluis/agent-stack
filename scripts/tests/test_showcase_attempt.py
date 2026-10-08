@@ -137,7 +137,7 @@ class IsolationTest(unittest.TestCase):
     def test_failed_native_command_keeps_bounded_private_output_without_exposing_it_in_exception(self):
         with tempfile.TemporaryDirectory() as temp:
             code = "import sys;sys.stderr.write('fixture-secret-error');sys.stdout.write('x'*1200000);sys.exit(42)"
-            for name in ("terraform-command-error.json", "container-command-error.json"):
+            for name in ("terraform-command-error.json", "container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json"):
                 with self.subTest(name=name):
                     report = Path(temp) / name
                     with self.assertRaisesRegex(attempt.PolicyError, "^command_failed$"):

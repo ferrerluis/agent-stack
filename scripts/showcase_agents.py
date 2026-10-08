@@ -264,6 +264,21 @@ def container_running(container, execute):
     return state["Running"] or state["Restarting"]
 
 
+def disarm_watchdog(unit, execute=invoke):
+    # A transient service can be collected as soon as its timer is stopped.
+    # Query and stop each unit separately; absence also reports inactive.
+    for suffix in (".timer", ".service"):
+        args = ["systemctl", "show", "--property=ActiveState", "--value", unit + suffix]
+        if execute(args, timeout=10).strip() == b"inactive":
+            continue
+        try:
+            execute(["systemctl", "stop", unit + suffix], timeout=10)
+        except ProbeError as error:
+            if str(error) != "probe_command_failed":
+                raise
+        need(execute(args, timeout=10).strip() == b"inactive", "watchdog_disarm_unverified")
+
+
 def run_probe(runtime, model, challenge, request_id, execute=invoke, now=time.monotonic):
     need(runtime in ("openclaw", "hermes") and isinstance(model, str) and re.fullmatch(MODEL, model)
          and isinstance(request_id, str) and re.fullmatch(REQUEST, request_id), "invalid_agent_request")
@@ -297,23 +312,21 @@ def run_probe(runtime, model, challenge, request_id, execute=invoke, now=time.mo
                 timeout=190, input=body))
             proof = parse_turn(runtime, raw.get("report"), model, challenge, request_id, raw.get("run_id"))
         need(container_running(container, execute), "runtime_container_not_running")
-        execute(["systemctl", "stop", unit + ".timer", unit + ".service"])
-        need(execute(["systemctl", "show", "--property=ActiveState", "--value", unit + ".timer"]).strip() == b"inactive",
-             "watchdog_disarm_unverified")
+        disarm_watchdog(unit, execute)
         armed = False
         proof.update({"watchdog": "disarmed", "duration_seconds": round(now() - started, 2)})
         validate_proof(proof, runtime, model, challenge, request_id)
         return proof
     except BaseException:
         # Do not restart an uncertain paid turn. Preserve the failed runtime
-        # for cleanup or the one authorized fresh retry.
+        # for cleanup or an authorized fresh trial within the cash cap.
         if container and re.fullmatch(r"[a-f0-9]{64}", container) and armed:
             failed["containment"] = "uncertain"
             try:
                 execute(["/usr/bin/docker", "stop", "-t", "5", container], timeout=20)
                 need(not container_running(container, execute), "runtime_stop_unverified")
                 failed["containment"] = "stopped"
-                execute(["systemctl", "stop", unit + ".timer", unit + ".service"])
+                disarm_watchdog(unit, execute)
             except BaseException:
                 pass  # Keep the watchdog if direct containment is uncertain.
         return failed

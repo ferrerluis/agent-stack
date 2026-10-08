@@ -43,8 +43,14 @@ class RemoteChecksTest(unittest.TestCase):
             self.checks.execute = command
             self.checks.ssh(target, ["sudo", "-n", "python3", "-", self.checks.provider, CHECKSUM, "vol-a3", ""], input=remote.BOOTSTRAP.encode())
             self.checks.ssh(target, ["sudo", "-n", "python3", "-", self.checks.provider, CHECKSUM, "vol-a3", ""], input=remote.BOOTSTRAP.encode(), capture_failure=True)
+            self.checks.ssh(target, ["sudo", "-n", "python3", "-", self.checks.provider, CHECKSUM, "vol-a3", ""], input=remote.BOOTSTRAP.encode(), capture_failure="runtime-command-error.json")
+            self.checks.ssh(target, ["sudo", "-n", "python3", "-", self.checks.provider, CHECKSUM, "vol-a3", ""], input=remote.BOOTSTRAP.encode(), capture_failure="runtime-restore-error.json")
+            with self.assertRaisesRegex(remote.PolicyError, "private_failure_report_refused"):
+                self.checks.ssh(target, [], capture_failure="../outside.json")
         self.assertNotIn("failure_report", calls[0])
         self.assertEqual(calls[1]["failure_report"], self.run / "container-command-error.json")
+        self.assertEqual(calls[2]["failure_report"], self.run / "runtime-command-error.json")
+        self.assertEqual(calls[3]["failure_report"], self.run / "runtime-restore-error.json")
 
     def test_stale_provider_answers_fail_all_roles_and_cannot_replay_paid_work(self):
         for role in ("openclaw", "hermes", "codex", "claude"):
