@@ -76,6 +76,23 @@ class LaunchTest(unittest.TestCase):
             query.return_value.products.return_value=[]
             with self.assertRaisesRegex(PolicyError,'network_price_missing'):network.measure_network(self.a)
 
+    def test_small_transfer_bounds_keep_real_minimums_and_cleanup_without_flat_fee(self):
+        self.a.config['trial_egress_cap_bytes'] = 536870912
+        base={'status':'resource_unit_prices_measured','source_revision':'a'*40,
+              'plan_sha256':'b'*64,'run_id':'as7-fixture01','currency':'USD'}
+        cases=(('aws', {'vm_cpu_disks_ipv4_hourly_usd_upper_bound':'0.20'}, '0.04', '0.40'),
+               ('gcp', {'vm_disks_ipv4_hourly_usd_upper_bound':'0.20'}, '0.04', '0.40'),
+               ('digitalocean', {'vm_and_disk_hourly_usd':'0.20','outbound_gib_usd':'0.01','vm_minimum_usd':'0.03'}, '0.10', '0.40'),
+               ('hetzner', {'vm_disk_ips_hourly_upper_bound':'0.20','outbound_tb_upper_bound':'1.20'}, '0.0051539607552', '0.80'))
+        for provider, units, fixed, hourly in cases:
+            with self.subTest(provider=provider), patch.object(network,'measure_network',return_value={'usd_per_gib_upper_bound':'0.01'}):
+                self.a.provider=provider
+                quote=launch.complete_quote(self.a,base|units|{'provider':provider})
+                self.assertEqual(Decimal(quote['fixed_usd']),Decimal(fixed))
+                self.assertEqual(Decimal(quote['hourly_usd']),Decimal(hourly))
+                self.assertEqual(quote['cleanup_usd'],'0.50')
+                self.assertTrue(quote['model_prepaid'])
+
     def test_replacement_peer_requires_its_original_cash_and_deadline_binding(self):
         self.a.config=funded();self.a.config['attempt_seconds']=10800
         batch=self.run/'batch';self.a.run=batch/'attempts/as7-fixture01'

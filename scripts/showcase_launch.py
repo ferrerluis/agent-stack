@@ -113,19 +113,18 @@ def complete_quote(attempt, resource):
     # No transfer pool or CPU-credit allowance is subtracted.
     hourly = money(resource[RATES[attempt.provider]]) * 2
     traffic_gib = Decimal(trial_egress_cap(attempt.config) * 4) / 1073741824
-    fixed = Decimal("0.50")
     if attempt.provider == "digitalocean":
-        fixed = max(fixed, money(resource["outbound_gib_usd"]) * traffic_gib * 2 + money(resource["vm_minimum_usd"]) * 2)
+        fixed = money(resource["outbound_gib_usd"]) * traffic_gib * 2 + money(resource["vm_minimum_usd"]) * 2
     elif attempt.provider == "hetzner":
-        fixed = max(fixed, money(resource["outbound_tb_upper_bound"]) * traffic_gib * 1073741824 / 1000000000000 * 2)
+        fixed = money(resource["outbound_tb_upper_bound"]) * traffic_gib * 1073741824 / 1000000000000 * 2
         hourly *= 2  # whole-hour server rounding within a noninteger lifetime
     else:
-        # Retain a minimum fixed reserve even when the measured quota-bound
-        # transfer cost is lower; fresh unit prices may raise this bound.
+        # Price the bounded traffic rather than adding an unrelated flat fee.
+        # Keep all framing/boot/account margins and the separate cleanup hold.
         from showcase_network_prices import measure_network
         network = measure_network(attempt)
         private_write(attempt.run / "network-prices.json", network)
-        fixed = max(fixed, money(network["usd_per_gib_upper_bound"]) * traffic_gib * 2)
+        fixed = money(network["usd_per_gib_upper_bound"]) * traffic_gib * 2
     source = {"aws":"https://aws.amazon.com/ec2/pricing/on-demand/",
               "digitalocean":"https://www.digitalocean.com/pricing/droplets",
               "gcp":"https://cloud.google.com/vpc/pricing",
