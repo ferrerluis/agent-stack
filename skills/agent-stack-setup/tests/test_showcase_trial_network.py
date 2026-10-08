@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 from pathlib import Path
 import shutil
+import re
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 
@@ -44,6 +47,8 @@ def endpoint():
                 with socket.socket(socket.AF_INET6 if ":" in row["address"] else socket.AF_INET, socket.SOCK_DGRAM) as sender:
                     sender.sendto(bytes(row["bytes"]), (row["address"], 19007))
                 result = True
+            elif row["action"] == "connect":
+                result = blocked_tcp(row["address"])
             else:
                 try:
                     result = len(receiver.recv(4096))
@@ -73,6 +78,18 @@ def send(address: str, size: int, may_drop: bool = False):
                 raise
 
 
+def blocked_tcp(address: str):
+    started = time.monotonic()
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sender:
+        sender.settimeout(.75)
+        try:
+            sender.connect((address, 19007))
+            return {"errno": None, "timed_out": False}
+        except OSError as error:
+            return {"errno": error.errno, "timed_out": isinstance(error, TimeoutError),
+                    "seconds": time.monotonic() - started}
+
+
 def network_fixture(script_path: Path):
     # All interfaces, sysctls and firewall rules below belong to the unshared
     # namespace. No real host network, Docker daemon or cloud is involved.
@@ -97,9 +114,13 @@ def network_fixture(script_path: Path):
             command(*prefix, "ip", "-6", "addr", "add", "2001:db8:" + subnet + "::2/64", "dev", child_name, "nodad")
             remote_mac = json.loads(command(*prefix, "ip", "-j", "link", "show", child_name))[0]["address"]
             command("ip", "-6", "neigh", "add", "2001:db8:" + subnet + "::2", "lladdr", remote_mac, "dev", name, "nud", "permanent")
+            local_mac = json.loads(command("ip", "-j", "link", "show", name))[0]["address"]
+            command(*prefix, "ip", "-6", "neigh", "add", "2001:db8:" + subnet + "::1", "lladdr", local_mac, "dev", child_name, "nud", "permanent")
+            command(*prefix, "ip", "-6", "route", "add", "default", "via", "2001:db8:" + subnet + "::1")
         command("ip", "link", "set", "lo", "up")
         command("ip", "route", "add", "default", "via", "192.0.2.2", "dev", "eth0")
         Path("/proc/sys/net/ipv4/ip_forward").write_text("1\n")
+        Path("/proc/sys/net/ipv6/conf/all/forwarding").write_text("1\n")
         subprocess.run(["bash", str(script_path)], check=True, capture_output=True, timeout=5)
         assert request(container, action="listen", address="198.51.100.2") is True
         assert request(outside, action="listen", address="192.0.2.2") is True
@@ -128,13 +149,32 @@ def network_fixture(script_path: Path):
         request(outside, action="listen", address="2001:db8:1::2")
         send("2001:db8:1::2", 128, may_drop=True)
         assert request(outside, action="receive") is None, "external IPv6 bypassed cost controls"
+        # A silent drop makes Docker's IPv6-first metadata lookup hang. Both
+        # host and forwarded connections must fail locally and promptly.
+        for origin, result in (("host", blocked_tcp("2001:db8:1::2")),
+                               ("container", request(container, action="connect", address="2001:db8:1::2"))):
+            assert result["errno"] == errno.ECONNREFUSED and not result["timed_out"], origin + " IPv6 result: " + json.dumps(result)
+            assert result["seconds"] < .5, origin + " IPv6 rejection was delayed"
+        for chain in ("OUTPUT", "FORWARD"):
+            counters = command("ip6tables", "-L", chain, "-nvx")
+            rejected = re.findall(r"^\s*([0-9]+)\s+[0-9]+\s+REJECT\s+tcp\b", counters, re.MULTILINE)
+            assert len(rejected) == 1 and int(rejected[0]) >= 1, chain + " rejection did not handle the real connection"
+        # Docker may insert earlier filter accepts. The final hook must still
+        # deny unmetered IPv6 from both origins without blocking internal IPv6.
+        for chain in ("OUTPUT", "FORWARD"):
+            command("ip6tables", "-I", chain, "1", "-j", "ACCEPT")
+        send("2001:db8:1::2", 128, may_drop=True)
+        assert request(outside, action="receive") is None, "host filter ACCEPT bypassed IPv6 guard"
+        request(container, action="send", address="2001:db8:1::2", bytes=128)
+        assert request(outside, action="receive") is None, "forwarded filter ACCEPT bypassed IPv6 guard"
         request(container, action="listen", address="2001:db8:2::2")
         send("2001:db8:2::2", 128)
         assert request(container, action="receive") == 128, "internal IPv6 was blocked"
         print(json.dumps({"status": "pass", "inbound_container_bytes": 2048,
                           "shared_outbound_bytes": 468, "quota_bytes": 512,
                           "host_and_forwarded_overflow": "dropped", "internal_after_overflow": "passed",
-                          "external_ipv6": "dropped", "internal_ipv6": "passed"}))
+                          "external_ipv6": "rejected_promptly", "ipv6_accept_bypass": "dropped",
+                          "internal_ipv6": "passed"}))
     finally:
         for peer in peers:
             peer[1].close(); peer[2].close()

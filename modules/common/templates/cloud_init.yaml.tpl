@@ -32,6 +32,10 @@ bootcmd:
     iptables -t mangle -A AS7_EGRESS -m quota --quota ${showcase_trial_limits.egress_cap_bytes} -j ACCEPT
     iptables -t mangle -A AS7_EGRESS -j DROP
     iptables -t mangle -I POSTROUTING 1 -o "$egress_interface" -j AS7_EGRESS
+    # Reject external IPv6 TCP promptly so download clients can use
+    # metered IPv4. Retain the final drop even if Docker inserts an ACCEPT.
+    ip6tables -I OUTPUT 1 -o "$egress_interface" -p tcp -j REJECT --reject-with tcp-reset
+    ip6tables -I FORWARD 1 -o "$egress_interface" -p tcp -j REJECT --reject-with tcp-reset
     ip6tables -t mangle -I POSTROUTING 1 -o "$egress_interface" -j DROP
     cat > /etc/systemd/system/agent-stack-trial-deadline.service <<'AS7_SERVICE'
     [Unit]
