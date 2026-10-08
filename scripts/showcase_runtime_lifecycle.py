@@ -31,6 +31,29 @@ def need(value):
     if not value: raise ValueError("runtime_lifecycle_unverified")
 
 
+def container_failure_summary(error):
+    result = {"exit_code": error.returncode, "output_sha256": routes.sha(error.stdout), "report": "unparsed"}
+    try:
+        report = agents.strict_json(error.stdout)
+        need(set(report) == {"schema", "status", "diagnostics"} and type(report["schema"]) is int
+             and report["schema"] == 1 and report["status"] in
+             {"runtime_container_route_unverified", "runtime_task_unverified"})
+        detail = report["diagnostics"]
+        need(isinstance(detail, dict) and set(detail) in ({"kind", "frames"}, {"kind", "frames", "errno"})
+             and detail["kind"] in {"ValueError", "TypeError", "KeyError", "PermissionError", "FileNotFoundError",
+                                    "ModuleNotFoundError", "TimeoutError", "other"})
+        need("errno" not in detail or type(detail["errno"]) is int)
+        frames = detail["frames"]; need(isinstance(frames, list) and len(frames) <= 8)
+        names = {"hermes_probe", "native_hermes", "hermes_pool_valid", "selected_environment",
+                 "assignments", "hermes", "selected", "request", "need"}
+        need(all(isinstance(frame, dict) and set(frame) == {"function", "line"} and frame["function"] in names
+                 and type(frame["line"]) is int and 0 < frame["line"] < 10000 for frame in frames))
+        result.update(report="json", status=report["status"], **detail)
+    except (ValueError, agents.ProbeError, KeyError, TypeError, UnicodeError):
+        pass
+    return result
+
+
 def doctor_failure_summary(error):
     """Only counts, severities and hashes; never diagnostic text or paths."""
     result = {"exit_code": error.returncode, "output_sha256": routes.sha(error.stdout), "report": "unparsed"}
@@ -171,6 +194,8 @@ class RuntimeLifecycle:
             self.failure["doctor"] = doctor_failure_summary(error)
         if self.phase == "hermes_doctor_command" and isinstance(error, agents.ProbeCommandFailed):
             self.failure["doctor"] = hermes_doctor_failure_summary(error)
+        if self.phase in {"container_native", "container_transport", "container_readiness", "hermes_task_command"} and isinstance(error, agents.ProbeCommandFailed):
+            self.failure["container"] = container_failure_summary(error)
         programs = {"/usr/bin/docker": "docker", "systemctl": "systemctl", "systemd-run": "systemd-run"}
         if isinstance(args, list) and args and args[0] in programs:
             detail = {"program": programs[args[0]]}
@@ -428,16 +453,20 @@ class RuntimeLifecycle:
                     params = {"message": agents.prompt(challenge), "sessionId": request_id,
                         "sessionKey": "agent:main:as7-" + request_id, "agentId": "main", "idempotencyKey": request_id,
                         "deliver": False, "timeout": 180}
+                    self.phase = "openclaw_task_command"
                     raw = self.execute(prefix + ["agent", "--expect-url", "ws://127.0.0.1:18789", "--expect-final",
                         "--timeout", "185000", "--json", "--params", json.dumps(params, separators=(",", ":"))], timeout=190)
+                    self.phase = "openclaw_task_result"
                     turn = agents.parse_turn(role, agents.strict_json(raw), model, challenge, request_id)
                 else:
                     packet = {"route": route, "config_sha256": context["config_sha256"],
                         "environment_sha256": context["environment_sha256"], "source_revision": self.binding["source_revision"],
                         "challenge": challenge, "request_id": request_id}
+                    self.phase = "hermes_task_command"
                     raw = self.execute(["/usr/bin/docker", "exec", "-i", "--user", owner, context["container_id"],
                         "/opt/hermes/.venv/bin/python", "-B", "-I", "-c", probe.hermes_readiness_source(TASK_SOURCE)],
                         input=json.dumps(packet, separators=(",", ":")).encode(), timeout=190)
+                    self.phase = "hermes_task_result"
                     turn = agents.strict_json(raw)
                 # Never accept a task after route/file/container replacement or
                 # a watchdog stop, even if its answer and usage look correct.

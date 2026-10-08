@@ -20,6 +20,24 @@ def need(value):
     if not value: raise ValueError("runtime_container_route_unverified")
 
 
+def failure_summary(error):
+    """Fixed exception categories and owned source locations, never values."""
+    names = {"hermes_probe", "native_hermes", "hermes_pool_valid", "selected_environment",
+             "assignments", "hermes", "selected", "request", "need"}
+    files = {"showcase_runtime_probe.py", "showcase_runtime_environment.py", "showcase_runtime_task.py"}
+    frames, trace = [], error.__traceback__
+    while trace is not None:
+        code = trace.tb_frame.f_code
+        if Path(code.co_filename).name in files and code.co_name in names:
+            frames.append({"function": code.co_name, "line": trace.tb_lineno})
+        trace = trace.tb_next
+    kind = type(error).__name__
+    result = {"kind": kind if kind in {"ValueError", "TypeError", "KeyError", "PermissionError",
+              "FileNotFoundError", "ModuleNotFoundError", "TimeoutError"} else "other", "frames": frames[-8:]}
+    if isinstance(error, OSError) and type(error.errno) is int: result["errno"] = error.errno
+    return result
+
+
 OPENCLAW_NATIVE_ERRORS = frozenset({
     "openclaw_snapshot_invalid", "openclaw_config_revision_invalid", "openclaw_applied_revision_invalid",
     "openclaw_applied_revision_unverified", "openclaw_config_invalid",
@@ -349,7 +367,8 @@ process.stdin.on('end',async()=>{try{
 
 def main():
     try: report = hermes_probe(decoded(sys.stdin.buffer.read(4097)))
-    except Exception: report = {"schema": 1, "status": "runtime_container_route_unverified"}
+    except Exception as error:
+        report = {"schema": 1, "status": "runtime_container_route_unverified", "diagnostics": failure_summary(error)}
     print(json.dumps(report))
     return 1 if report["status"] == "runtime_container_route_unverified" else 0
 

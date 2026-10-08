@@ -2,6 +2,7 @@ import base64
 import copy
 from http.client import HTTPConnection
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import showcase_runtime_routes as routes
 import showcase_runtime_probe as probe
+import showcase_runtime_task as runtime_task
 import showcase_runtime_environment as environment
 import showcase_runtime_lifecycle as lifecycle
 import showcase_model_session as session
@@ -27,6 +29,37 @@ import test_showcase_remote as remote_fixtures
 
 
 class RuntimeDisarmRegressionTest(unittest.TestCase):
+    def test_inner_probe_and_task_failures_keep_owned_locations_and_no_private_values(self):
+        secret = 'fixture-private-task-secret'
+        for module, status in ((probe, 'runtime_container_route_unverified'), (runtime_task, 'runtime_task_unverified')):
+            output = io.StringIO()
+            with patch.object(module.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps({'private': secret}).encode()))), patch.object(module.sys, 'stdout', output):
+                self.assertEqual(module.main(), 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result['status'], status)
+            self.assertEqual(result['diagnostics']['kind'], 'ValueError')
+            self.assertTrue(result['diagnostics']['frames'])
+            self.assertNotIn(secret, output.getvalue())
+            summary = lifecycle.container_failure_summary(lifecycle.agents.ProbeCommandFailed(1, output.getvalue().encode(), secret.encode()))
+            self.assertEqual(summary['report'], 'json')
+            self.assertEqual(summary['frames'], result['diagnostics']['frames'])
+            self.assertNotIn(secret, json.dumps(summary))
+
+    def test_container_failure_summary_refuses_arbitrary_diagnostic_fields_and_locations(self):
+        secret = 'fixture-private-probe-secret'
+        original = {'schema': 1, 'status': 'runtime_task_unverified', 'diagnostics': {'kind': 'ValueError', 'frames': [{'function': 'hermes', 'line': 27}]}}
+        for change in ('unknown_field', 'kind', 'function', 'line', 'schema', 'errno'):
+            value = copy.deepcopy(original)
+            if change == 'unknown_field': value['diagnostics']['message'] = secret
+            elif change == 'kind': value['diagnostics']['kind'] = secret
+            elif change == 'function': value['diagnostics']['frames'][0]['function'] = secret
+            elif change == 'line': value['diagnostics']['frames'][0]['line'] = True
+            elif change == 'schema': value['schema'] = True
+            else: value['diagnostics']['errno'] = secret
+            result = lifecycle.container_failure_summary(lifecycle.agents.ProbeCommandFailed(1, json.dumps(value).encode()))
+            self.assertEqual(result['report'], 'unparsed')
+            self.assertNotIn(secret, json.dumps(result))
+
     def test_hermes_doctor_diagnostics_hash_private_text_and_keep_fixed_issue_flags(self):
         secret = 'fixture-private-hermes-secret'
         raw = ('\x1b[31m◆ Command Installation\x1b[0m\n  ✗ ' + secret + '\n'
@@ -869,6 +902,8 @@ class LifecycleTest(unittest.TestCase):
                 if failure == "answer":
                     self.task_mutation = (lambda value: value["result"]["payloads"][0].update(text='{"sum":0,"nonce":"a"}')) if role == "openclaw" else (lambda value: value["answer"].update(sum=0))
                 with self.assertRaises((ValueError, lifecycle.agents.ProbeError)): self.task()
+                if failure == "timeout": self.assertEqual(self.vm.failure["phase"], role + "_task_command")
+                if failure == "answer": self.assertEqual(self.vm.failure["phase"], role + "_task_result")
                 self.assertFalse(self.running)
                 self.assertEqual(json.loads(self.vm.path(role).read_text())["status"], "uncertain")
                 calls = len(self.calls)

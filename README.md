@@ -177,7 +177,7 @@ OpenClaw receives a minimal authenticated local gateway configuration before its
 
 Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host` to enforce service/config/doctor/tool/route checks, including both native doctors. Human diagnostics collect evidence but do not establish a passing deployment; real model tasks and second-peer browser checks are separate acceptance requirements.
 
-The TODO #7 live matrix remains pending for AWS, DigitalOcean, GCP and Hetzner. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation](docs/plans/showcase-readiness-implementation.md) and [test](docs/plans/showcase-readiness-tests.md) plans.
+The TODO #7 live matrix requires separate evidence for AWS, DigitalOcean, GCP and Hetzner at the tested revision. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation](docs/plans/showcase-readiness-implementation.md) and [test](docs/plans/showcase-readiness-tests.md) plans for the acceptance requirements and recorded results.
 
 ---
 

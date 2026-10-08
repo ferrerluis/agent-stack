@@ -106,8 +106,8 @@ def main():
     try:
         raw = sys.stdin.buffer.read(4097); need(0 < len(raw) <= 4096)
         result = hermes(routes.decoded(raw))
-    except BaseException:
-        result = {"schema": 1, "status": "runtime_task_unverified"}
+    except BaseException as error:
+        result = {"schema": 1, "status": "runtime_task_unverified", "diagnostics": probe.failure_summary(error)}
     print(json.dumps(result))
     return 1 if result["status"] == "runtime_task_unverified" else 0
 
