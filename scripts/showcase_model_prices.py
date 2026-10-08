@@ -124,6 +124,7 @@ def openai_terms(document, model):
         tail = re.sub(r"Prompts with more than [0-9]+K input tokens are priced at [0-9.]+x input and cache rates and [0-9.]+x output for the full request\. ?", "", tail)
     tail = tail.replace("Fast mode prices are 2x Standard. Batch and Flex prices are 50% lower than Standard.", "")
     for phrase in ("EU data residency is available with Standard, Flex, and Batch processing.",
+                   "EU data residency is available with Standard, Fast, Flex, and Batch processing.",
                    "Batch and Flex are priced at 50% of Standard rates.",
                    "Fast mode is priced at 2x the applicable rates."):
         tail = tail.replace(phrase, "")

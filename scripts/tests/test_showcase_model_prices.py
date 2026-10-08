@@ -81,6 +81,15 @@ class TermsTest(unittest.TestCase):
 
     def limits(self): return {role: {"max_requests": 2, "output_tokens_upper_bound": 128} for role in self.config["models"]}
 
+    def test_residency_availability_note_accepts_fast_without_changing_price_bounds(self):
+        baseline = prices.openai_terms(OPENAI_DOCUMENT, OPENAI)
+        for tiers in ("Standard, Flex, and Batch", "Standard, Fast, Flex, and Batch"):
+            note = "EU data residency is available with " + tiers + " processing."
+            document = OPENAI_DOCUMENT.replace("<h2>Modalities</h2>", "<p>" + note + "</p><h2>Modalities</h2>")
+            self.assertEqual(prices.openai_terms(document, OPENAI), baseline)
+            with self.assertRaisesRegex(PolicyError, "model_terms_price_unsupported"):
+                prices.openai_terms(document.replace(note, note + " Regional rates are doubled."), OPENAI)
+
     def test_highest_cache_long_context_regional_rates_exact_roles_sources_and_no_secret_or_launch_claim(self):
         result = self.measure()
         self.assertEqual(result["roles"]["codex"]["input_usd_per_million_upper_bound"], "5.500000000")
