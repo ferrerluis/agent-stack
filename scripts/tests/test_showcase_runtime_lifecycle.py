@@ -440,6 +440,39 @@ class LifecycleTest(unittest.TestCase):
 
     def prepare(self): return self.vm.prepare(self.route, image(self.role), "f" * 32)
 
+    def test_slow_openclaw_cli_can_verify_doctor_and_task_without_relaxing_routes(self):
+        self.make(); execute = self.execute
+        def slow_cli(args, timeout=10, **options):
+            if 'config.get' in args or '--help' in args:
+                if timeout < 12: raise lifecycle.agents.ProbeError('probe_command_timeout')
+                self.clock += 12
+            return execute(args, timeout=timeout, **options)
+        self.vm.raw_execute = slow_cli
+        self.prepare(); self.vm.verify(self.route, 'f' * 64)
+        self.vm.doctor(self.route, 'a' * 32)
+        report = self.task()
+        self.assertEqual(report['status'], 'runtime_task_verified')
+        self.assertFalse(self.timer); self.assertTrue(self.running)
+        self.assertNotIn(CAPABILITY, json.dumps(report))
+        self.vm.restore('openclaw')
+        self.assertEqual(self.files.target().read_bytes(), self.files.before['openclaw'])
+
+    def test_native_cli_timeout_remains_bounded_and_preserves_recovery(self):
+        self.make(); execute = self.execute
+        def stuck_cli(args, timeout=10, **options):
+            if 'config.get' in args:
+                self.assertLessEqual(timeout, 30)
+                raise lifecycle.agents.ProbeError('probe_command_timeout')
+            return execute(args, timeout=timeout, **options)
+        self.vm.raw_execute = stuck_cli
+        with self.assertRaises(lifecycle.agents.ProbeError): self.prepare()
+        self.assertFalse(self.running); self.assertTrue(self.timer)
+        self.assertEqual(self.vm.failure['phase'], 'native_route')
+        self.assertEqual(self.vm.failure['reason'], 'probe_command_timeout')
+        self.assertFalse(any('agent' in args for args, _, _ in self.calls))
+        self.vm.restore('openclaw')
+        self.assertEqual(self.files.target().read_bytes(), self.files.before['openclaw'])
+
     def test_pinned_hermes_yaml_is_staged_by_exact_native_hash_and_restored_byte_for_byte(self):
         self.make('hermes')
         raw = b'_config_version: 30\nmodel:\n  default: fixture-model\n  provider: anthropic\n'
@@ -684,7 +717,7 @@ class SessionReloadTest(unittest.TestCase):
                 if role == "hermes": value["checks"].update({"hermes.config": "pass", "hermes.readiness": "pass"}); value["readiness_sha256"] = "a" * 64
                 if fixture.probe_mutation: fixture.probe_mutation(value)
             else:
-                self.assertEqual(timeout, 30)
+                self.assertEqual(timeout, 60)
                 value.update(status="runtime_route_verified", watchdog="disarmed")
                 value["container_probe"] = {"schema": 1, "status": "runtime_container_route_verified", "role": role,
                     "provider": route["provider"], "uid": 1000 if role == "openclaw" else 10000, "config_sha256": "b" * 64,
@@ -712,6 +745,18 @@ class SessionReloadTest(unittest.TestCase):
             self.assertNotIn(CAPABILITY, json.dumps(evidence))
             self.assertEqual(evidence["model_channels"]["before_reboot"]["shutdown"], "verified")
             self.assertEqual([packet["action"] for packet in fixture.reload_calls], ["prepare", "verify", "restore"])
+
+    def test_parent_verification_budget_covers_slow_cli_and_transport_checks(self):
+        fixture = self.make(); command = fixture.models.runtime_lifecycle_command
+        def slow_verification(target, packet, timeout):
+            if packet['action'] == 'verify' and timeout < 45:
+                raise PolicyError('fixture_verification_deadline')
+            return command(target, packet, timeout)
+        fixture.models.runtime_lifecycle_command = slow_verification
+        result = fixture.models.activate_runtime('openclaw')
+        self.assertEqual(result['status'], 'runtime_route_verified')
+        self.assertEqual(fixture.models.gateway.started_roles, set())
+        fixture.models.close()
 
     def test_forged_reload_receipt_or_echoed_unobserved_nonce_revokes_and_restores(self):
         for changed in ("image", "native", "schema", "schema_bool", "uid", "observe"):

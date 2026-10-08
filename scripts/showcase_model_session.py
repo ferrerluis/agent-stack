@@ -286,7 +286,7 @@ class ModelSession:
             native_proof_valid(route, ready["native_route"])
             self.active()
             nonce = self.gateway.new_probe(role, kind="runtime")["nonce"]
-            report = self.runtime_lifecycle_command(target, {"action": "verify", "binding": binding, "route": route, "nonce": nonce}, 30)
+            report = self.runtime_lifecycle_command(target, {"action": "verify", "binding": binding, "route": route, "nonce": nonce}, 60)
             require(set(report) == fields | {"container_probe"} and report["status"] == "runtime_route_verified"
                     and report["watchdog"] == "disarmed" and all(report[k] == ready[k] for k in fields - {"status", "watchdog"}), "runtime_route_unverified")
             container = report["container_probe"]

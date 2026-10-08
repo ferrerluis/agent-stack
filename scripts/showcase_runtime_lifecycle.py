@@ -190,7 +190,7 @@ class RuntimeLifecycle:
         if route["role"] == "openclaw":
             raw = self.execute(["/usr/bin/docker", "exec", "--user", "1000", context["container_id"],
                 "env", "-i", "HOME=/home/node", "PATH=/usr/local/bin:/usr/bin:/bin", "openclaw", "gateway", "call", "config.get",
-                "--expect-url", "ws://127.0.0.1:18789", "--timeout", "5000", "--params", "{}", "--json"], timeout=10)
+                "--expect-url", "ws://127.0.0.1:18789", "--timeout", "5000", "--params", "{}", "--json"], timeout=30)
             return probe.native_openclaw(agents.strict_json(raw), route)
         report = self.container(context, route, "native", "")
         return report["native_route"]
@@ -329,7 +329,7 @@ class RuntimeLifecycle:
                 prefix = ["/usr/bin/docker", "exec", "--user", owner, context["container_id"], "env", "-i"]
                 if role == "openclaw":
                     prefix += ["HOME=/home/node", "PATH=/usr/local/bin:/usr/bin:/bin", "openclaw", "gateway", "call"]
-                    help_text = self.execute(prefix + ["--help"], timeout=10).decode("utf-8")
+                    help_text = self.execute(prefix + ["--help"], timeout=30).decode("utf-8")
                     need(all(flag in help_text for flag in ("--expect-url", "--expect-final", "--params", "--timeout", "--json")))
                 else: need(isinstance(TASK_SOURCE, str) and len(TASK_SOURCE) > 100)
                 self.execute(["systemd-run", "--quiet", "--unit=" + context["unit"], "--on-active=250s",
