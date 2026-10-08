@@ -158,20 +158,31 @@ class ContainerChecks:
                 passed = False
         return passed
 
+    def ssh_port(self, name):
+        binding = self.docker("port", name, "22/tcp").stdout.strip()
+        if not re.fullmatch(r"127\.0\.0\.1:[0-9]{1,5}", binding):
+            raise CheckFailed("workspace_port_not_loopback")
+        port = binding.rsplit(":", 1)[1]
+        if not 1 <= int(port) <= 65535:
+            raise CheckFailed("workspace_port_not_loopback")
+        return port
+
     def wait_ssh(self, name, port, key, known_hosts):
         command = ["ssh", "-F", "/dev/null", "-i", str(key), "-p", str(port), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
                    "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + str(known_hosts),
                    "-o", "ConnectTimeout=3", "testuser@127.0.0.1", "id -u"]
+        details = None
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             result = execute(command, self.env, timeout=10, check=False)
             if result.returncode == 0 and result.stdout.strip() == "1000":
                 return command[:-1]
+            details = command_details(command, result.stdout, result.stderr, result.returncode)
             inspection = json.loads(self.docker("container", "inspect", name).stdout)[0]
             if inspection.get("State", {}).get("Running") is not True:
-                raise CheckFailed("workspace_stopped_before_ssh")
+                raise CheckFailed("workspace_stopped_before_ssh", details)
             time.sleep(2)
-        raise CheckFailed("workspace_ssh_timeout")
+        raise CheckFailed("workspace_ssh_timeout", details)
 
     def profile(self, directory, codex_release, claude_release, platform, context=None):
         profile = "showcase" if claude_release else "legacy"
@@ -197,10 +208,7 @@ class ContainerChecks:
         execute(["docker", "run", "-d", "--platform", platform, "--name", container, "--label", LABEL + "=" + self.token,
                  "-p", "127.0.0.1::22", "-v", home + ":/home/testuser", "-v", keys + ":/var/lib/agent-stack-workspace/ssh-host-keys",
                  "-e", "WORKSPACE_PASSWORD", "-e", "WORKSPACE_PASSWORD_HASH", "-e", "WORKSPACE_USERNAME", "-e", "WORKSPACE_AUTHORIZED_KEYS_BASE64", image], run_env)
-        binding = self.docker("port", container, "22/tcp").stdout.strip()
-        if not re.fullmatch(r"127\.0\.0\.1:[0-9]+", binding):
-            raise CheckFailed("workspace_port_not_loopback")
-        port = binding.rsplit(":", 1)[1]
+        port = self.ssh_port(container)
         ssh = self.wait_ssh(container, port, key, directory / "known_hosts")
         host_key_before = self.docker("exec", container, "ssh-keygen", "-lf", "/var/lib/agent-stack-workspace/ssh-host-keys/ssh_host_ed25519_key.pub").stdout.strip()
         for tool, expected in (("codex", codex_release), ("claude", claude_release)):
@@ -218,16 +226,19 @@ class ContainerChecks:
             raise CheckFailed("workspace_identity_or_home_failed")
         # Restart and recreate exercise persistence and stable SSH trust.
         self.docker("restart", container, timeout=120)
-        self.wait_ssh(container, port, key, directory / "known_hosts")
+        # Docker may choose a different ephemeral host port at every start.
+        # Refresh both readiness and subsequent commands after the restart.
+        port = self.ssh_port(container)
+        ssh = self.wait_ssh(container, port, key, directory / "known_hosts")
+        host_key = self.docker("exec", container, "ssh-keygen", "-lf", "/var/lib/agent-stack-workspace/ssh-host-keys/ssh_host_ed25519_key.pub").stdout
+        if not host_key_before or host_key.strip() != host_key_before:
+            raise CheckFailed("persisted_host_key_changed")
         execute(ssh + ["test \"$(cat ~/container-test-marker)\" = persisted"], self.env)
         self.docker("container", "rm", "-f", container)
         execute(["docker", "run", "-d", "--platform", platform, "--name", container, "--label", LABEL + "=" + self.token,
                  "-p", "127.0.0.1::22", "-v", home + ":/home/testuser", "-v", keys + ":/var/lib/agent-stack-workspace/ssh-host-keys",
                  "-e", "WORKSPACE_PASSWORD", "-e", "WORKSPACE_PASSWORD_HASH", "-e", "WORKSPACE_USERNAME", "-e", "WORKSPACE_AUTHORIZED_KEYS_BASE64", image], run_env)
-        binding = self.docker("port", container, "22/tcp").stdout.strip()
-        if not re.fullmatch(r"127\.0\.0\.1:[0-9]+", binding):
-            raise CheckFailed("workspace_port_not_loopback")
-        port = binding.rsplit(":", 1)[1]
+        port = self.ssh_port(container)
         # The assigned port may change. Verify the persisted host-key fingerprint
         # directly too, rather than treating fresh trust on a new port as proof.
         host_key = self.docker("exec", container, "ssh-keygen", "-lf", "/var/lib/agent-stack-workspace/ssh-host-keys/ssh_host_ed25519_key.pub").stdout

@@ -113,3 +113,73 @@ class ProcessAndInputTest(unittest.TestCase):
                 self.assertEqual("ARG CLAUDE_RELEASE=" in dockerfile, claude is not None)
                 self.assertFalse(list(root.glob("**/terraform.tfstate")))
                 self.assertTrue((context / "workspace-cli-task.py").is_file())
+
+
+class ProfileRestartTest(unittest.TestCase):
+    def test_current_ssh_binding_rejects_public_or_invalid_ports(self):
+        checker = checks.ContainerChecks({}, "fixture-owner")
+        for binding in ("0.0.0.0:49000", "[::]:49000", "127.0.0.1:0", "127.0.0.1:65536", "", "127.0.0.1:49000\n127.0.0.1:49001"):
+            with self.subTest(binding=binding), patch.object(checker, "docker", return_value=result(binding)):
+                with self.assertRaisesRegex(checks.CheckFailed, "^workspace_port_not_loopback$"):
+                    checker.ssh_port("owned-fixture")
+
+    def test_ssh_readiness_timeout_preserves_last_connection_error(self):
+        checker = checks.ContainerChecks({}, "fixture-owner")
+        attempt = subprocess.CompletedProcess([], 255, "", "fixture-connection-refused")
+        with patch.object(checks, "execute", return_value=attempt), patch.object(checks.time, "monotonic", side_effect=(0, 1, 121)), \
+                patch.object(checks.time, "sleep"), patch.object(checker, "docker", return_value=result('[{"State":{"Running":true}}]')):
+            with self.assertRaisesRegex(checks.CheckFailed, "^workspace_ssh_timeout$") as raised:
+                checker.wait_ssh("owned-fixture", "49000", Path("fixture-key"), Path("fixture-hosts"))
+        self.assertEqual(raised.exception.details["program"], "ssh")
+        self.assertEqual(raised.exception.details["stderr"], "fixture-connection-refused")
+        self.assertEqual(raised.exception.details["exit_code"], 255)
+        self.assertNotIn("fixture-key", json.dumps(raised.exception.details))
+
+    def test_ssh_follows_changed_loopback_port_after_restart_and_recreation(self):
+        for claude in (None, "2.1.211"):
+            with self.subTest(claude=claude), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                context = root / "context"; context.mkdir()
+                checker = checks.ContainerChecks({}, "fixture-owner")
+                state = {"port": "49000", "starts": 0, "disabled": set()}
+                connections = []
+                def docker(*args, **kwargs):
+                    if args[0] == "port": return result("127.0.0.1:" + state["port"] + "\n")
+                    if args[0] == "restart": state["port"] = "49001"
+                    if args[0] == "run":
+                        if any(str(value).endswith("-missing-password") for value in args):
+                            return result("WORKSPACE_PASSWORD is required", code=1)
+                        state["starts"] += 1
+                        if state["starts"] == 2: state["port"] = "49002"
+                    if args[0] == "exec" and args[2] == "ssh-keygen": return result("fixture-persisted-host-key")
+                    if args[0] == "exec" and args[2] == "mv":
+                        tool = Path(args[3]).name.removesuffix(".test-disabled")
+                        if args[4].endswith(".test-disabled"): state["disabled"].add(tool)
+                        else: state["disabled"].remove(tool)
+                    return result()
+                def wait(name, port, key, hosts):
+                    self.assertEqual(port, state["port"], "SSH must use Docker's current published port")
+                    connections.append(port)
+                    return ["fixture-ssh", port]
+                def execute(args, env, **kwargs):
+                    if args[0] == "docker": return docker(*args[1:], **kwargs)
+                    if args[0] == "ssh-keygen":
+                        Path(args[-1]).with_suffix(".pub").write_text("fixture-public-key")
+                        return result()
+                    if args[0] == "openssl": return result("$6$" + "a" * 16 + "$" + "b" * 86)
+                    self.assertEqual(args[0], "fixture-ssh")
+                    self.assertEqual(args[1], state["port"], "Subsequent commands must follow the refreshed SSH endpoint")
+                    task = args[-1]
+                    if task == "command -v claude": return result(code=1)
+                    if task.endswith(" --version"):
+                        tool = task.split()[0]
+                        return result(code=127) if tool in state["disabled"] else result("0.145.0" if tool == "codex" else claude)
+                    if "python3" in task: return result(json.dumps({"uid": 1000, "owner": 1000, "home": "/home/testuser"}))
+                    self.assertIn("container-test-marker", task)
+                    return result()
+                with patch.object(checker, "docker", side_effect=docker), patch.object(checker, "wait_ssh", side_effect=wait), \
+                        patch.object(checks, "execute", side_effect=execute):
+                    report = checker.profile(root, "0.145.0", claude, "linux/amd64", context=context)
+                self.assertEqual(report["status"], "pass")
+                self.assertEqual(report["persistence"], "pass")
+                self.assertEqual(connections, ["49000", "49001", "49002"])
