@@ -124,6 +124,41 @@ class StrictHealthTest(unittest.TestCase):
                        {'warnings': [{'errorCode': 'OPENCLAW_STATE_LEASE_ABORTED'}]}):
             self.assertFalse(doctor.doctor_healthy({**report, **change}, '2026.9.8'))
 
+    def test_published_image_coverage_requires_immutable_identity_and_exact_counts(self):
+        version = 'OpenClaw 2026.9.8 (fc23bc8)'
+        report = {'schemaVersion': 1, 'ok': True, 'checksRun': 38, 'checksSkipped': 31, 'findings': [], 'warnings': []}
+        identities = (
+            'sha256:d0ded1dd76939b2bf4d67ef2d13247b8b160aa5666331d4a0b0e58811182cbb8',
+            'sha256:5139eb3ca71ba20d3cd3aa933338e63dbff857d384e482fbdb7dd557849e5529',
+            'sha256:5bf41facf2ed9c505d4a3ba9c18bc21afbb4a7999e61574892fff35687705a8e',
+        )
+        for identity in identities:
+            coverage = doctor.doctor_default_coverage(version, identity)
+            self.assertEqual(coverage, '2026.9.8-image')
+            self.assertTrue(doctor.doctor_healthy(report, coverage))
+        for identity in ('', 'sha256:' + 'd' * 64, 'openclaw:2026.9.8'):
+            self.assertIsNone(doctor.doctor_default_coverage(version, identity))
+        self.assertIsNone(doctor.doctor_default_coverage('OpenClaw 2026.9.9', identities[0]))
+        self.assertFalse(doctor.doctor_healthy(report, '2026.9.8'))
+        for change in ({'checksRun': 37, 'checksSkipped': 30}, {'checksRun': True}, {'checksSkipped': 30},
+                       {'findings': [{'severity': 'warning'}]}, {'warnings': [None]},
+                       {'warnings': [{'errorCode': 'OPENCLAW_STATE_LEASE_ABORTED'}]}):
+            self.assertFalse(doctor.doctor_healthy({**report, **change}, '2026.9.8-image'))
+
+    def test_remote_image_doctor_binds_coverage_to_docker_inspection(self):
+        identity = 'sha256:d0ded1dd76939b2bf4d67ef2d13247b8b160aa5666331d4a0b0e58811182cbb8'
+        for image_id, expected in ((identity, 'pass'), ('sha256:' + 'd' * 64, 'fail'), ('', 'fail')):
+            def run(command, timeout=30):
+                if command[1] == 'compose': return 0, 'container-fixture'
+                if command[1] == 'inspect':
+                    return 0, json.dumps([{'Image': image_id, 'State': {'Running': True, 'Health': {'Status': 'healthy'}}}])
+                if command[-1] == '--version': return 0, 'OpenClaw 2026.9.8 (fc23bc8)'
+                return 0, json.dumps({'schemaVersion': 1, 'ok': True, 'checksRun': 38,
+                                      'checksSkipped': 31, 'findings': [], 'warnings': []})
+            with patch.object(doctor, 'run', side_effect=run):
+                report = doctor.remote_report(['openclaw'], False, False, 'host')
+            self.assertEqual(next(check['status'] for check in report['checks'] if check['name'] == 'openclaw.doctor'), expected)
+
     def hermes_report(self):
         return "\n".join("◆ " + section + "\n  ✓ fixture passed" for section in (
             "Python Environment", "Required Packages", "Configuration Files", "Directory Structure", "API Connectivity"

@@ -103,7 +103,7 @@ import test_showcase_agents as agent_fixtures
 ROOT = Path(__file__).resolve().parents[2]
 CAPABILITY = route_fixtures.CAPABILITY
 CONTAINER = "c" * 64
-IMAGE_ID = "sha256:" + "d" * 64
+IMAGE_ID = "sha256:d0ded1dd76939b2bf4d67ef2d13247b8b160aa5666331d4a0b0e58811182cbb8"
 HERMES_DOCTOR = ("◆ Python Environment\n✓ valid\n◆ Required Packages\n✓ valid\n◆ Configuration Files\n✓ valid\n"
     "◆ Directory Structure\n✓ valid\n◆ API Connectivity\n✓ selected route\nAll checks passed!\n").encode()
 
@@ -425,7 +425,7 @@ class LifecycleTest(unittest.TestCase):
         self.running, self.timer, self.clock, self.health = True, False, 0.0, "healthy"
         self.identifier, self.image_ref, self.image_id, self.restarts = CONTAINER, image(role), IMAGE_ID, 0
         self.calls = []; self.native_mutation = self.probe_mutation = None
-        self.doctor_output = (json.dumps({"schemaVersion": 1, "ok": True, "checksRun": 37, "checksSkipped": 30,
+        self.doctor_output = (json.dumps({"schemaVersion": 1, "ok": True, "checksRun": 38, "checksSkipped": 31,
             "findings": [], "warnings": []}).encode() if role == "openclaw" else HERMES_DOCTOR)
         self.doctor_failure = self.doctor_change = False
         self.stop_on_disarm = False
@@ -727,7 +727,7 @@ class LifecycleTest(unittest.TestCase):
         secret = 'fixture-private-doctor-result'
         reports = [
             {'schemaVersion': 1, 'ok': True, 'checksRun': 36, 'checksSkipped': 31, 'findings': [], 'warnings': []},
-            {'schemaVersion': 1, 'ok': True, 'checksRun': 37, 'checksSkipped': 30, 'findings': [],
+            {'schemaVersion': 1, 'ok': True, 'checksRun': 38, 'checksSkipped': 31, 'findings': [],
              'warnings': [{'errorCode': 'OPENCLAW_STATE_LEASE_ABORTED', 'message': secret}]},
         ]
         for report in reports:
@@ -745,6 +745,15 @@ class LifecycleTest(unittest.TestCase):
             self.assertNotIn(secret, json.dumps(self.vm.failure))
             self.vm.restore(self.role)
 
+    def test_openclaw_doctor_refuses_unrecognized_image_before_running_checks(self):
+        self.make(); self.image_id = 'sha256:' + 'd' * 64
+        self.prepare(); self.vm.verify(self.route, 'f' * 64)
+        with self.assertRaises(ValueError): self.vm.doctor(self.route, 'a' * 32)
+        self.assertEqual(self.vm.failure['phase'], 'openclaw_doctor_version')
+        self.assertFalse(self.running)
+        self.assertFalse(any('--lint' in call for call in self.calls))
+        self.vm.restore(self.role)
+
     def test_green_doctor_report_is_retained_if_configuration_changes_after_command(self):
         self.make(); self.prepare(); self.vm.verify(self.route, 'f' * 64); self.doctor_change = True
         with self.assertRaises(ValueError): self.vm.doctor(self.route, 'a' * 32)
@@ -752,7 +761,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(self.vm.failure['phase'], 'file_verification')
         diagnostic = self.vm.failure['doctor']
         self.assertEqual(diagnostic['exit_code'], 0); self.assertTrue(diagnostic['ok'])
-        self.assertEqual((diagnostic['checks_run'], diagnostic['checks_skipped']), (37, 30))
+        self.assertEqual((diagnostic['checks_run'], diagnostic['checks_skipped']), (38, 31))
         self.assertNotIn('operator', json.dumps(self.vm.failure))
         with self.assertRaises(ValueError): self.vm.restore(self.role)
         self.assertEqual(self.files.target(self.role).read_bytes(), b'{"operator":"change"}\n')

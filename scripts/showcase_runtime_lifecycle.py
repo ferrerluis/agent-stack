@@ -314,7 +314,8 @@ class RuntimeLifecycle:
                     self.phase = "openclaw_doctor_version"
                     version = self.execute(["/usr/bin/docker", "exec", "--user", "1000", context["container_id"],
                         "env", "-i", "HOME=/home/node", "PATH=/usr/local/bin:/usr/bin:/bin", "openclaw", "--version"], timeout=10)
-                    need(DOCTOR_MODULE.doctor_default_coverage(version.decode("utf-8")) == "2026.9.8")
+                    coverage = DOCTOR_MODULE.doctor_default_coverage(version.decode("utf-8"), context["image_id"])
+                    need(coverage == "2026.9.8-image")
                     command = ["env", "-i", "HOME=/home/node", "PATH=/usr/local/bin:/usr/bin:/bin",
                         "openclaw", "doctor", "--lint", "--json", "--severity-min", "warning"]
                 else:
@@ -327,7 +328,7 @@ class RuntimeLifecycle:
                 if route["role"] == "openclaw":
                     parsed = agents.strict_json(raw)
                     need(isinstance(parsed, dict) and type(parsed.get("schemaVersion")) is int)
-                    passed = DOCTOR_MODULE.doctor_healthy(parsed, default_coverage="2026.9.8")
+                    passed = DOCTOR_MODULE.doctor_healthy(parsed, default_coverage=coverage)
                 else: passed = DOCTOR_MODULE.hermes_doctor_healthy(raw.decode("utf-8"))
                 need(passed); self.current_files(context, route)
                 checks = {"service." + route["role"]: "pass", route["role"] + ".doctor": "pass"}
