@@ -228,7 +228,7 @@ class RemoteChecks:
                 and stat.S_IMODE(hosts.stat().st_mode) == 0o600, "private_known_hosts_required")
         wrapper = self.attempt.checkout / "bin/agent-stack-ssh"
         require(wrapper.is_file() and wrapper.stat().st_mode & 0o100, "verified_ssh_wrapper_required")
-        require(type(capture_failure) is bool or capture_failure in ("container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json"),
+        require(type(capture_failure) is bool or capture_failure in ("container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json", "host-doctor-command-error.json"),
                 "private_failure_report_refused")
         report = "container-command-error.json" if capture_failure is True else capture_failure
         options = {"failure_report": self.run / report} if report and self.execute is command else {}
@@ -281,7 +281,7 @@ class RemoteChecks:
         if self.models is None:
             report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", "--strict", "--remote", "--json",
                 "--services", "openclaw,hermes,workspace", "--require-claude", "--check-tailscale", "--tailscale-mode", "host"],
-                input=source.read_bytes(), timeout=300))
+                input=source.read_bytes(), timeout=300, capture_failure="host-doctor-command-error.json"))
         else:
             # Never rerun native doctors with the original container's model
             # environment. Captured, isolated diagnostics supply each runtime
@@ -294,7 +294,7 @@ class RemoteChecks:
             with self.models.gateway.diagnostic_window("openclaw"), self.models.gateway.diagnostic_window("hermes"):
                 report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", "--strict", "--remote", "--json",
                     "--services", "workspace", "--require-claude", "--check-tailscale", "--tailscale-mode", "host",
-                    "--route-services", "openclaw,hermes"], input=source.read_bytes(), timeout=180))
+                    "--route-services", "openclaw,hermes"], input=source.read_bytes(), timeout=180, capture_failure="host-doctor-command-error.json"))
                 subset = doctor.required_checks(["workspace"], True, True)
                 require(report.get("status") == "pass" and doctor.accepted(report, subset), "runtime_doctor_failed")
                 require(self.ledger.operate(lambda state: task_evidence.hashed(self.models.spend.account(state)["model_requests"])) == before,

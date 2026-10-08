@@ -18,6 +18,18 @@ spec.loader.exec_module(doctor)
 
 
 class StrictHealthTest(unittest.TestCase):
+    def test_remote_stdin_from_shallow_directory_emits_failing_checks_without_repo_filename(self):
+        result = subprocess.run([sys.executable, "-B", "-", "--strict", "--remote", "--json",
+            "--services", "workspace", "--require-claude", "--check-tailscale", "--tailscale-mode", "host",
+            "--route-services", "openclaw,hermes"], input=SCRIPT.read_text(), capture_output=True, text=True,
+            cwd="/", env={"PATH": "", "PYTHONDONTWRITEBYTECODE": "1"}, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual({row["name"] for row in report["checks"]}, doctor.required_checks(["workspace"], True, True))
+        self.assertTrue(all(row["status"] == "fail" for row in report["checks"]))
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_workspace_subset_still_requires_both_private_application_routes(self):
         dns = "agent-stack.test.ts.net"
         good = {"TCP": {"443": {"HTTPS": True}, "8443": {"HTTPS": True}}, "Web": {

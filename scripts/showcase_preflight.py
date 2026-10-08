@@ -314,7 +314,7 @@ def google_x86_machine(size):
     # Intel/AMD; an explicit different architecture still takes precedence.
     return size.get("architecture") == "X86_64" or (size.get("architecture") is None
         and isinstance(size.get("name"), str)
-        and re.fullmatch(r"e2-(?:standard|highmem|highcpu)-(?:2|4|8|16|32)", size["name"]) is not None)
+        and re.fullmatch(r"e2-(?:(?:standard|highmem|highcpu)-(?:2|4|8|16|32)|medium)", size["name"]) is not None)
 
 
 class Google(RestCloud):

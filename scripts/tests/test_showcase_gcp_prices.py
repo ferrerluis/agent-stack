@@ -115,6 +115,27 @@ class PriceTest(unittest.TestCase):
         self.assertEqual(result['vm_hourly_usd_upper_bound'], '0.092000000')
         self.assertFalse(result['complete_quote']); self.assertEqual(result['launch_gate'], 'unverified')
 
+    def test_medium_requires_native_four_gib_shape_and_bounds_both_guest_cpu_units(self):
+        self.cloud['size'] = 'e2-medium'
+        self.plan = json.loads(json.dumps(self.plan).replace('e2-standard-2', 'e2-medium'))
+        self.adapter.get.return_value = {'name': 'e2-medium', 'guestCpus': 2, 'memoryMb': 4096, 'isSharedCpu': True}
+        result = self.measure()
+        self.assertEqual(result['vm_hourly_usd_upper_bound'], '0.052000000')
+        self.assertEqual(result['selection']['vcpus'], 2)
+        self.assertEqual(result['selection']['ram_gib'], 4)
+        self.assertFalse(result['complete_quote']); self.assertEqual(result['launch_gate'], 'unverified')
+
+    def test_medium_changed_cpu_memory_shared_identity_or_architecture_refuses_before_catalog(self):
+        self.cloud['size'] = 'e2-medium'
+        self.plan = json.loads(json.dumps(self.plan).replace('e2-standard-2', 'e2-medium'))
+        native = {'name': 'e2-medium', 'guestCpus': 2, 'memoryMb': 4096, 'isSharedCpu': True}
+        for mutation in ({'guestCpus': 1}, {'memoryMb': 8192}, {'memoryMb': 4096.0},
+                         {'isSharedCpu': False}, {'isSharedCpu': None}, {'isSharedCpu': 'true'}, {'architecture': 'ARM64'}):
+            self.adapter.get.return_value = native | mutation
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(PolicyError, 'gcp_price_vm_size_unavailable'):
+                self.measure()
+            self.assertEqual(self.http.calls, [])
+
     def test_real_mock_plan_shape_cpu_ram_both_disks_and_ip_without_free_allowance(self):
         result = self.measure()
         self.assertEqual(result["vm_hourly_usd_upper_bound"], "0.064000000")

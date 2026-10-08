@@ -32,7 +32,8 @@ HASH_PATTERN = r"\$6\$(?:rounds=[1-9][0-9]{3,8}\$)?[./A-Za-z0-9]{8,16}\$[./A-Za-
 KEY_PATH = ".ssh/id_ed25519_agent_stack"
 MAX_ARCHIVE = 32 * 1024 * 1024
 FAILURE_REPORTS = {"terraform-command-error.json", "terraform-apply-error.json", "terraform-cleanup-error.json",
-                   "container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json"}
+                   "container-command-error.json", "runtime-command-error.json", "runtime-restore-error.json",
+                   "host-doctor-command-error.json"}
 PROFILE = {
     "enabled_services": ["openclaw", "hermes", "workspace"], "agent_channel": "none",
     "model_providers_enabled": ["openai", "anthropic"], "fallback_models": [], "openai_auth_mode": "api_key",

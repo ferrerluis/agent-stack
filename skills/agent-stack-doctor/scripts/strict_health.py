@@ -220,7 +220,7 @@ def main():
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--remote", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--ssh-wrapper", default=str(Path(__file__).resolve().parents[3] / "bin/agent-stack-ssh"))
+    parser.add_argument("--ssh-wrapper")
     parser.add_argument("--services", default="openclaw,hermes")
     parser.add_argument("--require-claude", action="store_true")
     parser.add_argument("--check-tailscale", action="store_true")
@@ -238,6 +238,7 @@ def main():
         report = remote_report(services, args.require_claude, args.check_tailscale, args.tailscale_mode, route_services)
         code = 0
     else:
+        wrapper = args.ssh_wrapper or str(Path(__file__).resolve().parents[3] / "bin/agent-stack-ssh")
         remote_args = ["sudo", "python3", "-", "--remote", "--services", args.services, "--tailscale-mode", args.tailscale_mode]
         if args.require_claude:
             remote_args.append("--require-claude")
@@ -246,7 +247,7 @@ def main():
         if args.route_services is not None:
             remote_args.extend(["--route-services", args.route_services])
         try:
-            result = subprocess.run([args.ssh_wrapper, "--", shlex.join(remote_args)], input=Path(__file__).read_text(), capture_output=True, text=True, timeout=args.timeout)
+            result = subprocess.run([wrapper, "--", shlex.join(remote_args)], input=Path(__file__).read_text(), capture_output=True, text=True, timeout=args.timeout)
             report = parse_json(result.stdout)
             code = result.returncode
         except (OSError, subprocess.TimeoutExpired):

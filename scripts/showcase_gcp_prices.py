@@ -333,7 +333,8 @@ def plan_selection(plan, cloud, prefix, run):
             require(item["after"].get("project") == cloud["project_id"], "gcp_price_plan_project_changed")
     vm, disk = rows["google_compute_instance"][0]["after"], rows["google_compute_disk"][0]["after"]
     family = re.fullmatch(r"e2-(standard|highmem|highcpu)-([0-9]+)", cloud["size"])
-    require(family is not None and vm.get("machine_type") == cloud["size"] and vm.get("zone") == cloud["zone"]
+    medium = cloud["size"] == "e2-medium"
+    require((family is not None or medium) and vm.get("machine_type") == cloud["size"] and vm.get("zone") == cloud["zone"]
             and disk.get("zone") == cloud["zone"] and re.fullmatch(re.escape(cloud["region"]) + r"-[a-z]", cloud["zone"])
             and rows["google_compute_subnetwork"][0]["after"].get("region") == cloud["region"], "gcp_e2_plan_scope_required")
     vm_unknown = rows["google_compute_instance"][0].get("after_unknown", {})
@@ -374,8 +375,8 @@ def plan_selection(plan, cloud, prefix, run):
     boot_unknown = root_unknown[0].get("initialize_params", [{}])
     require(isinstance(boot_unknown, list) and len(boot_unknown) == 1 and isinstance(boot_unknown[0], dict)
             and not any(boot_unknown[0].get(key) for key in ("image", "size", "type")), "gcp_price_plan_values_unknown")
-    return {"boot_volume_gib": boot["size"], "data_volume_gib": disk["size"], "vcpus": int(family[2]),
-            "ram_gib_per_vcpu": {"standard": 4, "highmem": 8, "highcpu": 1}[family[1]], **image}
+    return {"boot_volume_gib": boot["size"], "data_volume_gib": disk["size"], "vcpus": 2 if medium else int(family[2]),
+            "ram_gib_per_vcpu": 2 if medium else {"standard": 4, "highmem": 8, "highcpu": 1}[family[1]], **image}
 
 
 def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, catalog=None, now=time.time):
@@ -389,7 +390,8 @@ def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, c
     from showcase_preflight import google_x86_machine
     require(machine.get("name") == cloud["size"] and google_x86_machine(machine)
             and type(machine.get("guestCpus")) is int and machine["guestCpus"] == selection["vcpus"] and 2 <= selection["vcpus"] <= 32
-            and type(machine.get("memoryMb")) is int and machine["memoryMb"] == ram * 1024 and ram >= 4,
+            and type(machine.get("memoryMb")) is int and machine["memoryMb"] == ram * 1024 and ram >= 4
+            and (cloud["size"] != "e2-medium" or machine.get("isSharedCpu") is True),
             "gcp_price_vm_size_unavailable")
     image = adapter.http.request(IMAGE_ENDPOINT + selection["image"], "Bearer " + adapter.access_token())
     require(isinstance(image, dict) and image.get("family") == "ubuntu-2204-lts" and image.get("architecture") == "X86_64"
@@ -402,6 +404,8 @@ def gcp_rates(plan, cloud, prefix, run, adapter, source_revision, plan_sha256, c
     rates, sources = catalog.selected(cloud["region"])
     finished = now()
     require(type(finished) in (int, float) and math.isfinite(finished) and began <= finished <= began + 300, "price_measurement_expired")
+    # Bound shared E2 Medium at both guest vCPUs' full native unit rates.
+    # Do not rely on fractional-core billing or a shared-core discount.
     vm_rate = rates["cpu"] * selection["vcpus"] + rates["ram"] * ram
     disk_rate = rates["disk"] / 672
     return {"schema": 1, "provider": "gcp", "status": "resource_unit_prices_measured", "currency": "USD", "run_id": prefix,
