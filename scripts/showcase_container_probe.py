@@ -154,6 +154,23 @@ def names_absent(checker, token):
                 and not set(expected).intersection(raw.splitlines()), "container_name_collision_or_cleanup_failed")
 
 
+def disarm_watchdog(unit, execute, env):
+    # Stopping a transient timer can collect its never-started service before
+    # a combined stop job reaches it. Verify each unit independently instead.
+    for suffix in (".timer", ".service"):
+        args = ["systemctl", "show", "--property=ActiveState", "--value", unit + suffix]
+        if execute(args, env=env, timeout=10).strip() == b"inactive":
+            continue
+        try:
+            execute(["systemctl", "stop", unit + suffix], env=env, timeout=20)
+        except PolicyError as error:
+            # A unit may also disappear between show and stop. A failed stop
+            # is safe only when a fresh manager query proves it inactive.
+            if str(error) != "container_command_failed":
+                raise
+        require(execute(args, env=env, timeout=10).strip() == b"inactive", "container_watchdog_disarm_unverified")
+
+
 def profile_valid(row, label, pins):
     expected = {"profile": label, "status": "pass", "uid": 1000, "ssh": "pass", "persistence": "pass",
                 "codex_release": pins["codex_release"], "claude_release": pins["claude_release"] if label == "showcase" else None,
@@ -203,6 +220,13 @@ def run_vm(bundle, execute=command, now=time.monotonic, suite_factory=None, scra
     def failure(error, stage):
         # Unknown exceptions can carry operator secrets. Only the verified,
         # credential-free suite's typed failures may supply private details.
+        if isinstance(error, PolicyError):
+            reason = str(error)
+            if reason in {"container_command_failed", "container_deadline_reached", "container_cleanup_unverified",
+                          "container_name_collision_or_cleanup_failed", "container_unit_collision",
+                          "container_watchdog_unverified", "container_watchdog_disarm_unverified", "container_profile_failed"}:
+                return {"phase": stage, "reason": reason}
+            return None
         error_type = getattr(suite, "CheckFailed", None)
         if not isinstance(error_type, type) or not issubclass(error_type, Exception) or not isinstance(error, error_type):
             return None
@@ -270,9 +294,7 @@ def run_vm(bundle, execute=command, now=time.monotonic, suite_factory=None, scra
             names_absent(checker, token)
             report["cleanup"] = "pass"
             if armed:
-                execute(["systemctl", "stop", unit + ".timer", unit + ".service"], env=env, timeout=20)
-                require(execute(["systemctl", "show", "--property=ActiveState", "--value", unit + ".timer"], env=env, timeout=10).strip() == b"inactive",
-                        "container_watchdog_disarm_unverified")
+                disarm_watchdog(unit, execute, env)
                 report["watchdog"] = "disarmed"
             report["duration_seconds"] = round(now() - started, 3)
             if report["status"] == "pass":

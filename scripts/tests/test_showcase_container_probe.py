@@ -228,7 +228,8 @@ class VMFlowTest(unittest.TestCase):
     def test_unverified_cleanup_preserves_captured_timer_program(self):
         self.checker.clean = False
         report = self.run_vm()
-        self.assertEqual(report, {"schema": 1, "status": "fail", "cleanup": "uncertain", "watchdog": "armed"})
+        self.assertEqual(report, {"schema": 1, "status": "fail", "cleanup": "uncertain", "watchdog": "armed",
+                                  "diagnostics": {"phase": "cleanup", "reason": "container_cleanup_unverified"}})
         retained = list(Path(self.temp.name).glob("*/cleanup.py"))
         self.assertEqual(len(retained), 1)
         self.assertFalse(any("stop" in args for args in self.commands))
@@ -236,7 +237,8 @@ class VMFlowTest(unittest.TestCase):
     def test_unverified_disarm_cannot_pass_or_remove_timer_program(self):
         self.disarm_failed = True
         report = self.run_vm()
-        self.assertEqual(report, {"schema": 1, "status": "fail", "cleanup": "pass", "watchdog": "armed"})
+        self.assertEqual(report, {"schema": 1, "status": "fail", "cleanup": "pass", "watchdog": "armed",
+                                  "diagnostics": {"phase": "cleanup", "reason": "container_watchdog_disarm_unverified"}})
         self.assertEqual(len(list(Path(self.temp.name).glob("*/cleanup.py"))), 1)
 
     def test_watchdog_script_refuses_foreign_labels_and_never_prunes(self):
@@ -252,3 +254,37 @@ class VMFlowTest(unittest.TestCase):
             exec(compile(probe.cleanup_source(token), "captured-cleanup.py", "exec"), namespace)
         self.assertTrue(commands.called)
         self.assertFalse(any("rm" in call.args[0] or "prune" in call.args[0] for call in commands.call_args_list))
+
+
+class WatchdogDisarmTest(unittest.TestCase):
+    def disarm(self, states, stop_error=None):
+        calls = []
+        def execute(args, env, timeout):
+            calls.append(args)
+            if "show" in args:
+                return next(states)
+            if stop_error is not None:
+                raise stop_error
+            return b""
+        probe.disarm_watchdog("owned-fixture", execute, {})
+        return calls
+
+    def test_stopping_timer_collects_never_started_service(self):
+        calls = self.disarm(iter((b"active\n", b"inactive\n", b"inactive\n")))
+        self.assertEqual([args for args in calls if "stop" in args], [["systemctl", "stop", "owned-fixture.timer"]])
+
+    def test_running_service_must_also_be_stopped_and_verified(self):
+        calls = self.disarm(iter((b"active\n", b"inactive\n", b"active\n", b"inactive\n")))
+        self.assertEqual([args[-1] for args in calls if "stop" in args], ["owned-fixture.timer", "owned-fixture.service"])
+
+    def test_unit_collected_between_show_and_stop_requires_fresh_proof(self):
+        self.disarm(iter((b"active\n", b"inactive\n", b"inactive\n")), probe.PolicyError("container_command_failed"))
+        for result in (b"active\n", b"", b"unknown\n"):
+            with self.subTest(result=result), self.assertRaisesRegex(probe.PolicyError, "container_watchdog_disarm_unverified"):
+                self.disarm(iter((b"active\n", result)), probe.PolicyError("container_command_failed"))
+
+    def test_deadline_and_unavailable_state_cannot_be_ignored(self):
+        with self.assertRaisesRegex(probe.PolicyError, "container_deadline_reached"):
+            self.disarm(iter((b"active\n",)), probe.PolicyError("container_deadline_reached"))
+        with self.assertRaisesRegex(probe.PolicyError, "container_command_failed"):
+            probe.disarm_watchdog("owned-fixture", Mock(side_effect=probe.PolicyError("container_command_failed")), {})
