@@ -17,8 +17,12 @@ def digest(value):
 
 
 def file_hash(path):
+    # Ubuntu 22.04 uses Python 3.10, before hashlib.file_digest exists.
+    result = hashlib.sha256()
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            result.update(chunk)
+    return result.hexdigest()
 
 
 def tree_hash(root, names):

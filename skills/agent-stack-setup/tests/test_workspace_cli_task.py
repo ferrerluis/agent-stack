@@ -206,10 +206,7 @@ class WorkspaceTaskTest(unittest.TestCase):
     def test_gateway_commands_use_explicit_auth_route_without_keys_or_automatic_codex_retries(self):
         bundle = self.bundle()
         args = task.command("codex", "test-model", bundle)
-        settings = {}
-        for index, arg in enumerate(args):
-            if arg == "-c":
-                settings.update(tomllib.loads(args[index + 1]))
+        settings = tomllib.loads("\n".join(args[index + 1] for index, arg in enumerate(args) if arg == "-c"))
         provider = settings["model_providers"][settings["model_provider"]]
         self.assertEqual(provider["base_url"], bundle["base_url"] + "/v1")
         self.assertEqual(provider["env_key"], "AGENT_STACK_MODEL_CREDENTIAL")
@@ -217,6 +214,7 @@ class WorkspaceTaskTest(unittest.TestCase):
         self.assertFalse(provider["supports_websockets"])
         self.assertEqual((provider["request_max_retries"], provider["stream_max_retries"]), (0, 0))
         self.assertEqual(settings["web_search"], "disabled")
+        self.assertEqual(settings["features"], {"multi_agent": False, "goals": False, "shell_snapshot": False})
         self.assertNotIn(bundle["credential"], " ".join(args))
         claude = task.command("claude", "test-model", self.bundle("claude"))
         self.assertNotIn("--max-budget-usd", claude)
@@ -241,7 +239,14 @@ args = sys.argv[1:]
 assert "inherited-private" not in str(os.environ)
 assert "a" * 64 not in " ".join(args)
 assert pathlib.Path(os.environ["HOME"]).parent == pathlib.Path.cwd()
-assert not list(pathlib.Path(os.environ["HOME"]).iterdir())
+client_home = pathlib.Path(os.environ["HOME"])
+assert {p.name for p in client_home.iterdir()} == ({"codex"} if cli == "codex" else set())
+if cli == "codex":
+    codex_home = pathlib.Path(os.environ["CODEX_HOME"])
+    assert codex_home.is_dir() and not codex_home.is_symlink()
+    assert codex_home.stat().st_mode & 0o777 == 0o700
+    assert codex_home.stat().st_uid == os.geteuid()
+    assert not list(codex_home.iterdir())
 if cli == "codex":
     settings = {}
     for i, arg in enumerate(args):

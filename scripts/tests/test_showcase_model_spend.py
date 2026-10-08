@@ -159,6 +159,13 @@ class SpendTest(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "model_spend_scope_changed"): spend.ModelSpend(self.ledger, RUN, "aws", "a" * 40, value)
         self.assertNotIn("model_requests", self.account())
 
+    def test_bad_codex_tracking_fails_before_admission_secret_or_http(self):
+        for extra in ({"client_metadata": {"session_id": "x" * 257}}, {"include": ["web_search_call.action.sources"]},
+                      {"prompt_cache_key": "foreign-identity"}):
+            with self.assertRaises(PolicyError): self.gate.forward("codex", "/v1/responses", body(**extra))
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+        self.assertNotIn("model_requests", self.account())
+
     def test_closed_attempt_expired_clock_or_insufficient_full_request_time_denies_dispatch(self):
         for now in (NOW - 1, self.reservation["work_deadline"] - 59, float("nan"), float("inf")):
             self.clock[0] = now
@@ -226,6 +233,43 @@ class RequestValidationTest(unittest.TestCase):
         for path in ("https://evil.invalid/v1/responses", "/v1/responses?api-key=private", "/v1/responses/compact", "/v1/embeddings"):
             with self.assertRaises(PolicyError): spend.prepare_request(self.policy, "codex", path, body())
         with self.assertRaises(PolicyError): spend.prepare_request(self.policy, "claude", "/v1/responses", body())
+
+    def test_codex_native_tracking_is_bounded_and_discarded_before_forwarding(self):
+        tracking = {"client_metadata": {"session_id": "fixture-session", "x-codex-window-id": "{fixture-window}",
+                    "x-codex-turn-metadata": '{"sandbox":"workspace-write"}'},
+                    "prompt_cache_key": "019c1234-abcd-7000-8000-123456789abc", "include": ["reasoning.encrypted_content"]}
+        _, prepared = spend.prepare_request(self.policy, "codex", "/v1/responses", body(**tracking))
+        _, plain = spend.prepare_request(self.policy, "codex", "/v1/responses", body())
+        self.assertEqual(prepared, plain)
+        for include in ([], ["reasoning.encrypted_content"]):
+            spend.prepare_request(self.policy, "codex", "/v1/responses", body(include=include))
+
+    def test_codex_tracking_refuses_unknown_unbounded_or_ambiguous_shapes(self):
+        changes = [{"client_metadata": item} for item in (None, [], {}, {"session_id": ""}, {"session_id": True},
+                   {"session_id": "x" * 257}, {"session_id": "é" * 129}, {"x-codex-turn-metadata": "x" * 16385},
+                   {"session_id": "fixture", "service_tier": "priority"})]
+        changes += [{"prompt_cache_key": item} for item in (None, True, "", "foreign-identity", "x" * 1024)]
+        changes += [{"include": item} for item in (None, "reasoning.encrypted_content", ["web_search_call.action.sources"],
+                    ["reasoning.encrypted_content", "reasoning.encrypted_content"], [True])]
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(PolicyError):
+                spend.prepare_request(self.policy, "codex", "/v1/responses", body(**change))
+        raw = body(client_metadata={"session_id": "fixture"})
+        raw = raw[:-1] + b',"client_metadata":{"session_id":"other"}}'
+        with self.assertRaises(PolicyError): spend.prepare_request(self.policy, "codex", "/v1/responses", raw)
+
+    def test_codex_tracking_cannot_relax_paid_features_or_other_roles_and_routes(self):
+        for role, path in (("openclaw", "/v1/responses"), ("hermes", "/v1/messages"),
+                           ("claude", "/v1/messages"), ("codex", "/v1/chat/completions")):
+            for extra in ({"client_metadata": {"session_id": "fixture"}},
+                          {"prompt_cache_key": "019c1234-abcd-7000-8000-123456789abc"}, {"include": []}):
+                with self.subTest(role=role, path=path, extra=extra), self.assertRaises(PolicyError):
+                    spend.prepare_request(self.policy, role, path, body(path, **extra))
+        for change in ({"model": "alias"}, {"store": True}, {"background": True}, {"service_tier": "priority"},
+                       {"tools": [{"type": "namespace", "name": "multi_agent_v1", "tools": []}]}):
+            with self.assertRaises(PolicyError):
+                spend.prepare_request(self.policy, "codex", "/v1/responses",
+                                      body(client_metadata={"session_id": "fixture"}, **change))
 
     def test_claude_tracking_is_bounded_discarded_and_not_available_to_other_roles(self):
         _, prepared = spend.prepare_request(self.policy, "claude", "/v1/messages",

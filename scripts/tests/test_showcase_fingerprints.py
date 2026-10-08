@@ -137,6 +137,16 @@ class FingerprintTest(unittest.TestCase):
             with self.assertRaises(PolicyError): fp.validate_contents(value)
         with self.assertRaises(PolicyError): fp.validate_contents(contents(), {**contents()["binding"], "vm_id": "other-vm"})
 
+    def test_host_file_hash_streams_full_contents_on_python_before_file_digest(self):
+        import hashlib
+        data = b"resolved-file-bytes" * 150000
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture"; path.write_bytes(data)
+            with patch.object(observed.hashlib, "file_digest", side_effect=AssertionError("unavailable on Python 3.10"), create=True):
+                self.assertEqual(observed.file_hash(path), hashlib.sha256(data).hexdigest())
+                path.write_bytes(b"")
+                self.assertEqual(observed.file_hash(path), hashlib.sha256(b"").hexdigest())
+
     def test_resolved_tree_tracks_file_bytes_modes_and_links_but_not_mtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); (root / "web").mkdir(); file = root / "web/code.js"; file.write_text("before")

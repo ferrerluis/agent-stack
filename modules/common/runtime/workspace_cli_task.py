@@ -108,6 +108,7 @@ def command(cli, model, gateway=None):
         if gateway is not None:
             provider = "agent_stack_showcase_budget"
             settings = {"model_provider": provider, "web_search": "disabled",
+                        "features.multi_agent": False, "features.goals": False, "features.shell_snapshot": False,
                         "model_providers." + provider: {
                             "name": "AgentStack showcase budget gateway", "base_url": gateway["base_url"] + "/v1",
                             "env_key": "AGENT_STACK_MODEL_CREDENTIAL", "wire_api": "responses", "requires_openai_auth": False,
@@ -208,6 +209,10 @@ def run_task(cli, model, api_key, timeout, model_gateway=False, challenge=None):
         code, output = invoke(command(cli, model), directory, env, timeout)
     else:
         with tempfile.TemporaryDirectory(prefix="client-", dir=directory) as client_temp:
+            # The pinned Codex CLI requires CODEX_HOME to exist before startup.
+            # This task owns the fresh directory; no saved auth is copied.
+            if cli == "codex":
+                (Path(client_temp) / "codex").mkdir(mode=0o700)
             code, output = invoke(command(cli, model, gateway), directory,
                                   gateway_environment(cli, model, gateway, Path(client_temp)), timeout)
     usage = model_usage(cli, output) if code == 0 else None

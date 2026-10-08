@@ -188,6 +188,27 @@ def prepare_request(policy, role, path, raw):
         require(isinstance(metadata, dict) and set(metadata) == {"user_id"}
                 and isinstance(metadata["user_id"], str) and 0 < len(metadata["user_id"]) <= 1024,
                 "model_request_scope_changed")
+    # Pinned Codex sends tracking and cache decorations even for a stateless
+    # task. Validate known bounded shapes and discard them before admission;
+    # they cannot change provider identity, price, storage or tools.
+    if role == "codex" and path == "/v1/responses" and isinstance(value, dict):
+        if "client_metadata" in value:
+            metadata = value.pop("client_metadata")
+            names = {"x-codex-installation-id", "x-codex-window-id", "thread_id", "turn_id",
+                     "session_id", "x-codex-turn-metadata"}
+            require(isinstance(metadata, dict) and bool(metadata) and not metadata.keys() - names
+                    and all(isinstance(item, str) and 0 < len(item.encode("utf-8", "surrogatepass")) <=
+                            (16384 if name == "x-codex-turn-metadata" else 256)
+                            for name, item in metadata.items()), "model_request_scope_changed")
+        if "prompt_cache_key" in value:
+            key = value.pop("prompt_cache_key")
+            require(isinstance(key, str) and re.fullmatch(
+                r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", key),
+                "model_request_scope_changed")
+        if "include" in value:
+            include = value.pop("include")
+            require(isinstance(include, list) and include in ([], ["reasoning.encrypted_content"]),
+                    "model_paid_feature_refused")
     require(isinstance(value, dict) and not value.keys() - FIELDS[path] and value.get("model") == terms["model"], "model_request_scope_changed")
     require(value.get("stream", False) in (True, False) and type(value.get("stream", False)) is bool
             and (value.get("background") is None or value.get("background") is False)
