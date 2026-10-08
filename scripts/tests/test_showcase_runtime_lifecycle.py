@@ -10,6 +10,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -98,12 +99,54 @@ def resolver_result(route):
             "base_url": route["base_url"] + ("/v1" if route["provider"] == "openai" else ""), "api_key": route["credential"]}
 
 
+def pooled_resolver_result(route):
+    actual = resolver_result(route)
+    entry = SimpleNamespace(id="fixture-entry", provider="custom:as7-budget", source="config:as7-budget", label="as7-budget",
+        auth_type="api_key", priority=0, access_token=route["credential"], runtime_api_key=route["credential"],
+        base_url=actual["base_url"], runtime_base_url=actual["base_url"], refresh_token=None, agent_key=None, inference_base_url=None,
+        extra={"secret_fingerprint": "sha256:" + hashlib.sha256(route["credential"].encode()).hexdigest()[:16]})
+    actual.update(source="pool:custom:as7-budget", credential_pool=SimpleNamespace(
+        provider="custom:as7-budget", entries=lambda: [entry], current=lambda: entry))
+    return actual
+
+
 def native(route):
     if route["role"] == "openclaw": return probe.native_openclaw(snapshot(route), route)
     return probe.native_hermes(routes.compile_config({}, route), route, lambda **_: resolver_result(route))
 
 
 class NativeProbeTest(unittest.TestCase):
+    def test_pinned_hermes_config_seeded_sole_pool_verifies_both_wire_modes(self):
+        # The immutable resolver seeds config:as7-budget before explicit-key
+        # resolution, even on a fresh home. Its disk row is reference-only.
+        for provider in ("openai", "anthropic"):
+            route = route_fixtures.route("hermes", provider)
+            actual = pooled_resolver_result(route)
+            report = probe.native_hermes(routes.compile_config({}, route), route, lambda **_: actual)
+            self.assertEqual(report, native(route))
+            self.assertNotIn(CAPABILITY, json.dumps(report))
+
+    def test_hermes_pool_cannot_add_credentials_routes_oauth_or_request_overrides(self):
+        route = route_fixtures.route("hermes")
+        for field, bad in (("provider", "custom:other"), ("source", "manual"), ("auth_type", "oauth"),
+                           ("priority", True), ("label", "other"), ("access_token", "stale"), ("runtime_api_key", "stale"),
+                           ("base_url", "https://foreign.invalid"), ("runtime_base_url", "https://foreign.invalid"),
+                           ("refresh_token", "foreign"), ("agent_key", "foreign"), ("inference_base_url", "https://foreign.invalid"),
+                           ("extra", {"headers": {"Authorization": "foreign"}}), ("extra", {"secret_fingerprint": "sha256:stale"})):
+            actual = pooled_resolver_result(route); setattr(actual["credential_pool"].entries()[0], field, bad)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                probe.native_hermes(routes.compile_config({}, route), route, lambda **_: actual)
+        for change in ("source", "pool_provider", "multiple", "current", "missing_pool"):
+            actual = pooled_resolver_result(route); pool = actual["credential_pool"]
+            if change == "source": actual["source"] = "pool:other"
+            elif change == "pool_provider": pool.provider = "custom:other"
+            elif change == "multiple":
+                entry = pool.entries()[0]; pool.entries = lambda: [entry, copy.deepcopy(entry)]
+            elif change == "current": pool.current = lambda: SimpleNamespace(id="foreign")
+            else: actual.pop("credential_pool")
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                probe.native_hermes(routes.compile_config({}, route), route, lambda **_: actual)
+
     def parse_native_yaml(self, raw):
         # Exercise the actual native parser with the host's existing system
         # PyYAML. The controller/test venv does not gain a YAML dependency.
@@ -397,7 +440,11 @@ class LifecycleTest(unittest.TestCase):
             if "agent" in args or (input is not None and "challenge" in json.loads(input)):
                 self.assertEqual(timeout, 190); self.assertTrue(self.timer)
                 self.assertEqual(args[args.index("--user") + 1], str(routes.OWNERS[self.role]))
-                self.assertIn(CONTAINER, args); self.assertIn("env", args); self.assertIn("-i", args)
+                self.assertIn(CONTAINER, args)
+                if self.role == "hermes":
+                    self.assertNotIn("env", args); self.assertIn("key=os.environ.get('API_SERVER_KEY')", args[-1])
+                else:
+                    self.assertIn("env", args); self.assertIn("-i", args)
                 if self.task_failure: raise lifecycle.agents.ProbeError("fixture timeout")
                 value = agent_fixtures.response(self.role)
                 if self.role == "openclaw":

@@ -49,7 +49,7 @@ def hermes(packet, now=time.monotonic, sleep=time.sleep, tools=None):
     raw_environment = Path("/opt/data/.env").read_bytes()
     need(routes.sha(raw_environment) == packet["environment_sha256"])
     values, _ = environment.assignments(raw_environment)
-    key = values.get("API_SERVER_KEY")
+    key = values.get("API_SERVER_KEY", os.environ.get("API_SERVER_KEY"))
     need(isinstance(key, str) and 0 < len(key) <= 4096 and not any(c.isspace() for c in key))
     deadline = now() + 165
 

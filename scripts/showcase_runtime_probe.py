@@ -77,6 +77,26 @@ def route_valid(route):
     return int(match[1])
 
 
+def hermes_pool_valid(actual, route, base):
+    """The pinned resolver seeds one reference-only pool from our named config."""
+    pool = actual.get("credential_pool")
+    if pool is None:
+        need(actual.get("source") == "custom_provider:as7-budget")
+        return
+    need(actual.get("source") == "pool:custom:as7-budget" and pool.provider == "custom:as7-budget")
+    entries = pool.entries(); need(isinstance(entries, list) and len(entries) == 1)
+    entry, current = entries[0], pool.current()
+    need(current is not None and current.id == entry.id and isinstance(entry.id, str) and bool(entry.id)
+         and entry.provider == "custom:as7-budget" and entry.source == "config:as7-budget"
+         and entry.label == "as7-budget" and entry.auth_type == "api_key"
+         and type(entry.priority) is int and entry.priority == 0
+         and entry.access_token == route["credential"] and entry.runtime_api_key == route["credential"]
+         and entry.base_url == base and entry.runtime_base_url == base
+         and not any(getattr(entry, k, None) for k in ("refresh_token", "agent_key", "inference_base_url")))
+    fingerprint = "sha256:" + hashlib.sha256(route["credential"].encode()).hexdigest()[:16]
+    need(entry.extra in ({}, {"secret_fingerprint": fingerprint}))
+
+
 def native_hermes(config, route, resolver):
     """Check the real resolver's route, credential and wire, not config echoes."""
     route_valid(route); need(route["role"] == "hermes" and isinstance(config, dict))
@@ -92,10 +112,11 @@ def native_hermes(config, route, resolver):
     actual = resolver(requested="as7-budget", target_model=route["model"],
                       explicit_api_key=route["credential"], explicit_base_url=base)
     need(isinstance(actual, dict) and actual.get("provider") == "custom" and actual.get("model") == route["model"]
-         and actual.get("requested_provider") == "as7-budget" and actual.get("source") == "custom_provider:as7-budget"
+         and actual.get("requested_provider") == "as7-budget"
          and actual.get("api_mode") == mode and actual.get("base_url") == base
          and actual.get("api_key") == route["credential"]
-         and not any(actual.get(k) for k in ("credential_pool", "extra_headers", "request_overrides", "fallback")))
+         and not any(actual.get(k) for k in ("extra_headers", "request_overrides", "fallback")))
+    hermes_pool_valid(actual, route, base)
     return {"kind": "hermes_native_resolver", "provider": "custom", "requested_provider": "as7-budget",
             "model": route["model"], "api_mode": mode, "base_url_sha256": hashlib.sha256(base.encode()).hexdigest()}
 
@@ -283,7 +304,7 @@ if __name__=='__main__':raise SystemExit(main())
 def hermes_readiness_source(source):
     # Docker supplies the existing native app credential; it never appears in
     # arguments, input or output. Remove every inherited model/cloud setting
-    # before loading the checked probe or its provider resolver.
+    # before loading the checked readiness/task adapter or provider resolver.
     return ("import os\nkey=os.environ.get('API_SERVER_KEY')\nos.environ.clear()\n"
             "os.environ.update(HOME='/opt/data',HERMES_HOME='/opt/data',PATH='/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin')\n"
             "if key is not None:os.environ['API_SERVER_KEY']=key\ndel key\n"

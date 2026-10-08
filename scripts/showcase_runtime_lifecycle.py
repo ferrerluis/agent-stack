@@ -348,8 +348,7 @@ class RuntimeLifecycle:
                         "environment_sha256": context["environment_sha256"], "source_revision": self.binding["source_revision"],
                         "challenge": challenge, "request_id": request_id}
                     raw = self.execute(["/usr/bin/docker", "exec", "-i", "--user", owner, context["container_id"],
-                        "env", "-i", "HOME=/opt/data", "HERMES_HOME=/opt/data", "PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin",
-                        "/opt/hermes/.venv/bin/python", "-B", "-I", "-c", TASK_SOURCE],
+                        "/opt/hermes/.venv/bin/python", "-B", "-I", "-c", probe.hermes_readiness_source(TASK_SOURCE)],
                         input=json.dumps(packet, separators=(",", ":")).encode(), timeout=190)
                     turn = agents.strict_json(raw)
                 # Never accept a task after route/file/container replacement or

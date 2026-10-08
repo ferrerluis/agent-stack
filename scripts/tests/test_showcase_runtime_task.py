@@ -53,10 +53,10 @@ class HermesTaskTest(unittest.TestCase):
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
         self.assertFalse(self.thread.is_alive())
 
-    def run_task(self, provider="openai", tools=None, native_change=False, uid=10000, config_change=False):
+    def run_task(self, provider="openai", tools=None, native_change=False, uid=10000, config_change=False, file_key=True):
         route = configurations.route("hermes", provider)
         raw = routes.encoded(routes.compile_config({}, route))
-        environment = ("API_SERVER_KEY=" + APP_KEY + "\n").encode()
+        environment = (("API_SERVER_KEY=" + APP_KEY + "\n") if file_key else "# Native Docker application auth\n").encode()
         packet = {"route": route, "config_sha256": routes.sha(raw), "environment_sha256": routes.sha(environment),
                   "source_revision": "a" * 40, "challenge": turns.CHALLENGE, "request_id": turns.ID}
         def native(value):
@@ -86,6 +86,17 @@ class HermesTaskTest(unittest.TestCase):
             for _, _, headers, _ in self.requests:
                 self.assertEqual(headers["Authorization"], "Bearer " + APP_KEY)
                 self.assertEqual(headers["Idempotency-Key"], turns.ID)
+
+    def test_native_container_app_key_works_without_file_key_and_file_key_wins(self):
+        with patch.dict(task.os.environ, {"API_SERVER_KEY": APP_KEY}, clear=True):
+            proof = self.run_task(file_key=False)
+        self.assertEqual(proof["served_model"], "openai/fixture-model")
+        self.assertEqual(len(self.requests), 3)
+        self.requests.clear()
+        with patch.dict(task.os.environ, {"API_SERVER_KEY": "foreign-inherited-key"}, clear=True):
+            self.run_task(file_key=True)
+        for _, _, headers, _ in self.requests:
+            self.assertEqual(headers["Authorization"], "Bearer " + APP_KEY)
 
     def test_native_tool_resolution_root_uid_or_changed_config_fail_before_http_submission(self):
         for kwargs in ({"tools": Mock(return_value={"mcp-personal"})}, {"uid": 0}, {"config_change": True}):
