@@ -169,7 +169,7 @@ def hermes_probe(packet, resolver=None):
     path = Path("/opt/data/config.yaml")
     need(not any(parent.is_symlink() for parent in (path, *path.parents)))
     info = path.stat(); need(path.is_file() and info.st_uid == 10000 and info.st_gid == 10000 and info.st_nlink == 1
-                            and info.st_mode & 0o777 == 0o600 and 0 < info.st_size <= 262144)
+                            and info.st_mode & 0o777 in (0o600, 0o640) and 0 < info.st_size <= 262144)
     raw = path.read_bytes(); need(hashlib.sha256(raw).hexdigest() == packet["config_sha256"])
     config = decoded(raw, 262144); need(not config.get("secrets"))
     env_path = Path("/opt/data/.env")
@@ -187,7 +187,11 @@ def hermes_probe(packet, resolver=None):
     if packet["action"] == "readiness":
         from showcase_runtime_environment import assignments
         values, _ = assignments(env_raw)
-        key = values.get("API_SERVER_KEY")
+        # Pinned stage2 keeps an injected application key in the container
+        # environment when the profile file has no key. A file key wins, as
+        # it does in the native dotenv loader. Only the checked readiness
+        # bootstrap forwards this one variable into the isolated probe.
+        key = values.get("API_SERVER_KEY", os.environ.get("API_SERVER_KEY"))
         need(isinstance(key, str) and 0 < len(key) <= 4096 and not any(c.isspace() for c in key) and HEALTH_MODULE is not None)
         # Fixed numeric origin/path, no inherited proxy, redirects or retry.
         # The retained application key never leaves this short-lived process.
@@ -222,6 +226,68 @@ def hermes_probe(packet, resolver=None):
 
 
 HEALTH_MODULE = None  # The checked source loader supplies the repo's parser.
+
+
+HERMES_CONFIG_SOURCE = r'''import hashlib,json,math,os,pathlib,sys
+def read_configuration(raw):
+ import yaml
+ assert isinstance(raw,bytes) and 0<len(raw)<=262144
+ text=raw.decode('utf-8')
+ # The owned route needs plain JSON-compatible YAML, never alias expansion,
+ # custom constructors, duplicate fields or implicit non-JSON data types.
+ assert not any(isinstance(t,(yaml.tokens.AnchorToken,yaml.tokens.AliasToken)) for t in yaml.scan(text))
+ class Loader(yaml.SafeLoader):
+  def construct_mapping(self,node,deep=False):
+   result={}
+   for key,value in node.value:
+    name=self.construct_object(key,deep=deep)
+    assert isinstance(name,str) and name not in result
+    result[name]=self.construct_object(value,deep=deep)
+   return result
+ value=yaml.load(text,Loader=Loader)
+ remaining=[20000]
+ def checked(item,depth=0):
+  remaining[0]-=1;assert remaining[0]>=0 and depth<=48
+  if type(item) is dict:
+   assert all(type(k) is str for k in item)
+   for child in item.values():checked(child,depth+1)
+  elif type(item) is list:
+   for child in item:checked(child,depth+1)
+  else:assert item is None or type(item) in (str,bool,int) or type(item) is float and math.isfinite(item)
+ assert type(value) is dict;checked(value)
+ assert len(json.dumps(value,allow_nan=False).encode())<=262144
+ return value
+def main():
+ try:
+  assert os.geteuid()==10000
+  packet=json.loads(sys.stdin.buffer.read(1025))
+  assert set(packet)=={'action','config_sha256'} and packet['action']=='source_configuration'
+  path=pathlib.Path('/opt/data/config.yaml')
+  assert not any(p.is_symlink() for p in (path,*path.parents))
+  info=path.stat()
+  assert path.is_file() and info.st_uid==info.st_gid==10000 and info.st_nlink==1 and info.st_mode&511 in (384,416)
+  assert 0<info.st_size<=262144
+  raw=path.read_bytes();digest=hashlib.sha256(raw).hexdigest();assert digest==packet['config_sha256']
+  value=read_configuration(raw)
+  fields=('st_dev','st_ino','st_mode','st_nlink','st_uid','st_gid','st_size','st_mtime_ns','st_ctime_ns')
+  after=path.stat()
+  assert path.read_bytes()==raw and tuple(getattr(after,k) for k in fields)==tuple(getattr(info,k) for k in fields)
+  result={'schema':1,'status':'hermes_source_configuration_verified','config_sha256':digest,'config':value}
+  print(json.dumps(result,allow_nan=False));return 0
+ except Exception:
+  print(json.dumps({'schema':1,'status':'hermes_source_configuration_unverified'}));return 1
+if __name__=='__main__':raise SystemExit(main())
+'''
+
+
+def hermes_readiness_source(source):
+    # Docker supplies the existing native app credential; it never appears in
+    # arguments, input or output. Remove every inherited model/cloud setting
+    # before loading the checked probe or its provider resolver.
+    return ("import os\nkey=os.environ.get('API_SERVER_KEY')\nos.environ.clear()\n"
+            "os.environ.update(HOME='/opt/data',HERMES_HOME='/opt/data',PATH='/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin')\n"
+            "if key is not None:os.environ['API_SERVER_KEY']=key\ndel key\n"
+            "exec(compile(" + repr(source) + ",'<owned-hermes-readiness>','exec'))\n")
 
 
 NODE_SOURCE = r'''const fs=require('node:fs'),crypto=require('node:crypto'),http=require('node:http');

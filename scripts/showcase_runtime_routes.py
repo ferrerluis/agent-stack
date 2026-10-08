@@ -189,12 +189,21 @@ class ConfigurationTransaction:
     def install(self, binding, route):
         with self.lock(): return self._install(binding, route)
 
-    def _install(self, binding, route):
+    def _install(self, binding, route, source=None):
         binding_valid(binding); route_valid(route)
         role = route["role"]; target = self.root / FILES[role]; record = self.journal / (role + ".json")
         need(not record.exists() and not record.is_symlink())
         info = checked_path(target, owner=OWNERS[role]); before = target.read_bytes()
-        after = encoded(compile_config(decoded(before), route))
+        if source is None:
+            original = decoded(before)
+        else:
+            # YAML is decoded inside the captured pinned Hermes container. The
+            # exact bytes must still match after it stops, before any journal
+            # or replacement is written. No host YAML dependency is needed.
+            need(role == "hermes" and isinstance(source, dict) and set(source) == {"config", "config_sha256"}
+                 and source["config_sha256"] == sha(before) and isinstance(source["config"], dict))
+            original = source["config"]
+        after = encoded(compile_config(original, route))
         snapshot = {"schema": 1, "role": role, "binding": binding, "original": base64.b64encode(before).decode(),
             "original_sha256": sha(before), "installed_sha256": sha(after), "uid": info.st_uid, "gid": info.st_gid,
             "mode": stat.S_IMODE(info.st_mode)}

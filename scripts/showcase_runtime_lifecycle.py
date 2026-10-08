@@ -195,6 +195,20 @@ class RuntimeLifecycle:
         report = self.container(context, route, "native", "")
         return report["native_route"]
 
+    def original_configuration(self, context):
+        self.phase = "configuration_read"
+        need(context["role"] == "hermes" and self.healthy(self.known(context)))
+        result = agents.strict_json(self.execute(["/usr/bin/docker", "exec", "-i", "--user", "10000", context["container_id"],
+            "env", "-i", "HOME=/opt/data", "HERMES_HOME=/opt/data", "PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin",
+            "/opt/hermes/.venv/bin/python", "-B", "-I", "-c", probe.HERMES_CONFIG_SOURCE],
+            input=routes.encoded({"action": "source_configuration", "config_sha256": context["original_sha256"]}), timeout=10))
+        need(isinstance(result, dict) and set(result) == {"schema", "status", "config_sha256", "config"}
+             and type(result["schema"]) is int and result["schema"] == 1
+             and result["status"] == "hermes_source_configuration_verified"
+             and result["config_sha256"] == context["original_sha256"] and isinstance(result["config"], dict))
+        need(self.healthy(self.known(context)))
+        return {key: result[key] for key in ("config_sha256", "config")}
+
     def container(self, context, route, action, nonce):
         self.phase = {"native": "container_native", "transport": "container_transport", "readiness": "container_readiness"}.get(action, "container_probe")
         packet = {"action": action, "route": route, "config_sha256": context["config_sha256"],
@@ -207,8 +221,12 @@ class RuntimeLifecycle:
             need(isinstance(PROBE_SOURCE, str) and len(PROBE_SOURCE) > 100)
             command = ["/opt/hermes/.venv/bin/python", "-B", "-I", "-c", PROBE_SOURCE]
             environment = ["HOME=/opt/data", "HERMES_HOME=/opt/data", "PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin"]
-        result = agents.strict_json(self.execute(["/usr/bin/docker", "exec", "-i", "--user", str(routes.OWNERS[route["role"]]),
-            context["container_id"], "env", "-i", *environment, *command],
+        args = ["/usr/bin/docker", "exec", "-i", "--user", str(routes.OWNERS[route["role"]]), context["container_id"]]
+        if route["role"] == "hermes" and action == "readiness":
+            command[-1] = probe.hermes_readiness_source(PROBE_SOURCE)
+        else:
+            args += ["env", "-i", *environment]
+        result = agents.strict_json(self.execute(args + command,
             input=json.dumps(packet, separators=(",", ":")).encode(), timeout=10))
         expected = {"schema": 1, "status": {"native": "runtime_native_route_verified", "transport": "runtime_container_route_verified", "readiness": "runtime_readiness_verified"}[action],
             "role": route["role"], "provider": route["provider"], "uid": routes.OWNERS[route["role"]],
@@ -230,7 +248,8 @@ class RuntimeLifecycle:
         self.phase = "file_verification"
         target = self.tx.root / routes.FILES[route["role"]]
         info = routes.checked_path(target, owner=routes.OWNERS[route["role"]])
-        need(info.st_mode & 0o777 == 0o600 and routes.sha(target.read_bytes()) == context["config_sha256"])
+        modes = (0o600, 0o640) if context["role"] == "hermes" else (0o600,)
+        need(info.st_mode & 0o777 in modes and routes.sha(target.read_bytes()) == context["config_sha256"])
         if route["role"] == "hermes":
             info = routes.checked_path(self.environment.target, owner=routes.OWNERS["hermes"])
             need(info.st_mode & 0o777 == 0o600 and routes.sha(self.environment.target.read_bytes()) == context["environment_sha256"])
@@ -375,14 +394,20 @@ class RuntimeLifecycle:
                 self.execute(["systemd-run", "--quiet", "--unit=" + context["unit"], "--on-active=180s",
                     "--timer-property=AccuracySec=1s", "--property=RuntimeMaxSec=30s", "/usr/bin/docker", "stop", "-t", "5", row["id"]], timeout=10)
                 need(self.execute(["systemctl", "is-active", context["unit"] + ".timer"], timeout=10).strip() == b"active")
+                source = self.original_configuration(context) if role == "hermes" else None
                 self.stop(context)
+                self.phase = "configuration_capture"
                 routes.checked_path(original, owner=routes.OWNERS[role])
                 context.update(original_sha256=routes.sha(original.read_bytes()), status="stopped"); self.save(context)
                 if role == "hermes":
+                    self.phase = "environment_capture"
                     routes.checked_path(self.environment.target, owner=routes.OWNERS[role])
                     context["original_environment_sha256"] = routes.sha(self.environment.target.read_bytes()); self.save(context)
+                    self.phase = "environment_install"
                     context["environment_sha256"] = self.environment._install(self.binding, route); self.save(context)
-                installed = self.tx._install(self.binding, route)
+                self.phase = "configuration_install"
+                installed = (self.tx._install(self.binding, route, source=source) if role == "hermes"
+                             else self.tx._install(self.binding, route))
                 context.update(config_sha256=installed["config_sha256"], status="installed"); self.save(context)
                 self.start(context)
                 context.update(native_route=self.native(context, route), status="reload_verified"); self.save(context)

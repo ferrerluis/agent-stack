@@ -104,6 +104,34 @@ def native(route):
 
 
 class NativeProbeTest(unittest.TestCase):
+    def parse_native_yaml(self, raw):
+        # Exercise the actual native parser with the host's existing system
+        # PyYAML. The controller/test venv does not gain a YAML dependency.
+        code = "import json,sys\nns={'__name__':'fixture'}\nexec(" + repr(probe.HERMES_CONFIG_SOURCE) + ",ns)\n"
+        code += "try:print(json.dumps({'ok':True,'config':ns['read_configuration'](sys.stdin.buffer.read())}))\nexcept Exception:print(json.dumps({'ok':False}))\n"
+        run = subprocess.run(['/usr/bin/python3', '-I', '-c', code], input=raw, capture_output=True, timeout=5, check=True)
+        return json.loads(run.stdout)
+
+    def test_native_yaml_parser_accepts_migrated_plain_data_and_json(self):
+        expected = {'_config_version': 30, 'model': {'default': 'fixture-model', 'provider': 'anthropic'}, 'api_server': {'enabled': True}}
+        raw = b'_config_version: 30\nmodel:\n  default: fixture-model\n  provider: anthropic\napi_server:\n  enabled: true\n'
+        self.assertEqual(self.parse_native_yaml(raw), {'ok': True, 'config': expected})
+        self.assertEqual(self.parse_native_yaml(routes.encoded(expected)), {'ok': True, 'config': expected})
+
+    def test_native_yaml_parser_refuses_aliases_duplicates_objects_nonfinite_and_non_json_types(self):
+        for raw in (b'a: 1\na: 2\n', b'a: {b: 1, b: 2}\n', b'a: &anchor {b: 1}\nc: *anchor\n',
+                    b'a: !!python/object:os.system {}\n', b'a: .nan\n', b'a: 2026-10-08\n',
+                    b'1: value\n', b'- value\n', b'a: [' * 60 + b'x' + b']' * 60,
+                    b'a: ' + b'x' * routes.LIMIT):
+            with self.subTest(length=len(raw)): self.assertEqual(self.parse_native_yaml(raw), {'ok': False})
+
+    def test_readiness_bootstrap_keeps_only_native_application_auth_and_fixed_environment(self):
+        body = "import json,os;print(json.dumps({'names':sorted(os.environ),'key_matches':os.environ.get('API_SERVER_KEY')=='fixture-key'}))"
+        run = subprocess.run([sys.executable, '-I', '-c', probe.hermes_readiness_source(body)],
+            env={'API_SERVER_KEY': 'fixture-key', 'ANTHROPIC_API_KEY': 'fixture-provider', 'HOME': '/foreign', 'HTTPS_PROXY': 'https://foreign.invalid'},
+            capture_output=True, timeout=5, check=True)
+        self.assertEqual(json.loads(run.stdout), {'names': ['API_SERVER_KEY', 'HERMES_HOME', 'HOME', 'PATH'], 'key_matches': True})
+
     def test_revision_tokens_reject_file_hashes_bad_versions_padding_noncanonical_or_stale_values(self):
         route = route_fixtures.route()
         for bad in (None, "b" * 64, "hmac-sha256:v2:" + "A" * 43,
@@ -202,9 +230,11 @@ class NativeProbeTest(unittest.TestCase):
         with self.assertRaises(ValueError): probe.native_hermes(config, route, getter)
         getter.assert_not_called()
 
-    def call_hermes(self, action="transport", mutation=None, uid=10000, readiness=None, status=200, factory=None):
+    def call_hermes(self, action="transport", mutation=None, uid=10000, readiness=None, status=200, factory=None,
+                    config_mode=0o600, file_key=True):
         route = route_fixtures.route("hermes"); raw = routes.encoded(routes.compile_config({}, route))
         env_raw = ("OPENAI_BASE_URL=" + route["base_url"] + "/v1\nAPI_SERVER_KEY=fixture-app-readiness-key\n").encode()
+        if not file_key: env_raw = env_raw.replace(b"API_SERVER_KEY=fixture-app-readiness-key\n", b"")
         packet = {"action": action, "route": route, "config_sha256": hashlib.sha256(raw).hexdigest(),
                   "environment_sha256": hashlib.sha256(env_raw).hexdigest(),
                   "source_revision": "a" * 40, "nonce": "f" * 64 if action == "transport" else ""}
@@ -218,14 +248,30 @@ class NativeProbeTest(unittest.TestCase):
         connection = Mock(); connection.getresponse.return_value = response
         health = {"__name__": "fixture_checked_health"}
         exec(compile((ROOT / "modules/common/runtime/hermes_health.py").read_bytes(), "checked-hermes-health", "exec"), health)
-        info = SimpleNamespace(st_uid=10000, st_gid=10000, st_nlink=1, st_size=len(raw), st_mode=0o100600)
+        info = SimpleNamespace(st_uid=10000, st_gid=10000, st_nlink=1, st_size=len(raw), st_mode=0o100000 | config_mode)
+        env_info = SimpleNamespace(st_uid=10000, st_gid=10000, st_nlink=1, st_size=len(env_raw), st_mode=0o100600)
         with patch.object(probe.os, "geteuid", return_value=uid), patch.object(probe.Path, "is_symlink", return_value=False), \
-             patch.object(probe.Path, "stat", return_value=info), patch.object(probe.Path, "is_file", return_value=True), \
+             patch.object(probe.Path, "stat", autospec=True, side_effect=lambda path: env_info if path.name == ".env" else info), patch.object(probe.Path, "is_file", return_value=True), \
              patch.object(probe.Path, "read_bytes", autospec=True, side_effect=lambda path: env_raw if path.name == ".env" else raw), \
              patch.object(probe, "HEALTH_MODULE", SimpleNamespace(**health)), \
              patch.object(probe, "HTTPConnection", side_effect=factory or (lambda *_, **__: connection)) as http:
             result = probe.hermes_probe(packet, Mock(return_value=resolver_result(route)))
         return result, connection, http
+
+    def test_pinned_hermes_group_readable_config_keeps_environment_owner_only(self):
+        result, _, _ = self.call_hermes(config_mode=0o640)
+        self.assertEqual(result["status"], "runtime_container_route_verified")
+        for mode in (0o644, 0o660, 0o400):
+            with self.subTest(mode=mode), self.assertRaises(ValueError): self.call_hermes(config_mode=mode)
+
+    def test_readiness_uses_inherited_app_auth_only_when_file_has_no_key(self):
+        with patch.dict(os.environ, {"API_SERVER_KEY": "fixture-inherited-app-key"}, clear=True):
+            result, connection, _ = self.call_hermes("readiness", file_key=False)
+            self.assertEqual(result["status"], "runtime_readiness_verified")
+            connection.request.assert_called_once_with("GET", "/health/detailed", headers={"Authorization": "Bearer fixture-inherited-app-key"})
+            _, connection, _ = self.call_hermes("readiness")
+            connection.request.assert_called_once_with("GET", "/health/detailed", headers={"Authorization": "Bearer fixture-app-readiness-key"})
+        with patch.dict(os.environ, {}, clear=True), self.assertRaises(ValueError): self.call_hermes("readiness", file_key=False)
 
     def test_readiness_uses_only_retained_app_key_and_fixed_bounded_local_endpoint(self):
         result, connection, http = self.call_hermes("readiness")
@@ -339,6 +385,13 @@ class LifecycleTest(unittest.TestCase):
             return b""
         if args[:2] == ["systemctl", "show"]: return b"active" if self.timer else b"inactive"
         if args[:2] == ["/usr/bin/docker", "exec"]:
+            if input is not None and json.loads(input).get('action') == 'source_configuration':
+                self.assertEqual(self.role, 'hermes'); self.assertIn('10000', args); self.assertIn('-I', args)
+                packet = json.loads(input); raw = self.files.target(self.role).read_bytes()
+                self.assertEqual(packet['config_sha256'], routes.sha(raw))
+                config = self.yaml_configuration if hasattr(self, 'yaml_configuration') else routes.decoded(raw)
+                return routes.encoded({'schema': 1, 'status': 'hermes_source_configuration_verified',
+                    'config_sha256': routes.sha(raw), 'config': config})
             if "--help" in args:
                 return b"unsupported" if self.bad_help else b"--expect-url --expect-final --params --timeout --json"
             if "agent" in args or (input is not None and "challenge" in json.loads(input)):
@@ -371,7 +424,10 @@ class LifecycleTest(unittest.TestCase):
                 return json.dumps(value).encode()
             packet = json.loads(input)
             self.assertEqual(packet["route"], self.route)
-            self.assertIn("env", args); self.assertIn("-i", args)
+            if self.role == 'hermes' and packet['action'] == 'readiness':
+                self.assertNotIn('env', args); self.assertIn("key=os.environ.get('API_SERVER_KEY')", args[-1])
+            else:
+                self.assertIn("env", args); self.assertIn("-i", args)
             value = {"schema": 1, "status": {"native": "runtime_native_route_verified", "transport": "runtime_container_route_verified", "readiness": "runtime_readiness_verified"}[packet["action"]],
                 "role": self.role, "provider": self.route["provider"], "uid": routes.OWNERS[self.role],
                 "config_sha256": packet["config_sha256"], "source_revision": packet["source_revision"], "nonce": packet["nonce"]}
@@ -383,6 +439,34 @@ class LifecycleTest(unittest.TestCase):
         raise AssertionError("unexpected fixture command")
 
     def prepare(self): return self.vm.prepare(self.route, image(self.role), "f" * 32)
+
+    def test_pinned_hermes_yaml_is_staged_by_exact_native_hash_and_restored_byte_for_byte(self):
+        self.make('hermes')
+        raw = b'_config_version: 30\nmodel:\n  default: fixture-model\n  provider: anthropic\n'
+        self.yaml_configuration = {'_config_version': 30, 'model': {'default': 'fixture-model', 'provider': 'anthropic'}}
+        self.files.target('hermes').write_bytes(raw)
+        ready = self.prepare(); self.assertEqual(ready['status'], 'runtime_reload_verified')
+        self.vm.restore('hermes'); self.assertEqual(self.files.target('hermes').read_bytes(), raw)
+
+    def test_hermes_configuration_changed_during_stop_is_not_overwritten_by_native_parse(self):
+        self.make('hermes'); execute = self.execute
+        changed = b'{"operator":"changed-after-source-read"}\n'
+        def stop_edit(args, **options):
+            result = execute(args, **options)
+            if args[:2] == ['/usr/bin/docker', 'stop']: self.files.target('hermes').write_bytes(changed)
+            return result
+        self.vm.raw_execute = stop_edit
+        with self.assertRaises(ValueError): self.prepare()
+        self.assertEqual(self.files.target('hermes').read_bytes(), changed)
+        self.assertFalse(self.files.journal('hermes').exists())
+        self.assertEqual(self.vm.failure['phase'], 'configuration_install')
+
+    def test_pinned_hermes_restart_permission_does_not_reject_same_configuration_bytes(self):
+        self.make('hermes'); self.prepare()
+        self.files.target('hermes').chmod(0o640)
+        self.vm.current_files(self.vm.load('hermes'), self.route)
+        self.files.target('hermes').chmod(0o644)
+        with self.assertRaises(ValueError): self.vm.current_files(self.vm.load('hermes'), self.route)
 
     def test_all_four_reload_probe_restore_paths_use_exact_container_and_private_original(self):
         for role in ("openclaw", "hermes"):
