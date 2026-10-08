@@ -19,6 +19,23 @@ def need(value):
     if not value: raise ValueError("runtime_container_route_unverified")
 
 
+OPENCLAW_NATIVE_ERRORS = frozenset({
+    "openclaw_snapshot_invalid", "openclaw_applied_revision_unverified", "openclaw_config_invalid",
+    "openclaw_tools_unverified", "openclaw_provider_set_unverified", "openclaw_provider_route_unverified",
+    "openclaw_model_bounds_unverified", "openclaw_agent_roster_unverified", "openclaw_agent_route_unverified",
+    "openclaw_runtime_defaults_unverified", "openclaw_native_route_unverified"})
+
+
+class OpenClawNativeError(ValueError):
+    """Fixed validation labels only; never retain the native snapshot."""
+    def __init__(self, reason):
+        super().__init__(reason if reason in OPENCLAW_NATIVE_ERRORS else "openclaw_native_route_unverified")
+
+
+def openclaw_need(value, reason):
+    if not value: raise OpenClawNativeError(reason)
+
+
 def decoded(raw, limit=4096):
     def pairs(rows):
         result = {}
@@ -73,28 +90,40 @@ def native_hermes(config, route, resolver):
 
 def native_openclaw(snapshot, route):
     route_valid(route); need(route["role"] == "openclaw" and isinstance(snapshot, dict))
-    need(snapshot.get("valid") is True and not any(snapshot.get(k) for k in ("issues", "warnings", "legacyIssues")))
+    openclaw_need(snapshot.get("valid") is True and not any(snapshot.get(k) for k in ("issues", "warnings", "legacyIssues")),
+                  "openclaw_snapshot_invalid")
     revision = snapshot.get("configRevisionHash")
-    need(isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{64}", revision)
-         and snapshot.get("appliedConfigHash") == revision)
-    config = snapshot.get("config"); need(isinstance(config, dict))
-    need(isinstance(config.get("tools"), dict) and config["tools"].get("deny") == ["*"])
-    models = config.get("models"); need(isinstance(models, dict) and models.get("mode") == "replace")
-    providers = models.get("providers"); need(isinstance(providers, dict) and set(providers) == {route["provider"]})
+    openclaw_need(isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{64}", revision)
+                  and snapshot.get("appliedConfigHash") == revision, "openclaw_applied_revision_unverified")
+    config = snapshot.get("config"); openclaw_need(isinstance(config, dict), "openclaw_config_invalid")
+    openclaw_need(isinstance(config.get("tools"), dict) and config["tools"].get("deny") == ["*"], "openclaw_tools_unverified")
+    models = config.get("models")
+    openclaw_need(isinstance(models, dict) and models.get("mode") == "replace", "openclaw_provider_set_unverified")
+    providers = models.get("providers")
+    openclaw_need(isinstance(providers, dict) and set(providers) == {route["provider"]}, "openclaw_provider_set_unverified")
     actual = providers[route["provider"]]
     base = route["base_url"] + ("/v1" if route["provider"] == "openai" else "")
     api = "openai-completions" if route["provider"] == "openai" else "anthropic-messages"
-    need(isinstance(actual, dict) and actual.get("baseUrl") == base and actual.get("api") == api
-         and actual.get("auth") == "api-key" and not any(actual.get(k) for k in ("request", "headers")))
+    openclaw_need(isinstance(actual, dict) and actual.get("baseUrl") == base and actual.get("api") == api
+                  and actual.get("auth") == "api-key" and not any(actual.get(k) for k in ("request", "headers")),
+                  "openclaw_provider_route_unverified")
     rows = actual.get("models")
-    need(isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict) and rows[0].get("id") == route["model"]
-         and rows[0].get("input") == ["text"] and rows[0].get("contextWindow") == route["context_tokens"]
-         and rows[0].get("maxTokens") == route["output_tokens"])
-    agents = config.get("agents"); need(isinstance(agents, dict) and not agents.get("list"))
+    openclaw_need(isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict) and rows[0].get("id") == route["model"]
+                  and rows[0].get("input") == ["text"] and rows[0].get("contextWindow") == route["context_tokens"]
+                  and rows[0].get("maxTokens") == route["output_tokens"], "openclaw_model_bounds_unverified")
+    agents = config.get("agents")
+    openclaw_need(isinstance(agents, dict) and not agents.get("list"), "openclaw_agent_roster_unverified")
     defaults = agents.get("defaults"); reference = route["provider"] + "/" + route["model"]
-    need(isinstance(defaults, dict) and defaults.get("model") == {"primary": reference, "fallbacks": []}
-         and defaults.get("models") == {reference: {}}
-         and not any(defaults.get(k) for k in ("agentRuntime", "cliBackends", "compaction", "subagents")))
+    openclaw_need(isinstance(defaults, dict) and defaults.get("model") == {"primary": reference, "fallbacks": []}
+                  and defaults.get("models") == {reference: {}}
+                  and not any(defaults.get(k) for k in ("agentRuntime", "cliBackends")), "openclaw_agent_route_unverified")
+    # v2026.9.8 materializes these defaults in config.get. Accept only the
+    # known nonrouting values; model/provider overrides and extra keys fail.
+    compaction, subagents = defaults.get("compaction"), defaults.get("subagents")
+    openclaw_need(compaction in (None, {}, {"mode": "safeguard"})
+                  and (subagents in (None, {}) or isinstance(subagents, dict)
+                       and subagents == {"maxConcurrent": 8, "archiveAfterMinutes": 60}
+                       and all(type(v) is int for v in subagents.values())), "openclaw_runtime_defaults_unverified")
     return {"kind": "openclaw_applied_gateway_config", "provider": route["provider"], "model": route["model"],
             "api": api, "base_url_sha256": hashlib.sha256(base.encode()).hexdigest(), "applied_config_hash": revision}
 

@@ -82,8 +82,12 @@ def image(role):
 
 
 def snapshot(route):
+    config = routes.compile_config({}, route)
+    if route["role"] == "openclaw":
+        config["agents"]["defaults"].update(maxConcurrent=8, compaction={"mode": "safeguard"},
+                                          subagents={"maxConcurrent": 8, "archiveAfterMinutes": 60})
     return {"valid": True, "configRevisionHash": "b" * 64, "appliedConfigHash": "b" * 64,
-            "config": routes.compile_config({}, route), "issues": [], "warnings": [], "legacyIssues": []}
+            "config": config, "issues": [], "warnings": [], "legacyIssues": []}
 
 
 def resolver_result(route):
@@ -98,6 +102,41 @@ def native(route):
 
 
 class NativeProbeTest(unittest.TestCase):
+    def test_openclaw_materialized_defaults_cannot_add_auxiliary_model_routes(self):
+        route = route_fixtures.route()
+        for key, bad in (("compaction", {"mode": "safeguard", "model": "other/model"}),
+                         ("compaction", {"mode": "safeguard", "provider": "other"}),
+                         ("compaction", {"mode": "default"}),
+                         ("subagents", {"maxConcurrent": 8, "archiveAfterMinutes": 60, "model": "other/model"}),
+                         ("subagents", {"maxConcurrent": 8, "archiveAfterMinutes": 60, "provider": "other"}),
+                         ("subagents", {"maxConcurrent": 8.0, "archiveAfterMinutes": 60}),
+                         ("subagents", {"maxConcurrent": 9, "archiveAfterMinutes": 60})):
+            value = snapshot(route); value["config"]["agents"]["defaults"][key] = bad
+            with self.assertRaises(probe.OpenClawNativeError) as error:
+                probe.native_openclaw(value, route)
+            self.assertEqual(str(error.exception), "openclaw_runtime_defaults_unverified")
+
+    def test_native_validation_labels_remain_fixed_and_do_not_store_configuration(self):
+        error = probe.OpenClawNativeError("fixture-private-secret")
+        self.assertEqual(str(error), "openclaw_native_route_unverified")
+        vm = object.__new__(lifecycle.RuntimeLifecycle)
+        vm.phase, vm.failure = "native_route", None; vm.remember_failure(error)
+        self.assertEqual(vm.failure, {"phase": "native_route", "reason": "openclaw_native_route_unverified"})
+        self.assertNotIn("fixture-private-secret", json.dumps(vm.failure))
+
+    def test_openclaw_accepts_the_pinned_runtime_defaults_without_alternate_routes(self):
+        # v2026.9.8 config.get returns materialized config, not a disk echo:
+        # src/config/materialize.ts, defaults.ts and agent-limits.ts.
+        for provider in ("openai", "anthropic"):
+            route = route_fixtures.route("openclaw", provider)
+            value = snapshot(route)
+            value["config"]["agents"]["defaults"].update(
+                maxConcurrent=8, compaction={"mode": "safeguard"},
+                subagents={"maxConcurrent": 8, "archiveAfterMinutes": 60})
+            report = probe.native_openclaw(value, route)
+            probe.native_proof_valid(route, report)
+            self.assertEqual(report["model"], route["model"])
+
     def test_all_four_native_route_pairs_bind_model_wire_endpoint_and_full_bounds(self):
         for role in ("openclaw", "hermes"):
             for provider in ("openai", "anthropic"):

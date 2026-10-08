@@ -94,6 +94,8 @@ class RuntimeLifecycle:
         allowed = {"probe_input_limit", "probe_descriptor_invalid", "probe_output_limit", "probe_command_timeout",
                    "probe_command_failed", "watchdog_disarm_unverified"}
         reason = str(error) if isinstance(error, agents.ProbeError) and str(error) in allowed else "runtime_lifecycle_unverified"
+        if isinstance(error, probe.OpenClawNativeError) and str(error) in probe.OPENCLAW_NATIVE_ERRORS:
+            reason = str(error)
         self.failure = {"phase": self.phase, "reason": reason}
         programs = {"/usr/bin/docker": "docker", "systemctl": "systemctl", "systemd-run": "systemd-run"}
         if isinstance(args, list) and args and args[0] in programs:

@@ -86,6 +86,8 @@ class FixtureSession(session.ModelSession):
                     "binding": packet["binding"], "original_sha256": "c" * 64}
         route = packet["route"]; config = routes.compile_config({}, route)
         if role == "openclaw":
+            config["agents"]["defaults"].update(maxConcurrent=8, compaction={"mode": "safeguard"},
+                                              subagents={"maxConcurrent": 8, "archiveAfterMinutes": 60})
             native = probe.native_openclaw({"valid": True, "configRevisionHash": "b" * 64, "appliedConfigHash": "b" * 64,
                 "config": config, "issues": [], "warnings": [], "legacyIssues": []}, route)
         else:
