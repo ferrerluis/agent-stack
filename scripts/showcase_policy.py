@@ -74,7 +74,7 @@ def digitalocean_showcase_cidr(prefix):
 
 def trial_egress_cap(config):
     value = config.get("trial_egress_cap_bytes", 1073741824)
-    require(type(value) is int and value in (268435456, 536870912, 1073741824), "trial_egress_cap_invalid")
+    require(type(value) is int and value in (134217728, 268435456, 536870912, 1073741824), "trial_egress_cap_invalid")
     return value
 
 

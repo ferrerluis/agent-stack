@@ -23,9 +23,12 @@ class HermesNpmPatchTest(unittest.TestCase):
         self.root.mkdir(mode=0o755)
         (self.root / ".hermes_build_sha").write_text(npm.REVISION + "\n")
         (self.root / ".hermes_build_sha").chmod(0o644)
+        (self.root / ".npmrc").write_bytes(b"engine-strict=true\n")
+        (self.root / ".npmrc").chmod(0o644)
         self.bundle = Path(temp.name) / "bundle.json"
         self.data = {"schema": 1, "upstream_revision": npm.REVISION, "files": {},
-                     "installed_versions": {"node_modules/example": "1.2.3"}}
+                     "installed_versions": {"node_modules/example": "1.2.3"},
+                     "npm_config_sha256": npm.sha(b"engine-strict=true\n")}
         for name in npm.FILES:
             path = self.root / name
             path.parent.mkdir(mode=0o755, exist_ok=True)
@@ -78,6 +81,17 @@ class HermesNpmPatchTest(unittest.TestCase):
         (self.root / ".hermes_build_sha").write_text("other revision")
         with self.assertRaises(ValueError):
             self.instance()
+
+    def test_missing_or_modified_project_npm_policy_refuses_before_manifest_changes(self):
+        before = (self.root / "package-lock.json").read_bytes()
+        (self.root / ".npmrc").write_text("engine-strict=false\n")
+        with self.assertRaises(ValueError):
+            self.instance()
+        self.assertEqual((self.root / "package-lock.json").read_bytes(), before)
+        (self.root / ".npmrc").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.instance()
+        self.assertEqual((self.root / "package-lock.json").read_bytes(), before)
 
     def test_untrusted_bundle_and_symlinked_parent_cannot_change_external_files(self):
         self.bundle.write_text(self.bundle.read_text() + " ")
@@ -162,6 +176,9 @@ class HermesNpmPatchTest(unittest.TestCase):
         self.assertEqual(data["upstream_revision"], npm.REVISION)
         for entry in data["files"].values():
             self.assertEqual(npm.sha(entry["content"].encode()), entry["patched_sha256"])
+        root_package = json.loads(data["files"]["package.json"]["content"])
+        for name in ("undici", "yaml"):
+            self.assertEqual(root_package["devDependencies"][name], data["installed_versions"]["node_modules/" + name])
         source = (ROOT / "modules/common/runtime/hermes_npm_patch.py").read_text()
         self.assertIn(npm.sha(path.read_bytes()), source)
 

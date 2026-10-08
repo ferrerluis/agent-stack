@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-BUNDLE_SHA256 = "63c463884582f4f86a6b690e310c60d00d2a70169c651cc697954aaa6ce5df71"
+BUNDLE_SHA256 = "e3042d88a382511da313badfa1407a1d2add45054b372e393578fba99ae6a8ac"
 REVISION = "749220ef0007f8d87bd1531f1c24b0fe93816385"
 BUNDLE = Path("/usr/local/libexec/agent-stack-hermes-npm-patch.json")
 ROOT = Path("/opt/hermes")
@@ -63,6 +63,7 @@ class Patch:
         need(self.bundle["schema"] == 1 and self.bundle["upstream_revision"] == REVISION
              and set(self.bundle["files"]) == FILES)
         need(regular(self.root / ".hermes_build_sha", owner).decode().strip() == REVISION)
+        need(sha(regular(self.root / ".npmrc", owner)) == self.bundle["npm_config_sha256"])
         for name, entry in self.bundle["files"].items():
             need(sha(entry["content"].encode()) == entry["patched_sha256"])
             path = self.path(name)

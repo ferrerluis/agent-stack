@@ -35,7 +35,7 @@ class LaunchTest(unittest.TestCase):
             q=launch.complete_quote(self.a,r)
         self.assertEqual(Decimal(q['hourly_usd']),Decimal('0.40'))
         self.assertEqual(Decimal(q['fixed_usd']),Decimal('0.96'))
-        self.assertEqual(q['cleanup_usd'],'0.50');self.assertTrue(q['model_prepaid'])
+        self.assertEqual(q['cleanup_usd'],'0.40');self.assertTrue(q['model_prepaid'])
         for changes in [{'plan_sha256':'c'*64},{'currency':'EUR'},{'run_id':'as7-other001'}]:
             with self.assertRaises(PolicyError):launch.complete_quote(self.a,r|changes)
 
@@ -52,7 +52,7 @@ class LaunchTest(unittest.TestCase):
         r={'status':'resource_unit_prices_measured','provider':'aws','source_revision':'a'*40,
            'plan_sha256':'b'*64,'run_id':'as7-fixture01','currency':'USD',
            'vm_cpu_disks_ipv4_hourly_usd_upper_bound':'0.20'}
-        for cap, fixed in ((268435456, '0.46'), (536870912, '0.92')):
+        for cap, fixed in ((134217728, '0.23'), (268435456, '0.46'), (536870912, '0.92')):
             with self.subTest(cap=cap):
                 self.a.config['trial_egress_cap_bytes'] = cap
                 with patch.object(network,'measure_network',return_value={'usd_per_gib_upper_bound':'0.23'}):
@@ -92,8 +92,17 @@ class LaunchTest(unittest.TestCase):
                 quote=launch.complete_quote(self.a,base|units|{'provider':provider})
                 self.assertEqual(Decimal(quote['fixed_usd']),Decimal(fixed))
                 self.assertEqual(Decimal(quote['hourly_usd']),Decimal(hourly))
-                self.assertEqual(quote['cleanup_usd'],'0.50')
+                self.assertEqual(Decimal(quote['cleanup_usd']),Decimal(hourly))
                 self.assertTrue(quote['model_prepaid'])
+
+    def test_cleanup_hold_covers_an_extra_margin_hour_rounds_up_and_keeps_a_floor(self):
+        base={'status':'resource_unit_prices_measured','provider':'aws','source_revision':'a'*40,
+              'plan_sha256':'b'*64,'run_id':'as7-fixture01','currency':'USD'}
+        for unit, expected in (('0.00333','0.10'),('0.2001','0.41'),('2.345','4.69')):
+            with self.subTest(unit=unit), patch.object(network,'measure_network',return_value={'usd_per_gib_upper_bound':'0.01'}):
+                quote=launch.complete_quote(self.a,base|{'vm_cpu_disks_ipv4_hourly_usd_upper_bound':unit})
+                self.assertEqual(quote['cleanup_usd'],expected)
+                self.assertGreaterEqual(Decimal(quote['cleanup_usd']),Decimal(quote['hourly_usd']))
 
     def test_replacement_peer_requires_its_original_cash_and_deadline_binding(self):
         self.a.config=funded();self.a.config['attempt_seconds']=10800

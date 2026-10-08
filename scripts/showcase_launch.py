@@ -129,9 +129,13 @@ def complete_quote(attempt, resource):
               "digitalocean":"https://www.digitalocean.com/pricing/droplets",
               "gcp":"https://cloud.google.com/vpc/pricing",
               "hetzner":"https://api.hetzner.cloud/v1/pricing"}[attempt.provider]
+    # The full guest lifetime already includes its cleanup window. Retain a
+    # further whole hour at the measured, margin-adjusted rate for recovery,
+    # with a ten-cent floor; expensive resources receive a larger hold.
+    cleanup = max(Decimal("0.10"), hourly).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
     return {"provider":attempt.provider,"currency":"USD", "verified_at":datetime.now(timezone.utc).isoformat(),
             "source":source,"hourly_usd":str(hourly),"fixed_usd":str(fixed),
-            "model_usd":"2.00","model_prepaid":True,"cleanup_usd":"0.50"}
+            "model_usd":"2.00","model_prepaid":True,"cleanup_usd":str(cleanup)}
 
 
 def start_watchdog(attempt, deadline):

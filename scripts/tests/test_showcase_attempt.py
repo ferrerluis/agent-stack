@@ -75,7 +75,7 @@ class IsolationTest(unittest.TestCase):
         profile=(attempt.ROOT/'examples/showcase/terraform.tfvars.example').read_text()
         ordinary=attempt.settings(value,'digitalocean','as7-fixture01','ssh-ed25519 fixture',profile)
         self.assertEqual(ordinary['showcase_trial_limits']['egress_cap_bytes'],1073741824)
-        for cap in (268435456, 536870912):
+        for cap in (134217728, 268435456, 536870912):
             value['trial_egress_cap_bytes']=cap
             bounded=attempt.settings(value,'digitalocean','as7-fixture01','ssh-ed25519 fixture',profile)
             self.assertEqual(bounded['showcase_trial_limits']['egress_cap_bytes'],cap)
