@@ -265,6 +265,19 @@ class FullRunTest(unittest.TestCase):
             with patch.object(remote_fixtures, "config", return_value=config):
                 fixture.setUp()
         self.addCleanup(fixture.doCleanups)
+        if mode is not None:
+            from test_showcase_fingerprints import contents
+            prepared_record = fixture.attempt.record()
+            fixture.plan.setdefault("planned_values", {}).setdefault("outputs", {})["deployment_input_fingerprints"] = {
+                "value": {"schema": 1, "provider": "aws", "runtime": "1" * 64, "deployment": "2" * 64}}
+            cleanup.private_write(fixture.run / "deployment-plan.json", fixture.plan)
+            prepared_record["plan_json_sha256"] = hashlib.sha256((fixture.run / "deployment-plan.json").read_bytes()).hexdigest()
+            cleanup.private_write(fixture.attempt.record_path, prepared_record)
+            def observed_contents():
+                target = fixture.checks.bind(require_tailnet=False)
+                return contents({"run_id": fixture.run.name, "source_revision": fixture.prepared["source_revision"],
+                                 "checksum": target["checksum"], "vm_id": target["vm_id"]})
+            fixture.checks.resolved_contents = observed_contents
         # The shared construction fixture starts applied. This scenario starts
         # before its first fake reservation; no real history/state is touched.
         (fixture.fixture.batch / "reservations.json").unlink()
@@ -354,7 +367,7 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(evidence["light"]["samples"][-1]["elapsed_seconds"], 120)
         self.assertFalse(evidence["tasks"] or evidence["agents"] or evidence["network"])
         self.assertNotIn("model_policy", value.controller.reservation())
-        self.assertEqual([step["name"] for step in cleanup.private_read(value.controller.path)["steps"]], ["apply", "light"])
+        self.assertEqual([step["name"] for step in cleanup.private_read(value.controller.path)["steps"]], ["apply", "light", "resolved_contents"])
         self.assertEqual(value.controller.recover()["status"], "pass")
 
     def test_light_restart_or_unverified_deletion_cannot_pass(self):

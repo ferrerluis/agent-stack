@@ -286,6 +286,67 @@ class RemoteChecks:
             private_write(self.path, evidence)
             raise
 
+    def boot_image(self, target):
+        """Resolve the owned VM's actual boot image through its native API."""
+        adapter = self.attempt.session.adapter
+        identifier = target["vm_id"]
+        if self.provider == "aws":
+            result = adapter.call(adapter.ec2, "describe_instances", InstanceIds=[identifier])
+            rows = [v for r in objects(result, "Reservations") for v in objects(r, "Instances")]
+            require(len(rows) == 1 and rows[0].get("InstanceId") == identifier, "resolved_boot_image_unverified")
+            image = rows[0].get("ImageId")
+            require(isinstance(image, str) and re.fullmatch(r"ami-[a-f0-9]+", image), "resolved_boot_image_unverified")
+        elif self.provider in ("digitalocean", "hetzner"):
+            collection, key = ("droplets", "droplet") if self.provider == "digitalocean" else ("servers", "server")
+            row = field(adapter.get("/" + collection + "/" + segment(identifier)), key)
+            require(str(row.get("id")) == identifier, "resolved_boot_image_unverified")
+            image = field(row, "image").get("id")
+            require(type(image) is int and image > 0, "resolved_boot_image_unverified")
+            image = str(image)
+        else:
+            cloud = self.config["providers"][self.provider]
+            start = "projects/" + cloud["project_id"] + "/zones/" + cloud["zone"] + "/instances/"
+            require(identifier.startswith(start), "resolved_boot_image_unverified")
+            row = adapter.get("/zones/" + segment(cloud["zone"]) + "/instances/" + segment(identifier[len(start):]))
+            disks = [v for v in objects(row, "disks") if v.get("boot") is True]
+            require(len(disks) == 1, "resolved_boot_image_unverified")
+            source = disks[0].get("source")
+            expected = "https://www.googleapis.com/compute/v1/projects/" + cloud["project_id"] + "/zones/" + cloud["zone"] + "/disks/"
+            require(isinstance(source, str) and source.startswith(expected), "resolved_boot_image_unverified")
+            disk = adapter.get("/zones/" + segment(cloud["zone"]) + "/disks/" + segment(source[len(expected):]))
+            image = disk.get("sourceImageId")
+            require(isinstance(image, str) and re.fullmatch(r"[0-9]+", image), "resolved_boot_image_unverified")
+        return self.provider + ":" + image
+
+    @exclusive
+    def resolved_contents(self):
+        import base64
+        from showcase_fingerprints import validate_contents
+        evidence = self.evidence()
+        target = self.bind(require_tailnet=False)
+        binding = {"run_id": self.run.name, "source_revision": evidence["source_revision"],
+                   "checksum": target["checksum"], "vm_id": target["vm_id"]}
+        path = self.attempt.checkout / "scripts/showcase_contents.py"
+        require(path.is_file() and not path.is_symlink(), "resolved_contents_verifier_required")
+        source = path.read_bytes()
+        boot_image = self.boot_image(target)
+        request = json.dumps({"binding": binding, "boot_image": boot_image, "source": base64.b64encode(source).decode()}).encode()
+        until = self.now() + 900
+        while True:
+            try:
+                report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-B", "-I", "-c", source.decode()],
+                                          input=request, timeout=420))
+                validate_contents(report, binding)
+                require(report["boot_image"] == boot_image, "resolved_boot_image_unverified")
+                return report
+            except PolicyError as error:
+                # A light trial may reach two minutes while npm still installs
+                # or builds. Wait for resolved contents within the owned trial;
+                # never treat a running-but-unresolved image as fingerprinted.
+                if str(error) != "command_failed" or self.now() >= until:
+                    raise
+                self.sleep(10)
+
     def probe(self, target, timeout=180):
         report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-", self.provider, target["checksum"],
             target["data_volume_id"], target["data_volume_name"]], input=BOOTSTRAP.encode(), timeout=timeout))

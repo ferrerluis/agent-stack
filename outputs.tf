@@ -211,3 +211,8 @@ output "ui_auth_password" {
   value       = var.public_domain_enabled ? local.resolved_ui_auth_password : "disabled"
   sensitive   = true
 }
+
+output "deployment_input_fingerprints" {
+  description = "Normalized recipe hashes for the selected cloud; acceptance also requires observed image/repair contents and verifier hashes."
+  value       = local.deployment_input_fingerprints
+}

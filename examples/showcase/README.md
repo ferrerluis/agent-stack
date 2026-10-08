@@ -2,7 +2,7 @@
 
 One fresh VM runs OpenClaw, Hermes and a workspace containing Claude Code and Codex. The repository's ordinary deployment defaults remain unchanged.
 
-The current acceptance scope requires six groups on DigitalOcean and a light deployment pass on Hetzner, AWS and GCP. Every cloud requires independently verified cleanup. Each proof remains tied to its exact source revision; no hash carryover or selective invalidation is implemented. Code and local tests alone cannot establish live acceptance. Read the selected batch's private receipts for its current status.
+The current acceptance scope requires six groups on DigitalOcean and a light deployment pass on Hetzner, AWS and GCP. Every cloud requires independently verified cleanup. Git revisions identify where evidence came from. Per-check input and verifier fingerprints now decide whether that evidence carries forward. Code and local tests alone cannot establish live acceptance. Read the selected batch's private receipts for its current status.
 
 Use [the named settings](terraform.tfvars.example) and [private input example](execution-inputs.example.json) in an isolated checkout with new state and test-only SSH keys. `variables.tf` remains the schema and true-default source; examples supply suggestions and required placeholders.
 
@@ -56,6 +56,39 @@ Purchased model credits count once as cash. Actual requests require durable hold
 DigitalOcean volume pricing accepts either the published hourly/monthly table or its current monthly-only format. It excludes the separate snapshot table, rejects duplicate or malformed prices, and converts monthly rows with an upward hourly rounding margin. The current format retains the same conservative per-GiB hourly bound; it cannot waive a fresh pricing read or account/cleanup adjustments.
 
 After native absence proof, `Reservations.reconcile_cleanup` can tighten an original allowance using its original quote, scope, timestamps and cleanup receipt. It preserves account margins, transfer/minimum reserves and whole-hour rounding, removes completed cleanup contingencies, and retains retry history. Missing or edited proof refuses reconciliation; late deletion can increase the bound.
+
+## Proof carryover
+
+The controller keeps the existing named stages and declares their input and prerequisite checks in `scripts/showcase_fingerprints.py`. Each completed stage records its input fingerprint, verifier fingerprint, original evidence and evidence checksum in `showcase-run.json`; partial passes remain reviewable after a later failure. Active attempts and recovery still require their exact committed export.
+
+`main.tf` extends the runtime apply checksum with a normalized checksum for the selected cloud and exposes `deployment_input_fingerprints`. This hashes effective runtime settings, runtime sources, that cloud's module/settings/root wiring and provider versions. It excludes trial names, generated keys/passwords, deadlines and generated resource IDs. The original exact secret-bearing apply checksum remains the deployment guard. Normalization is for the isolated showcase profile; it does not attest credential contents or weaken native account/authentication checks.
+
+Recipes alone cannot carry a pass. On the paid VM, `showcase_contents.py` records the native provider’s resolved boot image ID, actual OCI image IDs, filesystem layers/platform, installed host package metadata and Docker/Tailscale/SSH binary hashes. It hashes every installed Hermes npm dependency, both repaired workspaces, compiled interfaces, patched manifests and the repair marker twice to reject changes during observation. This covers the mutable Ubuntu base/packages and Hermes startup repair without a separate image build or cache pipeline. Full acceptance captures contents before model work and after reboot; light acceptance captures them after the stability check.
+
+| Change | Proofs to review again |
+| --- | --- |
+| README or linked plan | Documentation check; runtime proofs can carry |
+| Selected cloud module/settings | That cloud's deployment and dependent checks |
+| Actual image or repaired file contents | Every check that depends on those contents |
+| Verifier or an imported checker | That verifier's checks and dependent checks |
+| Trial name, generated test key, deadline | No invalidation by those values alone |
+
+Shared controller/checker files are conservatively hashed as whole files, so a shared harness edit may require several checks again. Every launch still refreshes ownership, pricing, permissions, budget, capacity and deadlines. Cleanup always needs fresh native absence proof for the particular attempt; it is never skipped or carried to a new VM.
+
+Review a prior run against a candidate's normalized plan and observed contents without launching resources:
+
+```bash
+python3 -B scripts/showcase_fingerprints.py \
+  --config /absolute/private-inputs.json --provider digitalocean \
+  --plan /absolute/candidate/deployment-plan.json \
+  --run /absolute/previous/showcase-run.json \
+  --contents /absolute/candidate/resolved-contents.json \
+  --output /absolute/private-carryover-report.json
+```
+
+The contents file is the `resolved_contents` observation saved by the controller, or the post-reboot observation for persistence. Select the exact tested artifacts for a documentation-only revision; do not assume a newly rebuilt VM has the same contents. A fresh build must supply its fresh observation. Missing fingerprints, changed evidence, account/project mismatches or missing prerequisite proofs require re-proof. The evaluator reports carryover; it does not bypass paid launch gates or replay old controller steps.
+
+Older green runtime results lack these complete fingerprints and therefore need one fresh baseline. Their original evidence and independently verified cleanup/cost records remain intact. Documentation remains unverified until the evidence-matched README and linked saved plans are reviewed together.
 
 ## Required live evidence
 

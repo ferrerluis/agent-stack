@@ -229,3 +229,62 @@ run "sidecar_gateway_keeps_shared_namespace_loopback" {
     error_message = "A sidecar sharing the OpenClaw namespace must use loopback in both environment and first-start configuration."
   }
 }
+
+run "normalized_inputs_baseline" {
+  command = plan
+  variables { cloud_provider = "digitalocean" }
+  assert {
+    condition     = length(output.deployment_input_fingerprints.runtime) == 64 && length(output.deployment_input_fingerprints.deployment) == 64
+    error_message = "Recipe fingerprints must be known before apply, including when resource IDs are unknown."
+  }
+}
+run "normalized_inputs_trial_identity" {
+  command = plan
+  variables {
+    cloud_provider            = "digitalocean"
+    project_name              = "another-owned-trial"
+    ssh_public_key            = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDifferentTrialKeyFixture agent-stack-test"
+    workspace_ssh_public_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDifferentTrialKeyFixture agent-stack-test"]
+    gateway_token             = "another-generated-trial-secret"
+    hermes_dashboard_password = "different-trial-password"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints == run.normalized_inputs_baseline.deployment_input_fingerprints
+    error_message = "Trial names, generated credentials and public keys must not invalidate unchanged deployment inputs."
+  }
+}
+run "normalized_inputs_other_provider" {
+  command = plan
+  variables {
+    cloud_provider     = "digitalocean"
+    aws_instance_type  = "m7a.medium"
+    gcp_machine_type   = "e2-medium"
+    hcloud_server_type = "cx23"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints == run.normalized_inputs_baseline.deployment_input_fingerprints
+    error_message = "Another provider's settings must not invalidate DigitalOcean."
+  }
+}
+run "normalized_inputs_machine" {
+  command = plan
+  variables {
+    cloud_provider  = "digitalocean"
+    do_droplet_size = "s-2vcpu-4gb-amd"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints.deployment != run.normalized_inputs_baseline.deployment_input_fingerprints.deployment && output.deployment_input_fingerprints.runtime == run.normalized_inputs_baseline.deployment_input_fingerprints.runtime
+    error_message = "A machine change must affect this cloud's deployment inputs."
+  }
+}
+run "normalized_inputs_runtime" {
+  command = plan
+  variables {
+    cloud_provider          = "digitalocean"
+    workspace_codex_release = "0.146.0"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints.runtime != run.normalized_inputs_baseline.deployment_input_fingerprints.runtime && output.deployment_input_fingerprints.deployment == run.normalized_inputs_baseline.deployment_input_fingerprints.deployment
+    error_message = "A CLI recipe change must affect runtime inputs."
+  }
+}

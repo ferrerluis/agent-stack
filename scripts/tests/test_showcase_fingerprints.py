@@ -1,0 +1,161 @@
+import copy
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import showcase_fingerprints as fp
+import showcase_contents as observed
+from showcase_cleanup import scope
+from showcase_policy import PolicyError
+from test_showcase_policy import config
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def contents(binding=None):
+    return {"schema": 1, "status": "resolved_contents_verified", "boot_image": "aws:ami-fixture",
+        "binding": binding or {"run_id": "as7-fingerprint01", "source_revision": "a" * 40, "checksum": "b" * 64, "vm_id": "vm-fixture"},
+        "images": {role: {"image_id": "sha256:" + char * 64, "layers": ["sha256:" + char * 64], "os": "linux", "architecture": "amd64", "variant": ""}
+                   for role, char in zip(("openclaw", "hermes", "workspace"), "123")},
+        "containers": {role: {"container_id": char * 64, "image_id": "sha256:" + char * 64}
+                       for role, char in zip(("openclaw", "hermes", "workspace"), "123")},
+        "hermes_repair_sha256": "4" * 64, "host": {"packages_sha256": "5" * 64, "kernel": "6.1.0-fixture", "os_release_sha256": "6" * 64,
+            "tools": {name: "7" * 64 for name in ("/usr/bin/docker", "/usr/bin/tailscale", "/usr/sbin/sshd")}}}
+
+
+class FingerprintTest(unittest.TestCase):
+    def setUp(self):
+        self.config = config()
+        self.recipe = {"schema": 1, "provider": "aws", "runtime": "a" * 64, "deployment": "b" * 64}
+        self.components = fp.context(ROOT, self.config, "aws", self.recipe, contents())
+        self.origin = {"provider": "aws", "scope": scope(self.config, "aws"), "run_id": "as7-fingerprint01", "source_revision": "a" * 40}
+        self.checks = {}
+        def add(name):
+            for dep in fp.SPECS[name][1]:
+                if dep not in self.checks: add(dep)
+            self.checks[name] = fp.proof(ROOT, name, self.components, {"status": "pass", "fixture": name}, self.origin,
+                                       {key: self.checks[key] for key in fp.SPECS[name][1]})
+        add("light"); add("resolved_contents")
+        receipt = {"cloud_queries_succeeded": True, "tailnet_queries_succeeded": True, "terraform_state_verified_empty": True,
+                   "remaining_ids": [], "remaining_tailnet_nodes": []}
+        self.checks["verified_cleanup"] = fp.proof(ROOT, "verified_cleanup", self.components, receipt, self.origin, {})
+        self.bundle = {"schema": 1, "mode": "light", "recipe": self.recipe, "cleanup": "verified", "checks": self.checks}
+
+    def evaluate(self, **kwargs):
+        return fp.evaluate(kwargs.get("root", ROOT), kwargs.get("bundle", self.bundle), kwargs.get("components", self.components),
+                           "aws", scope(self.config, "aws"))
+
+    def test_proven_contents_carry_across_commits_not_run_names(self):
+        result = self.evaluate()
+        self.assertEqual(result["groups"]["vm_and_containers"]["status"], "carry")
+        manifest = contents(); manifest["binding"]["source_revision"] = "f" * 40; manifest["binding"]["run_id"] = "as7-newtrial02"
+        manifest["binding"]["vm_id"] = "new-vm"; manifest["containers"]["hermes"]["container_id"] = "9" * 64
+        components = fp.context(ROOT, self.config, "aws", self.recipe, manifest)
+        self.assertEqual(components, self.components)
+
+    def test_missing_resolved_contents_never_carried_from_recipe(self):
+        components = fp.context(ROOT, self.config, "aws", self.recipe)
+        self.assertEqual(self.evaluate(components=components)["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_mutable_image_contents_invalidate_same_recipe(self):
+        manifest = contents(); manifest["images"]["workspace"]["layers"] = ["sha256:" + "f" * 64]
+        components = fp.context(ROOT, self.config, "aws", self.recipe, manifest)
+        result = self.evaluate(components=components)
+        self.assertEqual(result["checks"]["light"]["reason"], "fingerprint_inputs_changed")
+        self.assertEqual(result["checks"]["apply"]["status"] if "apply" in result["checks"] else self.checks["apply"]["status"], "pass")
+
+    def test_hermes_writable_repair_invalidates_unchanged_image_ids(self):
+        manifest = contents(); manifest["hermes_repair_sha256"] = "e" * 64
+        result = self.evaluate(components=fp.context(ROOT, self.config, "aws", self.recipe, manifest))
+        self.assertEqual(result["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_host_package_change_requires_deployment_reproof(self):
+        manifest = contents(); manifest["host"]["packages_sha256"] = "e" * 64
+        self.assertEqual(self.evaluate(components=fp.context(ROOT, self.config, "aws", self.recipe, manifest))["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_resolved_boot_image_change_invalidates_even_same_packages(self):
+        manifest = contents(); manifest["boot_image"] = "aws:ami-new-image"
+        self.assertEqual(self.evaluate(components=fp.context(ROOT, self.config, "aws", self.recipe, manifest))["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_docs_edit_preserves_runtime_verifier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in fp.verifier_files(ROOT, "light"):
+                p = root / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes((ROOT / name).read_bytes())
+            (root / "README.md").write_text("changed docs")
+            self.assertEqual(self.evaluate(root=root)["groups"]["vm_and_containers"]["status"], "carry")
+            p = root / "scripts/showcase_light.py"; p.write_text(p.read_text() + "\n# verifier fixed\n")
+            self.assertEqual(self.evaluate(root=root)["checks"]["light"]["reason"], "fingerprint_verifier_changed")
+
+    def test_earlier_false_pass_or_missing_dependency_never_carried(self):
+        for mutate in (lambda b: b["checks"].pop("apply"), lambda b: b["checks"]["apply"].update(status="unverified"),
+                       lambda b: b["checks"]["light"]["evidence"].update(status="fail")):
+            bundle = copy.deepcopy(self.bundle); mutate(bundle)
+            self.assertEqual(self.evaluate(bundle=bundle)["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_forged_dependency_binding_is_rejected(self):
+        bundle = copy.deepcopy(self.bundle); row = bundle["checks"]["light"]
+        row["dependencies"]["apply"] = "f" * 64
+        row["proof_sha256"] = fp.hashed({k: v for k, v in row.items() if k != "proof_sha256"})
+        self.assertEqual(self.evaluate(bundle=bundle)["checks"]["light"]["reason"], "fingerprint_dependencies_changed")
+
+    def test_scope_and_verifier_change_require_reproof(self):
+        bundle = copy.deepcopy(self.bundle); row = bundle["checks"]["light"]
+        row["origin"]["scope"]["account_id"] = "another-account"
+        row["proof_sha256"] = fp.hashed({k: v for k, v in row.items() if k != "proof_sha256"})
+        self.assertEqual(self.evaluate(bundle=bundle)["checks"]["light"]["reason"], "fingerprint_scope_changed")
+
+    def test_legacy_green_without_fingerprints_requires_baseline(self):
+        self.assertEqual(self.evaluate(bundle={"mode": "light", "schema": 1, "checks": {}})["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_unclosed_original_trial_cannot_supply_carried_proof(self):
+        bundle = copy.deepcopy(self.bundle); bundle["cleanup"] = "uncertain"
+        self.assertEqual(self.evaluate(bundle=bundle)["checks"]["light"]["reason"], "fingerprint_original_cleanup_unverified")
+
+    def test_cleanup_is_always_fresh_and_has_preserved_evidence(self):
+        self.checks["verified_cleanup"] = fp.proof(ROOT, "verified_cleanup", self.components, {"native_absence": "verified"}, self.origin, {})
+        result = self.evaluate(bundle={**self.bundle, "mode": "full"})
+        self.assertEqual(result["checks"]["verified_cleanup"]["reason"], "fresh_cleanup_required")
+
+    def test_ephemeral_peer_and_budget_do_not_change_app_or_access_inputs(self):
+        cfg = copy.deepcopy(self.config); cfg["tailnet"]["runner_dns"] = "newpeer.fixture.ts.net"; cfg["budget_usd"] = "35"
+        self.assertEqual(fp.context(ROOT, cfg, "aws", self.recipe, contents()), self.components)
+
+    def test_plan_fingerprint_requires_complete_normalized_known_outputs(self):
+        plan = {"planned_values": {"outputs": {"deployment_input_fingerprints": {"value": self.recipe}}}}
+        self.assertEqual(fp.recipe_from_plan(plan, "aws"), self.recipe)
+        for value in ({}, {**self.recipe, "provider": "gcp"}, {**self.recipe, "deployment": None}):
+            plan["planned_values"]["outputs"]["deployment_input_fingerprints"]["value"] = value
+            with self.assertRaises(PolicyError): fp.recipe_from_plan(plan, "aws")
+
+    def test_recipe_only_or_mismatched_observation_refused(self):
+        for value in ({"images": contents()["images"]}, {**contents(), "hermes_repair_sha256": None}):
+            with self.assertRaises(PolicyError): fp.validate_contents(value)
+        with self.assertRaises(PolicyError): fp.validate_contents(contents(), {**contents()["binding"], "vm_id": "other-vm"})
+
+    def test_resolved_tree_tracks_file_bytes_modes_and_links_but_not_mtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / "web").mkdir(); file = root / "web/code.js"; file.write_text("before")
+            first = observed.tree_hash(root, ["web"])
+            import os
+            os.utime(file, (1, 1)); self.assertEqual(observed.tree_hash(root, ["web"]), first)
+            file.write_text("after"); self.assertNotEqual(observed.tree_hash(root, ["web"]), first)
+            first = observed.tree_hash(root, ["web"]); file.chmod(0o755); self.assertNotEqual(observed.tree_hash(root, ["web"]), first)
+            (root / "web/outside").symlink_to("/etc/passwd")
+            with self.assertRaises(AssertionError): observed.tree_hash(root, ["web"])
+
+    def test_remote_process_input_reaches_child_without_stdin_conflict(self):
+        self.assertEqual(observed.run(sys.executable, "-B", "-I", "-c", "import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())",
+                                      input=b"credential-free-fixture"), b"credential-free-fixture")
+
+    def test_every_named_controller_stage_has_declared_dependencies(self):
+        names = set(fp.SPECS)
+        for components, checks, verifiers in fp.SPECS.values():
+            self.assertTrue(components); self.assertTrue(set(checks) <= names)
+
+
+if __name__ == "__main__": unittest.main()

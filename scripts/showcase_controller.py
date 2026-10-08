@@ -32,7 +32,7 @@ def cell_names(mode):
     return ("vm_and_containers",) if mode == "light" else FULL_GROUPS if mode == "full" else CELLS
 
 
-SOURCES = ("modules/common/runtime/hermes_health.py",) + tuple("scripts/" + name + ".py" for name in ("showcase_light", "showcase_launch", "showcase_network_prices", "showcase_watchdog", "showcase_credentials", "showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
+SOURCES = ("modules/common/runtime/hermes_health.py", "modules/common/runtime/workspace_cli_task.py") + tuple("scripts/" + name + ".py" for name in ("showcase_fingerprints", "showcase_contents", "showcase_light", "showcase_launch", "showcase_network_prices", "showcase_watchdog", "showcase_credentials", "showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
     "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_task", "showcase_runtime_evidence", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
@@ -100,7 +100,7 @@ class RunController:
         require(evidence.get("source_revision") == self.attempt.prepared["source_revision"], "acceptance_source_changed")
         if self.mode == "light":
             from showcase_light import validate
-            require(set(observed) == {"apply", "light"} and observed["apply"] == {
+            require(set(observed) == {"apply", "light", "resolved_contents"} and observed["apply"] == {
                     "deployment": "applied", "acceptance": "pending", "live_matrix": "not_tested"}
                     and evidence["checks"] == {"vm_and_containers": "pass"}
                     and not evidence.get("tasks") and not evidence.get("agents") and not evidence.get("model_channels")
@@ -307,6 +307,7 @@ class RunController:
             record["steps"].append(row)
             private_write(self.path, record)
             value = action()
+            observed[name] = value
             row.update(status="pass", proof_sha256=proof_hash(value))
             private_write(self.path, record)
             return value
@@ -317,6 +318,7 @@ class RunController:
             observed["apply"] = step("apply", lambda: self.attempt.apply(self.ledger, readiness))
             if self.mode == "light":
                 observed["light"] = step("light", self.remote.light)
+                observed["resolved_contents"] = step("resolved_contents", self.remote.resolved_contents)
             else:
                 self.full_steps(step, observed, gate)
             evidence = self.remote.evidence()
@@ -364,6 +366,25 @@ class RunController:
                     acceptance = False
                     failure = "acceptance_evidence_changed"
                     record["failure_stage"] = "acceptance"
+            if self.mode in ("full", "light"):
+                try:
+                    from showcase_fingerprints import recipe_from_plan, record_checks, GROUPS, proof, context
+                    recipe = recipe_from_plan(private_read(self.run / "deployment-plan.json"), self.provider)
+                    record["fingerprints"] = record_checks(self.attempt.checkout, record, self.config, recipe, observed)
+                    if record["cleanup"] == "verified":
+                        origin = {key: record[key] for key in ("run_id", "source_revision", "provider", "scope")}
+                        components = context(self.attempt.checkout, self.config, self.provider, recipe)
+                        record["fingerprints"]["checks"]["verified_cleanup"] = proof(self.attempt.checkout,
+                            "verified_cleanup", components, private_read(self.run / "cleanup-receipt.json"), origin, {})
+                    for group, status in record["cells"].items():
+                        if status == "pass":
+                            require(all(record["fingerprints"]["checks"].get(name, {}).get("status") == "pass"
+                                        for name in GROUPS[group]), "fingerprint_proof_unverified")
+                except BaseException:
+                    acceptance = False
+                    failure = failure or "fingerprint_proof_unverified"
+                    record.setdefault("failure_stage", "fingerprints")
+            record["check_observations"] = observed
             record.update(stage="finished", finished_at=self.now(), status="pass" if acceptance and record["cleanup"] == "verified" else "fail")
             if record["status"] != "pass":
                 record["cells"] = {key: "unverified" for key in cell_names(self.mode)}
@@ -377,6 +398,8 @@ class RunController:
         observed["bootstrap"] = step("bootstrap", self.remote.bootstrap)
         if gate == "deferred_owned_vm":
             observed["containers"] = step("containers", self.remote.container_tests)
+        if self.mode == "full":
+            observed["resolved_contents"] = step("resolved_contents", self.remote.resolved_contents)
         observed["model_channel"] = step("model_channel", lambda: self.models.start("before_reboot"))
         for runtime in ("openclaw", "hermes"):
             observed[runtime + "_activation"] = step(runtime + "_activation", lambda runtime=runtime: self.models.activate_runtime(runtime))
@@ -389,6 +412,8 @@ class RunController:
         observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
         observed["model_channel_closed"] = step("model_channel_closed", self.models.close)
         observed["reboot"] = step("reboot", lambda: self.remote.reboot(defer_doctors=True))
+        if self.mode == "full":
+            observed["resolved_contents_after_reboot"] = step("resolved_contents_after_reboot", self.remote.resolved_contents)
         observed["model_channel_after_reboot"] = step("model_channel_after_reboot", lambda: self.models.start("after_reboot"))
         for runtime in ("openclaw", "hermes"):
             observed[runtime + "_activation_after_reboot"] = step(runtime + "_activation_after_reboot", lambda runtime=runtime: self.models.activate_runtime(runtime))
@@ -432,6 +457,19 @@ class RunController:
                         rows = [row for row in record["steps"] if row["name"] == name and row["status"] == "pass"]
                         require(len(rows) == 1 and rows[0]["proof_sha256"] == proof_hash(value), "acceptance_incomplete")
                     record["cells"] = self.verdict(proof["observed"], private_read(self.remote.path))
+                    if self.mode in ("full", "light"):
+                        from showcase_fingerprints import recipe_from_plan, record_checks, GROUPS
+                        recipe = recipe_from_plan(private_read(self.run / "deployment-plan.json"), self.provider)
+                        recalculated = record_checks(self.attempt.checkout, record, self.config, recipe, proof["observed"])
+                        saved = record.get("fingerprints", {}).get("checks", {})
+                        require(all(recalculated["checks"][name] == saved.get(name) for name in recalculated["checks"]),
+                                "fingerprint_evidence_changed")
+                        require(saved.get("verified_cleanup", {}).get("evidence") == private_read(self.run / "cleanup-receipt.json"),
+                                "fingerprint_cleanup_changed")
+                        for group, status in record["cells"].items():
+                            if status == "pass":
+                                require(all(saved.get(name, {}).get("status") == "pass" for name in GROUPS[group]),
+                                        "fingerprint_proof_unverified")
                     if self.mode == "full":
                         record["cells"]["verified_cleanup"] = "pass"
                     record["status"] = "pass"

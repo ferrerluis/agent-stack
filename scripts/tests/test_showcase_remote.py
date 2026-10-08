@@ -31,6 +31,41 @@ DISK = "33333333-3333-3333-3333-333333333333"
 
 
 class RemoteChecksTest(unittest.TestCase):
+    def test_resolved_contents_executes_checked_source_with_native_binding(self):
+        from test_showcase_fingerprints import contents
+        import base64
+        calls = []
+        self.checks.boot_image = Mock(return_value="aws:ami-fixture")
+        def ssh(target, args, input, timeout):
+            calls.append(args)
+            request = json.loads(input)
+            self.assertEqual(base64.b64decode(request["source"]), (self.attempt.checkout / "scripts/showcase_contents.py").read_bytes())
+            self.assertEqual(args[:6], ["sudo", "-n", "python3", "-B", "-I", "-c"])
+            return json.dumps(contents(request["binding"])).encode()
+        self.checks.ssh = ssh
+        proof = self.checks.resolved_contents()
+        self.assertEqual(proof["binding"]["run_id"], self.run.name)
+        self.assertEqual(proof["binding"]["checksum"], CHECKSUM)
+        self.assertTrue(proof["binding"]["vm_id"])
+        self.assertEqual(len(calls), 1)
+
+    def test_contents_observation_refuses_other_vm_or_recipe_only_output(self):
+        from test_showcase_fingerprints import contents
+        self.checks.boot_image = Mock(return_value="aws:ami-fixture")
+        def wrong(target, args, input, timeout):
+            value = contents(json.loads(input)["binding"]); value["binding"]["vm_id"] = "another-vm"
+            return json.dumps(value).encode()
+        self.checks.ssh = wrong
+        with self.assertRaisesRegex(remote.PolicyError, "resolved_contents_binding_invalid"):
+            self.checks.resolved_contents()
+
+    def test_boot_image_is_native_resolved_identity_not_a_mutable_alias(self):
+        target = self.checks.bind(require_tailnet=False)
+        self.session.adapter.call = Mock(return_value={"Reservations": [{"Instances": [{"InstanceId": target["vm_id"], "ImageId": "ami-12345678"}]}]})
+        self.assertEqual(self.checks.boot_image(target), "aws:ami-12345678")
+        self.session.adapter.call.return_value["Reservations"][0]["Instances"][0]["InstanceId"] = "other-vm"
+        with self.assertRaisesRegex(remote.PolicyError, "resolved_boot_image_unverified"): self.checks.boot_image(target)
+
     def test_only_requested_native_container_command_uses_private_failure_capture(self):
         self.checks.bootstrap()
         target = self.checks.bind()

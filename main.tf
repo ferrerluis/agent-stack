@@ -565,6 +565,7 @@ locals {
   runtime_starter_tools           = file("${path.module}/modules/common/templates/starter/TOOLS.default.md")
   runtime_starter_user            = file("${path.module}/modules/common/templates/starter/USER.default.md")
   runtime_artifact_checksum = nonsensitive(sha256(join("\n---agent-stack-artifact---\n", [
+    local.deployment_input_fingerprints.deployment,
     nonsensitive(local.runtime_docker_compose),
     nonsensitive(local.runtime_env),
     local.runtime_hermes_seed,
@@ -879,4 +880,144 @@ Host ${var.repo_ssh_host_alias}
   TCPKeepAlive yes
   StrictHostKeyChecking accept-new
 EOT
+}
+
+# Stable acceptance identities complement the exact, secret-bearing apply
+# checksum above. They are recipes, never proof of resolved image contents.
+# Trial names, generated credentials/keys, deadlines and resource IDs are absent.
+locals {
+  proof_runtime_template_vars = {
+    hermes_config_mode                             = var.hermes_config_mode
+    hermes_dashboard_username                      = var.hermes_dashboard_username
+    hermes_dashboard_password                      = "managed-credential"
+    hermes_dashboard_secret                        = "managed-credential"
+    gcp_device_name                                = var.cloud_provider == "gcp" ? "agent-stack-data" : ""
+    provider_type                                  = var.cloud_provider
+    project_name                                   = "agent-stack-proof"
+    admin_username                                 = var.admin_username
+    admin_password                                 = "managed-credential"
+    admin_password_ssh_scope                       = var.admin_password_ssh_scope
+    host_codex_cli_enabled                         = var.host_codex_cli_enabled
+    ebs_volume_id                                  = var.cloud_provider == "aws" ? "owned-data-volume" : ""
+    do_volume_name                                 = var.cloud_provider == "digitalocean" ? "owned-data-volume" : ""
+    hcloud_volume_id                               = var.cloud_provider == "hetzner" ? "owned-data-volume" : ""
+    anthropic_api_key                              = "managed-credential"
+    anthropic_auth_key                             = "managed-credential"
+    openai_api_key                                 = "managed-credential"
+    openai_auth_mode                               = var.openai_auth_mode
+    openai_codex_auth_json_base64                  = "managed-credential"
+    groq_api_key                                   = "managed-credential"
+    gemini_api_key                                 = "managed-credential"
+    telegram_bot_token                             = "managed-credential"
+    telegram_allow_from_json                       = jsonencode(var.telegram_allow_from)
+    openclaw_config_mode                           = var.openclaw_config_mode
+    agent_channel                                  = var.agent_channel
+    model_providers_enabled_json                   = jsonencode(var.model_providers_enabled)
+    default_model                                  = var.default_model
+    fallback_models_json                           = jsonencode(var.fallback_models)
+    tailscale_enabled                              = var.tailscale_enabled
+    tailscale_auth_key                             = "managed-credential"
+    openclaw_version                               = var.openclaw_version
+    openclaw_image                                 = var.openclaw_image_digest != "" ? "ghcr.io/openclaw/openclaw@${var.openclaw_image_digest}" : "ghcr.io/openclaw/openclaw:${var.openclaw_version}"
+    openclaw_gateway_bind                          = local.tailscale_sidecar_enabled || var.openclaw_host_network_enabled ? "loopback" : "lan"
+    openclaw_host_network_enabled                  = var.openclaw_host_network_enabled
+    openclaw_node_options                          = var.openclaw_node_options
+    openclaw_swap_size_mb                          = var.openclaw_swap_size_mb
+    openclaw_health_start_period_seconds           = var.openclaw_health_start_period_seconds
+    openclaw_health_retries                        = var.openclaw_health_retries
+    seed_starter_workspace_files                   = var.seed_starter_workspace_files
+    starter_soul_profile                           = var.starter_soul_profile
+    gateway_token                                  = "managed-credential"
+    enabled_services_json                          = jsonencode(var.enabled_services)
+    openclaw_enabled                               = local.openclaw_enabled
+    hermes_enabled                                 = local.hermes_enabled
+    n8n_enabled                                    = local.n8n_enabled
+    local_postgres_enabled                         = local.local_postgres_enabled
+    caddy_enabled                                  = var.public_domain_enabled
+    hermes_image                                   = var.hermes_image
+    hermes_npm_security_patch_enabled              = var.hermes_npm_security_patch_enabled
+    hermes_dashboard_enabled                       = var.hermes_dashboard_enabled
+    hermes_api_server_enabled                      = var.hermes_api_server_enabled
+    hermes_api_server_key                          = "managed-credential"
+    n8n_image                                      = var.n8n_image
+    n8n_database_mode                              = var.n8n_database_mode
+    n8n_encryption_key                             = "managed-credential"
+    n8n_public_webhooks_enabled                    = var.n8n_public_webhooks_enabled
+    n8n_generic_timezone                           = var.n8n_generic_timezone
+    postgres_image                                 = var.postgres_image
+    postgres_database                              = var.postgres_database
+    postgres_user                                  = var.postgres_user
+    postgres_password                              = "managed-credential"
+    n8n_postgres_host                              = local.resolved_n8n_postgres_host
+    n8n_postgres_port                              = local.resolved_n8n_postgres_port
+    n8n_postgres_database                          = local.resolved_n8n_postgres_database
+    n8n_postgres_user                              = local.resolved_n8n_postgres_user
+    n8n_postgres_password                          = "managed-credential"
+    n8n_postgres_ssl_enabled                       = local.resolved_n8n_postgres_ssl
+    public_domain_enabled                          = var.public_domain_enabled
+    openclaw_domain                                = local.resolved_openclaw_domain
+    hermes_domain                                  = local.resolved_hermes_domain
+    n8n_domain                                     = local.resolved_n8n_domain
+    acme_email                                     = var.acme_email
+    ui_auth_mode                                   = var.ui_auth_mode
+    ui_auth_username                               = var.ui_auth_username
+    ui_auth_password                               = "managed-credential"
+    workspace_enabled                              = local.workspace_enabled
+    workspace_claude_enabled                       = var.workspace_claude_enabled
+    workspace_claude_release                       = var.workspace_claude_release
+    workspace_codex_release                        = var.workspace_codex_release
+    workspace_codex_auto_update_enabled            = var.workspace_codex_auto_update_enabled
+    workspace_codex_auto_update_timezone           = trimspace(var.workspace_codex_auto_update_timezone)
+    workspace_codex_auto_update_time               = trimspace(var.workspace_codex_auto_update_time)
+    workspace_codex_auto_recover_interrupted_turns = var.workspace_codex_auto_recover_interrupted_turns
+    workspace_username                             = var.workspace_username
+    workspace_password                             = "managed-credential"
+    workspace_password_hash                        = "managed-credential"
+    workspace_ssh_host_port                        = var.workspace_ssh_host_port
+    workspace_ssh_host                             = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : "agent-stack-proof"
+    workspace_ssh_public_keys_base64               = "trial-generated-public-key"
+    vpn_enabled                                    = var.vpn_enabled
+    vpn_provider                                   = var.vpn_provider
+    vpn_nordvpn_connect_target                     = var.vpn_nordvpn_connect_target
+    vpn_openvpn_config_url                         = var.vpn_openvpn_config_url
+    vpn_bypass_cidrs_json                          = jsonencode(var.vpn_bypass_cidrs)
+    vpn_disable_ipv6                               = var.vpn_disable_ipv6
+    vpn_healthcheck_url                            = var.vpn_healthcheck_url
+    tailscale_mode                                 = var.tailscale_mode
+    tailscale_sidecar_enabled                      = local.tailscale_sidecar_enabled
+    tailscale_host_enabled                         = local.tailscale_host_enabled
+  }
+  proof_runtime_sources = {
+    for name in fileset(path.module, "modules/common/{runtime,templates}/**") : name => filesha256("${path.module}/${name}")
+  }
+  proof_runtime_checksum = nonsensitive(sha256(jsonencode({
+    schema       = 1
+    settings     = local.proof_runtime_template_vars
+    sources      = local.proof_runtime_sources
+    hermes_model = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model
+    drive_skill  = filesha256("${path.module}/skills/para-memory-drive/SKILL.md")
+    # Bind root rendering and apply logic, without hashing other cloud modules.
+    root_runtime = sha256(regex("(?s)  runtime_template_vars = \\{.*?  runtime_staging_dir = [^\n]*", file("${path.module}/main.tf")))
+  })))
+  proof_provider_settings = {
+    aws          = { admin_username = var.admin_username, allowed_ssh_cidr = var.allowed_ssh_cidr, aws_ami_id = var.aws_ami_id, aws_disk_size_gb = var.aws_disk_size_gb, aws_existing_volume_id = var.aws_existing_volume_id, aws_instance_type = var.aws_instance_type, aws_region = var.aws_region, aws_showcase_cost_controls = var.aws_showcase_cost_controls }
+    digitalocean = { admin_username = var.admin_username, allowed_ssh_cidr = var.allowed_ssh_cidr, do_disk_size_gb = var.do_disk_size_gb, do_droplet_size = var.do_droplet_size, do_existing_volume_id = var.do_existing_volume_id, do_existing_volume_name = var.do_existing_volume_name, do_project_id = var.do_project_id, do_region = var.do_region }
+    hetzner      = { admin_username = var.admin_username, allowed_ssh_cidr = var.allowed_ssh_cidr, hcloud_disk_size_gb = var.hcloud_disk_size_gb, hcloud_existing_volume_id = var.hcloud_existing_volume_id, hcloud_image = var.hcloud_image, hcloud_location = var.hcloud_location, hcloud_pin_boot_image = var.hcloud_pin_boot_image, hcloud_server_type = var.hcloud_server_type }
+    gcp          = { admin_username = var.admin_username, allowed_ssh_cidr = var.allowed_ssh_cidr, gcp_boot_disk_size_gb = var.gcp_boot_disk_size_gb, gcp_disk_size_gb = var.gcp_disk_size_gb, gcp_image = var.gcp_image, gcp_machine_type = var.gcp_machine_type, gcp_pin_boot_image = var.gcp_pin_boot_image, gcp_project_id = var.gcp_project_id, gcp_region = var.gcp_region, gcp_showcase_cost_controls = var.gcp_showcase_cost_controls, gcp_zone = var.gcp_zone }
+  }
+  deployment_input_fingerprints = {
+    schema   = 1
+    provider = var.cloud_provider
+    runtime  = local.proof_runtime_checksum
+    deployment = sha256(jsonencode({
+      schema                 = 1
+      provider               = var.cloud_provider
+      settings               = local.proof_provider_settings[var.cloud_provider]
+      trial_egress_cap_bytes = var.showcase_trial_limits == null ? null : var.showcase_trial_limits.egress_cap_bytes
+      sources                = { for name in fileset("${path.module}/modules/${var.cloud_provider}", "**") : name => filesha256("${path.module}/modules/${var.cloud_provider}/${name}") }
+      root_provider          = sha256(regex("(?s)module \"${var.cloud_provider}\" \\{.*?\n}", file("${path.module}/main.tf")))
+      provider_versions      = filesha256("${path.module}/versions.tf")
+      provider_lock          = filesha256("${path.module}/.terraform.lock.hcl")
+    }))
+  }
 }
