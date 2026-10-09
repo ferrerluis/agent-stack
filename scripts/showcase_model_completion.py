@@ -14,6 +14,18 @@ APIS = {"/v1/responses": "responses", "/v1/chat/completions": "chat", "/v1/messa
 FIELDS = {"schema", "provider", "model", "api", "finish", "kind", "response_id_sha256", "body_sha256", "text_sha256", "usage"}
 COUNTS = {"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "context_tokens"}
 FINISHES = {"responses": {"completed"}, "chat": {"stop", "tool_calls"}, "messages": {"end_turn", "stop_sequence", "tool_use"}}
+REJECTION_STAGES = {"completion": "request", "decoded": "json", "events": "events", "identity": "identity",
+                    "responses_stream": "responses_stream", "chat_stream": "chat_stream", "messages_stream": "messages_stream",
+                    "responses": "responses", "chat": "chat", "messages": "messages", "usage": "usage", "validate_proof": "proof"}
+
+
+def validate_rejection(value):
+    """Only source locations and a wire checksum; never exception or response text."""
+    check(isinstance(value, dict) and set(value) == {"schema", "stage", "line", "body_sha256"}
+          and type(value["schema"]) is int and value["schema"] == 1
+          and value["stage"] in REJECTION_STAGES.values()
+          and type(value["line"]) is int and 1 <= value["line"] <= 10000
+          and isinstance(value["body_sha256"], str) and re.fullmatch(r"[a-f0-9]{64}", value["body_sha256"]))
 
 
 def check(value):
@@ -344,11 +356,12 @@ def messages_stream(rows, model):
     message = meaningful[0].get("message"); identity(message, model)
     check(message.get("content") == [] and message.get("stop_reason") is None and isinstance(message.get("usage"), dict))
     counts = dict(message["usage"]); blocks, active, parts, stopped, finish, stop_sequence, saw_usage = [], None, "", False, None, None, False
+    deltas_started = False
     for offset, row in enumerate(meaningful):
         kind = row.get("type")
         if kind == "message_start": check(offset == 0)
         elif kind == "content_block_start":
-            check(active is None and finish is None and integer(row.get("index"), 255) == len(blocks))
+            check(active is None and not deltas_started and integer(row.get("index"), 255) == len(blocks))
             block = row.get("content_block"); check(isinstance(block, dict) and block.get("type") in ("text", "tool_use", "thinking", "redacted_thinking"))
             blocks.append(dict(block)); active, parts = len(blocks) - 1, ""
         elif kind == "content_block_delta":
@@ -364,15 +377,24 @@ def messages_stream(rows, model):
             if blocks[active]["type"] == "tool_use" and parts: blocks[active]["input"] = decoded(parts)
             active = None
         elif kind == "message_delta":
-            check(active is None and finish is None and isinstance(row.get("delta"), dict) and isinstance(row.get("usage"), dict))
+            check(active is None and isinstance(row.get("delta"), dict) and isinstance(row.get("usage"), dict))
             check(not row["delta"].keys() - {"stop_reason", "stop_sequence"} and "model" not in row)
+            deltas_started = True
             for key, value in row["usage"].items():
                 if key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
                     check(integer(value) >= integer(counts.get(key, 0)))
                 counts[key] = value
             check("output_tokens" in row["usage"]); saw_usage = True
-            finish = row["delta"].get("stop_reason")
-            stop_sequence = row["delta"].get("stop_sequence")
+            # Anthropic may send several cumulative message_delta updates.
+            # A terminal reason/sequence, once observed, cannot be revised.
+            if "stop_reason" in row["delta"]:
+                value = row["delta"]["stop_reason"]
+                check(finish is None or value == finish)
+                finish = value
+            if "stop_sequence" in row["delta"]:
+                value = row["delta"]["stop_sequence"]
+                check(stop_sequence is None or value == stop_sequence)
+                stop_sequence = value
         elif kind == "message_stop":
             check(offset == len(meaningful) - 1 and active is None and finish is not None and saw_usage and not stopped); stopped = True
         else: check(False)
@@ -380,8 +402,9 @@ def messages_stream(rows, model):
     return {**message, "content": blocks, "usage": counts, "stop_reason": finish, "stop_sequence": stop_sequence}
 
 
-def completion(provider, model, path, content_type, raw, request, terms):
+def completion(provider, model, path, content_type, raw, request, terms, rejection=None):
     """Return proof or None; a transport receipt alone is never completion."""
+    if rejection is not None: rejection.clear()
     try:
         check(provider in ("openai", "anthropic") and path in APIS and isinstance(raw, bytes) and 0 < len(raw) <= LIMIT)
         api = APIS[path]; check((api == "messages") == (provider == "anthropic"))
@@ -404,5 +427,16 @@ def completion(provider, model, path, content_type, raw, request, terms):
                  "text_sha256": hashed(text), "answer_sha256": selected_answer(text, kind), "usage": counts}
         validate_proof(proof, terms)
         return proof
-    except (ValueError, TypeError, KeyError, IndexError, AttributeError, UnicodeError, RecursionError):
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, UnicodeError, RecursionError) as error:
+        if rejection is not None:
+            stage, line = "request", completion.__code__.co_firstlineno
+            trace = error.__traceback__
+            while trace is not None:
+                frame = trace.tb_frame
+                if frame.f_globals is globals() and frame.f_code.co_name in REJECTION_STAGES:
+                    stage, line = REJECTION_STAGES[frame.f_code.co_name], trace.tb_lineno
+                trace = trace.tb_next
+            rejection.update(schema=1, stage=stage, line=line,
+                             body_sha256=hashlib.sha256(raw if isinstance(raw, bytes) else b"").hexdigest())
+            validate_rejection(rejection)
         return None

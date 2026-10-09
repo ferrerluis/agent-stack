@@ -9,7 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import showcase_fingerprints as fp
 import showcase_contents as observed
-from showcase_cleanup import scope
+from showcase_cleanup import scope, receipt as cleanup_receipt
 from showcase_policy import PolicyError
 from test_showcase_policy import config
 
@@ -40,8 +40,9 @@ class FingerprintTest(unittest.TestCase):
             self.checks[name] = fp.proof(ROOT, name, self.components, {"status": "pass", "fixture": name}, self.origin,
                                        {key: self.checks[key] for key in fp.SPECS[name][1]})
         add("light"); add("resolved_contents")
-        receipt = {"cloud_queries_succeeded": True, "tailnet_queries_succeeded": True, "terraform_state_verified_empty": True,
-                   "remaining_ids": [], "remaining_tailnet_nodes": []}
+        receipt = cleanup_receipt({"scope": self.origin["scope"], "run_id": self.origin["run_id"], "identity": "verified",
+            "resources": [], "unknown_resources": [], "nodes": [], "cloud_queries": 8, "tailnet_queries": 1, "verified_at": 100},
+            {"scope": self.origin["scope"], "run_id": self.origin["run_id"], "captured_at": 99, "resources": [], "tailnet": {"devices": []}}, True)
         self.checks["verified_cleanup"] = fp.proof(ROOT, "verified_cleanup", self.components, receipt, self.origin, {})
         self.bundle = {"schema": 1, "mode": "light", "recipe": self.recipe, "cleanup": "verified", "checks": self.checks}
 
@@ -115,6 +116,16 @@ class FingerprintTest(unittest.TestCase):
     def test_unclosed_original_trial_cannot_supply_carried_proof(self):
         bundle = copy.deepcopy(self.bundle); bundle["cleanup"] = "uncertain"
         self.assertEqual(self.evaluate(bundle=bundle)["checks"]["light"]["reason"], "fingerprint_original_cleanup_unverified")
+
+    def test_native_cleanup_counts_carry_but_boolean_zero_wrong_scope_or_remaining_ids_do_not(self):
+        self.assertEqual(self.evaluate()["groups"]["vm_and_containers"]["status"], "carry")
+        for changes in ({"cloud_queries_succeeded": True}, {"tailnet_queries_succeeded": 0},
+                        {"account_id": "another-account"}, {"remaining_ids": ["still-present"]},
+                        {"terraform_state_verified_empty": False}):
+            bundle = copy.deepcopy(self.bundle); row = bundle["checks"]["verified_cleanup"]
+            row["evidence"].update(changes); row["evidence_sha256"] = fp.hashed(row["evidence"])
+            row["proof_sha256"] = fp.hashed({k: v for k, v in row.items() if k != "proof_sha256"})
+            self.assertEqual(self.evaluate(bundle=bundle)["checks"]["light"]["reason"], "fingerprint_original_cleanup_unverified")
 
     def test_cleanup_is_always_fresh_and_has_preserved_evidence(self):
         self.checks["verified_cleanup"] = fp.proof(ROOT, "verified_cleanup", self.components, {"native_absence": "verified"}, self.origin, {})

@@ -43,6 +43,7 @@ ERRORS = {
     "model_endpoint_or_body_refused": (400, "invalid_request_error"),
     "model_request_already_admitted": (409, "invalid_request_error"),
     "model_request_limit_reached": (403, "permission_error"),
+    "model_completion_unverified": (403, "permission_error"),
     "model_budget_exhausted": (403, "permission_error"),
     "model_work_deadline_reached": (403, "permission_error"),
     "active_model_reservation_required": (403, "permission_error"),

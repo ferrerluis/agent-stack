@@ -90,6 +90,7 @@ class ModelSpend:
             require(row["started_at"] <= now and now + timeout <= row["work_deadline"], "model_work_deadline_reached")
             holds = row["model_requests"]
             require(not any(h["role"] == role and h["request_sha256"] == request_sha256 for h in holds), "model_request_already_admitted")
+            require(not any(h["role"] == role and "completion_rejection" in h for h in holds), "model_completion_unverified")
             require(sum(h["role"] == role for h in holds) < self.policy["roles"][role]["max_requests"], "model_request_limit_reached")
             held = sum((money(h["held_usd"]) for h in holds), Decimal(0))
             require(held + cost <= money(row["model_usd"]), "model_budget_exhausted")
@@ -129,7 +130,7 @@ class ModelSpend:
             require(len(holds) == 1 and holds[0]["status"] == "uncertain", "model_request_not_pending")
         self.ledger.operate(check)
 
-    def received(self, role, request_sha256, proof=None):
+    def received(self, role, request_sha256, proof=None, rejection=None):
         def update(state):
             # Cleanup can close the attempt while an admitted response arrives.
             # Keep its hold unchanged; never turn this into new spending authority.
@@ -140,6 +141,8 @@ class ModelSpend:
             holds[0]["status"] = "response_received"
             if proof is not None:
                 holds[0]["completion"] = copy.deepcopy(proof)
+            if rejection is not None:
+                holds[0]["completion_rejection"] = copy.deepcopy(rejection)
             validate_account(rows[0])
         self.ledger.operate(update)
 
@@ -318,8 +321,9 @@ class RequestGate:
             # The admission remains uncertain and charged at its whole bound.
             raise PolicyError("model_request_failed") from None
         terms = self.spend.policy["roles"][role]
-        proof = completion(provider, terms["model"], path, response_type, bytes(result), strict_json(body), terms)
-        self.spend.received(role, request_hash, proof)
+        rejection = {}
+        proof = completion(provider, terms["model"], path, response_type, bytes(result), strict_json(body), terms, rejection)
+        self.spend.received(role, request_hash, proof, rejection if proof is None else None)
         if sink is not None:
             sink.complete()
         return response_type, bytes(result) if sink is None else b""

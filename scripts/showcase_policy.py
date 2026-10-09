@@ -21,7 +21,7 @@ import sys
 import tempfile
 import time
 from urllib.parse import urlparse
-from showcase_model_completion import validate_proof
+from showcase_model_completion import validate_proof, validate_rejection
 
 PROVIDERS = ("aws", "digitalocean", "gcp", "hetzner")
 ACCEPTANCE_MODES = {"digitalocean": "full", "aws": "light", "gcp": "light", "hetzner": "light"}
@@ -355,7 +355,7 @@ def validate_model_account(row):
     require(isinstance(holds, list) and len(holds) <= 128, "invalid_model_spend_account")
     seen, completions, counts, total = set(), set(), dict.fromkeys(MODEL_ROLES, 0), Decimal(0)
     for hold in holds:
-        object_fields(hold, ("role", "request_sha256", "held_usd", "started_at", "status"), ("completion", "input_tokens_upper_bound"))
+        object_fields(hold, ("role", "request_sha256", "held_usd", "started_at", "status"), ("completion", "completion_rejection", "input_tokens_upper_bound"))
         require(hold["role"] in MODEL_ROLES and isinstance(hold["request_sha256"], str) and re.fullmatch(MODEL_HASH, hold["request_sha256"]), "invalid_model_spend_account")
         key = (hold["role"], hold["request_sha256"])
         expected = costs[hold["role"]]
@@ -367,6 +367,12 @@ def validate_model_account(row):
                 and type(hold["started_at"]) in (int, float) and math.isfinite(hold["started_at"])
                 and row["started_at"] <= hold["started_at"] < row["work_deadline"]
                 and hold["status"] in ("uncertain", "response_received"), "invalid_model_spend_account")
+        if "completion_rejection" in hold:
+            require(hold["status"] == "response_received" and "completion" not in hold, "invalid_model_completion_account")
+            try:
+                validate_rejection(hold["completion_rejection"])
+            except (ValueError, TypeError, KeyError):
+                raise PolicyError("invalid_model_completion_account") from None
         if "completion" in hold:
             require(hold["status"] == "response_received", "invalid_model_spend_account")
             try:

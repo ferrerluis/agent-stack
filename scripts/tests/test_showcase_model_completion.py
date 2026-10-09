@@ -40,7 +40,7 @@ class CompletionTest(unittest.TestCase):
         tool = self.proof(tool_call=True)
         with self.assertRaises(ValueError): completion.validate_proof(tool | {"answer_sha256": "a" * 64}, terms)
 
-    def proof(self, api="responses", value=None, streaming=False, raw=None, request_changes=None, tool_call=False):
+    def proof(self, api="responses", value=None, streaming=False, raw=None, request_changes=None, tool_call=False, rejection=None):
         path = next(path for path, name in completion.APIS.items() if name == api)
         role = "claude" if api == "messages" else "codex"
         policy = spending.policy(spending.config()); terms = policy["roles"][role]
@@ -51,7 +51,7 @@ class CompletionTest(unittest.TestCase):
         value = fixtures.response(api, tool_call=tool_call) if value is None else value
         raw = fixtures.encoded(value, streaming) if raw is None else raw
         return completion.completion(terms["provider"], terms["model"], path,
-                                     "text/event-stream" if streaming else "application/json", raw, json.loads(body), terms)
+                                     "text/event-stream" if streaming else "application/json", raw, json.loads(body), terms, rejection)
 
     def test_all_three_json_and_stream_protocols_select_only_hashes_model_and_usage(self):
         for api in completion.APIS.values():
@@ -167,6 +167,39 @@ class CompletionTest(unittest.TestCase):
             rows = fixtures.stream_rows(fixtures.response("messages")); mutate(rows)
             self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in rows)))
 
+    def test_anthropic_several_cumulative_message_deltas_preserve_final_usage_and_finish(self):
+        rows = fixtures.stream_rows(fixtures.response("messages"))
+        rows.insert(-2, {"type": "message_delta", "delta": {"stop_reason": None}, "usage": {"output_tokens": 10}})
+        rows.insert(-1, {"type": "message_delta", "delta": {}, "usage": {"output_tokens": 25}})
+        proof = self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in rows))
+        self.assertEqual(proof["finish"], "end_turn"); self.assertEqual(proof["usage"]["output_tokens"], 25)
+        mutations = [lambda value: value[-2]["usage"].update(output_tokens=19),
+                     lambda value: value[-2]["delta"].update(stop_reason=None),
+                     lambda value: value[-2]["delta"].update(stop_reason="tool_use"),
+                     lambda value: value.insert(-2, copy.deepcopy(value[2])),
+                     lambda value: value.pop(-3)]
+        for mutate in mutations:
+            changed = copy.deepcopy(rows); mutate(changed)
+            self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in changed)))
+
+    def test_rejection_selects_only_fingerprinted_source_location_and_wire_checksum(self):
+        value = fixtures.response("messages", text=spending.PRIVATE, response_id=spending.PRIVATE)
+        value["model"] = spending.PRIVATE
+        rejection = {"raw": spending.PRIVATE}
+        raw = fixtures.encoded(value, True)
+        self.assertIsNone(self.proof("messages", streaming=True, raw=raw, rejection=rejection))
+        self.assertEqual(rejection["stage"], "identity")
+        self.assertEqual(rejection["body_sha256"], hashlib.sha256(raw).hexdigest())
+        completion.validate_rejection(rejection)
+        self.assertNotIn(spending.PRIVATE, json.dumps(rejection))
+        self.assertIsNotNone(self.proof(rejection=rejection)); self.assertEqual(rejection, {})
+
+    def test_rejection_schema_refuses_raw_data_and_arbitrary_locations(self):
+        rejection = {}; self.proof(raw=b"broken", rejection=rejection)
+        for changes in ({"raw": spending.PRIVATE}, {"stage": spending.PRIVATE}, {"line": True},
+                        {"line": 10001}, {"schema": True}, {"body_sha256": spending.PRIVATE}):
+            with self.assertRaises(ValueError): completion.validate_rejection(rejection | changes)
+
     def test_crlf_comments_and_multiline_data_are_parsed_without_altering_wire_hash(self):
         raw = fixtures.encoded(fixtures.response(), True).replace(b"\n", b"\r\n")
         raw = b": keepalive\r\n\r\n" + raw
@@ -245,6 +278,28 @@ class CompletionLedgerTest(unittest.TestCase):
         account = self.fixture.account(); validate_model_account(account)
         self.assertEqual(account["model_requests"][0]["status"], "response_received")
         self.assertNotIn("completion", account["model_requests"][0])
+        account["model_requests"][0].pop("completion_rejection"); validate_model_account(account)
+
+    def test_unverified_completion_stops_new_role_requests_before_admission_secret_or_http(self):
+        self.fixture.gate.forward("codex", "/v1/responses", spending.body())
+        account = self.fixture.account(); hold = account["model_requests"][0]
+        self.assertIn("completion_rejection", hold)
+        original = copy.deepcopy(hold); self.fixture.reader.reset_mock(); self.fixture.opener.open.reset_mock()
+        # Reopen the durable ledger, rather than rely on gateway-local state.
+        reopened = spend.ModelSpend(self.fixture.ledger, spending.RUN, "aws", "a" * 40, self.fixture.policy, now=lambda: spending.NOW)
+        gate = spend.RequestGate(reopened, self.fixture.reader, self.fixture.opener, now=lambda: spending.NOW)
+        with self.assertRaisesRegex(PolicyError, "model_completion_unverified"):
+            gate.forward("codex", "/v1/responses", spending.body(text="another request"))
+        self.fixture.reader.assert_not_called(); self.fixture.opener.open.assert_not_called()
+        self.assertEqual(self.fixture.account()["model_requests"], [original])
+
+    def test_rejection_cannot_be_forged_into_a_completion_or_private_ledger_field(self):
+        self.fixture.gate.forward("codex", "/v1/responses", spending.body())
+        account = self.fixture.account()
+        for mutate in (lambda h: h.update(status="uncertain"), lambda h: h.update(completion={}),
+                       lambda h: h["completion_rejection"].update(raw=spending.PRIVATE)):
+            changed = copy.deepcopy(account); mutate(changed["model_requests"][0])
+            with self.assertRaises(PolicyError): validate_model_account(changed)
 
     def test_same_provider_response_id_on_another_request_keeps_second_full_hold_uncertain(self):
         self.dispatch()

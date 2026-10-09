@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 
-from showcase_policy import require, PolicyError
+from showcase_policy import require, PolicyError, validate_cleanup_receipt
 from showcase_cleanup import private_read, private_write, scope
 
 SCHEMA = 1
@@ -225,8 +225,12 @@ def evaluate(root, bundle, components, provider, expected_scope):
                     and closed.get("proof_sha256") == hashed({k: v for k, v in closed.items() if k != "proof_sha256"})
                     and closed.get("evidence_sha256") == hashed(closed.get("evidence")), "fingerprint_original_cleanup_unverified")
             receipt = closed["evidence"]
-            require(all(receipt.get(key) is True for key in ("cloud_queries_succeeded", "tailnet_queries_succeeded", "terraform_state_verified_empty"))
-                    and receipt.get("remaining_ids") == [] and receipt.get("remaining_tailnet_nodes") == [], "fingerprint_original_cleanup_unverified")
+            try:
+                # Native query receipts contain positive counts, not booleans.
+                # Reuse the accounting validator, including the original scope.
+                validate_cleanup_receipt(receipt, {"provider": provider, "started_at": 0}, expected_scope)
+            except (PolicyError, ValueError, KeyError, TypeError):
+                raise PolicyError("fingerprint_original_cleanup_unverified") from None
             require(row["input_fingerprint"] == input_fingerprint(name, components), "fingerprint_inputs_changed")
             require(row["verifier_fingerprint"] == verifier(root, name), "fingerprint_verifier_changed")
             require(set(row["dependencies"]) == set(SPECS[name][1]), "fingerprint_dependencies_changed")

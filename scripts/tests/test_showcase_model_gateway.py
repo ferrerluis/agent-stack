@@ -361,6 +361,8 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
         self.reader.assert_not_called(); self.opener.open.assert_not_called()
 
     def test_replayed_tool_call_and_output_payloads_keep_matching_ids_without_resetting_budget(self):
+        self.opener.open.side_effect = lambda *args, **kwargs: Response([completions.encoded(
+            completions.response(response_id="resp_" + str(self.opener.open.call_count)), True)], "text/event-stream")
         call = {"type": "function_call", "name": "write", "call_id": "fixture-call", "arguments": "{}"}
         output = {"type": "function_call_output", "call_id": "fixture-call", "output": "fixture tool result"}
         status, _, _ = self.request(raw=body(input=[{"role": "user", "content": "first"}]))
@@ -411,6 +413,8 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
         self.assertEqual(self.account()["model_requests"], []); self.reader.assert_not_called()
 
     def test_duplicate_restart_and_role_quota_fail_without_repeating_provider_requests(self):
+        self.opener.open.side_effect = lambda *args, **kwargs: Response([completions.encoded(
+            completions.response(response_id="resp_" + str(self.opener.open.call_count)), True)], "text/event-stream")
         self.assertEqual(self.request()[0], 200); self.assertEqual(self.request()[0], 409)
         self.assertEqual(self.request(raw=body(text="second"))[0], 200)
         self.assertEqual(self.request(raw=body(text="third"))[0], 403)
@@ -435,9 +439,16 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
         failure = b'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed"}}\n\n'
         self.opener.open.side_effect = lambda *args, **kwargs: Response([failure], "text/event-stream")
         self.assertEqual(self.request()[2], failure)
+        status, _, raw = self.request(raw=body(text="repeat-failed"))
+        self.assertEqual(status, 403); self.assertIn(b'model_completion_unverified', raw)
+        self.assertEqual(self.opener.open.call_count, 1)
+        self.assertIn("completion_rejection", self.account()["model_requests"][0])
+        # A different role remains available; an interrupted transport keeps
+        # its original uncertain hold and never invents a parser rejection.
         self.opener.open.side_effect = lambda *args, **kwargs: Response([SSE_FIRST, URLError(PRIVATE)], "text/event-stream")
-        with self.assertRaises(IncompleteRead): self.request(raw=body(text="interrupted"))
+        with self.assertRaises(IncompleteRead): self.request("openclaw", raw=body(text="interrupted"))
         account = self.account(); self.assertEqual(account["model_requests"][-1]["status"], "uncertain")
+        self.assertNotIn("completion_rejection", account["model_requests"][-1])
         self.assertEqual(account["reserved_usd"], "2.00")
 
     def test_oversized_stream_terminates_without_successful_http_completion_or_refund(self):
