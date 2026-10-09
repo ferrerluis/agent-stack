@@ -24,22 +24,24 @@ SPECS = {
     "apply": (("deployment", "runtime"), (), ("showcase_terraform",)),
     "bootstrap": (("deployment", "runtime", "host"), ("apply",), ("showcase_remote",)),
     "containers": (("runtime", "images", "hermes_repair"), ("bootstrap",), ("test_containers", "showcase_container_probe")),
-    "light": (("deployment", "runtime", "host", "images", "hermes_repair"), ("apply",), ("showcase_light", "showcase_remote")),
-    "resolved_contents": (("deployment", "runtime", "host", "images", "hermes_repair"), ("apply",), ("showcase_contents", "showcase_remote")),
-    "model_channel": (("runtime", "images", "hermes_repair", "models"), ("bootstrap", "resolved_contents"), ("showcase_model_session",)),
+    "light": (("deployment", "runtime", "host", "images", "hermes_repair", "workspace_security"), ("apply",), ("showcase_light", "showcase_remote")),
+    "resolved_contents": (("deployment", "runtime", "host", "images", "hermes_repair", "workspace_security"), ("apply",), ("showcase_contents", "showcase_remote")),
+    "workspace_sandbox": (("runtime", "host", "images", "workspace_security"), ("bootstrap", "resolved_contents"), ("showcase_workspace_sandbox", "showcase_remote")),
+    "model_channel": (("runtime", "images", "hermes_repair", "models"), ("bootstrap", "resolved_contents", "workspace_sandbox"), ("showcase_model_session",)),
     "openclaw_activation": (("runtime", "images", "models"), ("model_channel",), ("showcase_runtime_lifecycle", "showcase_runtime_routes")),
     "hermes_activation": (("runtime", "images", "hermes_repair", "models"), ("model_channel",), ("showcase_runtime_lifecycle", "showcase_runtime_routes")),
     "doctors": (("runtime", "host", "images", "hermes_repair", "models"), ("openclaw_activation", "hermes_activation"), ("showcase_remote", "showcase_runtime_probe", "showcase_runtime_evidence")),
     "doctor_evidence": (("runtime", "images", "hermes_repair", "models"), ("doctors",), ("showcase_runtime_evidence",)),
-    "claude": (("runtime", "images", "models"), ("doctor_evidence",), ("showcase_remote", "showcase_model_session", "showcase_model_gateway", "showcase_task_evidence")),
-    "codex": (("runtime", "images", "models"), ("doctor_evidence",), ("showcase_remote", "showcase_model_session", "showcase_model_gateway", "showcase_task_evidence")),
+    "claude": (("runtime", "images", "models", "workspace_security"), ("doctor_evidence", "workspace_sandbox"), ("showcase_remote", "showcase_model_session", "showcase_model_gateway", "showcase_task_evidence")),
+    "codex": (("runtime", "images", "models", "workspace_security"), ("doctor_evidence", "workspace_sandbox"), ("showcase_remote", "showcase_model_session", "showcase_model_gateway", "showcase_task_evidence")),
     "openclaw": (("runtime", "images", "models"), ("doctor_evidence",), ("showcase_runtime_task",)),
     "hermes": (("runtime", "images", "hermes_repair", "models"), ("doctor_evidence",), ("showcase_runtime_task",)),
     "before_reboot": (("runtime", "images", "hermes_repair", "access"), ("doctor_evidence",), ("showcase_remote", "showcase_peer", "showcase_browser")),
     "model_channel_closed": (("runtime", "images", "hermes_repair", "models"), ("model_channel",), ("showcase_model_session",)),
     "reboot": (("deployment", "runtime", "host", "images", "hermes_repair"), ("bootstrap", "model_channel_closed"), ("showcase_remote",)),
-    "resolved_contents_after_reboot": (("deployment", "runtime", "host", "images", "hermes_repair"), ("reboot",), ("showcase_contents", "showcase_remote")),
-    "model_channel_after_reboot": (("runtime", "images", "hermes_repair", "models"), ("reboot", "resolved_contents_after_reboot"), ("showcase_model_session",)),
+    "resolved_contents_after_reboot": (("deployment", "runtime", "host", "images", "hermes_repair", "workspace_security"), ("reboot",), ("showcase_contents", "showcase_remote")),
+    "workspace_sandbox_after_reboot": (("runtime", "host", "images", "workspace_security"), ("reboot", "resolved_contents_after_reboot"), ("showcase_workspace_sandbox", "showcase_remote")),
+    "model_channel_after_reboot": (("runtime", "images", "hermes_repair", "models"), ("reboot", "resolved_contents_after_reboot", "workspace_sandbox_after_reboot"), ("showcase_model_session",)),
     "openclaw_activation_after_reboot": (("runtime", "images", "models"), ("model_channel_after_reboot",), ("showcase_runtime_lifecycle", "showcase_runtime_routes")),
     "hermes_activation_after_reboot": (("runtime", "images", "hermes_repair", "models"), ("model_channel_after_reboot",), ("showcase_runtime_lifecycle", "showcase_runtime_routes")),
     "doctors_after_reboot": (("runtime", "host", "images", "hermes_repair", "models"), ("openclaw_activation_after_reboot", "hermes_activation_after_reboot"), ("showcase_remote", "showcase_runtime_probe", "showcase_runtime_evidence")),
@@ -113,8 +115,8 @@ def recipe_from_plan(plan, provider):
 
 
 def validate_contents(value, binding=None):
-    require(isinstance(value, dict) and set(value) == {"schema", "status", "binding", "containers", "images", "hermes_repair_sha256", "host", "boot_image"}
-            and type(value["schema"]) is int and value["schema"] == SCHEMA and value["status"] == "resolved_contents_verified",
+    require(isinstance(value, dict) and set(value) == {"schema", "status", "binding", "containers", "images", "hermes_repair_sha256", "host", "boot_image", "workspace_security"}
+            and type(value["schema"]) is int and value["schema"] == 2 and value["status"] == "resolved_contents_verified",
             "resolved_contents_unverified")
     origin = value["binding"]
     require(isinstance(origin, dict) and set(origin) == {"run_id", "source_revision", "checksum", "vm_id"}
@@ -139,6 +141,12 @@ def validate_contents(value, binding=None):
             and isinstance(host["tools"], dict) and set(host["tools"]) == {"/usr/bin/docker", "/usr/bin/tailscale", "/usr/sbin/sshd"}
             and all(isinstance(v, str) and re.fullmatch(HEX, v) for v in [host["packages_sha256"], host["os_release_sha256"],
                 value["hermes_repair_sha256"], *host["tools"].values()]), "resolved_contents_unverified")
+    security = value["workspace_security"]
+    hashes = {"installer_sha256", "bundle_sha256", "seccomp_file_sha256", "loaded_seccomp_sha256", "apparmor_sha256", "parser_sha256"}
+    require(isinstance(security, dict) and set(security) == hashes | {"profile", "kernel_enforcing", "privileged", "cap_add", "no_new_privileges"}
+            and security["profile"] == "agent-stack-workspace-codex" and security["kernel_enforcing"] is True
+            and security["privileged"] is False and security["cap_add"] == [] and security["no_new_privileges"] is True
+            and all(isinstance(security[key], str) and re.fullmatch(HEX, security[key]) for key in hashes), "workspace_security_unverified")
     return value
 
 
@@ -150,6 +158,7 @@ def context(root, config, provider, recipe, contents=None, documentation=None):
     if contents is not None:
         validate_contents(contents)
         result.update(images=hashed(contents["images"]), hermes_repair=contents["hermes_repair_sha256"], host=hashed({"boot_image": contents["boot_image"], "host": contents["host"]}))
+        result["workspace_security"] = hashed(contents["workspace_security"])
     if documentation is not None:
         require(isinstance(documentation, dict) and documentation, "documentation_fingerprint_required")
         result["documentation"] = hashed({"files": files_hash(root, ("README.md", "examples/showcase/README.md")), "linked_plans": documentation})

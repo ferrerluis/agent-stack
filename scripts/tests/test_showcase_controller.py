@@ -337,12 +337,49 @@ class FullRunTest(unittest.TestCase):
         self.assertNotEqual(evidence["baseline"]["boot_id"], evidence["after_reboot"]["boot_id"])
         self.assertEqual(set(evidence["doctor_stages"]), {"before_reboot", "after_reboot"})
         self.assertEqual(set(evidence["network"]), {"before_reboot", "after_reboot"})
+        guards = evidence["workspace_sandbox_checks"]
+        self.assertEqual(set(guards), {"before_reboot", "after_reboot"})
+        self.assertNotEqual(guards["before_reboot"]["nonce"], guards["after_reboot"]["nonce"])
+        for stage, baseline in (("before_reboot", "baseline"), ("after_reboot", "after_reboot")):
+            self.assertEqual(guards[stage]["boot_id"], evidence[baseline]["boot_id"])
+        steps = [step["name"] for step in cleanup.private_read(value.controller.path)["steps"]]
+        self.assertLess(steps.index("workspace_sandbox"), steps.index("model_channel"))
+        self.assertLess(steps.index("workspace_sandbox_after_reboot"), steps.index("model_channel_after_reboot"))
         observed = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
         for mutate in (lambda e: e["tasks"].pop("codex"), lambda e: e["network"]["after_reboot"].update(status="fail"),
                        lambda e: e["after_reboot"].update(boot_id=e["baseline"]["boot_id"]),
                        lambda e: e["model_channels"]["before_reboot"]["runtime_doctors"]["hermes"].update(uid=0)):
             changed = copy.deepcopy(evidence); mutate(changed)
             with self.assertRaises(terraform.PolicyError): value.controller.verdict(observed, changed)
+
+    def test_failed_free_confinement_guard_cleans_before_model_access(self):
+        for mutate in (lambda r: r["checks"].update(outside_denied=False),
+                       lambda r: r.update(boot_id=remote_fixtures.NEW_BOOT),
+                       lambda r: r.update(uid=0)):
+            value = self.make("full")
+            value.sandbox_mutation = mutate
+            original_start = value.models.start
+            value.models.start = Mock(wraps=original_start)
+            report = value.controller.run_attempt(value.readiness, quote())
+            self.assertEqual((report["status"], report["cleanup"]), ("fail", "verified"))
+            self.assertEqual(cleanup.private_read(value.controller.path)["failure_stage"], "workspace_sandbox")
+            value.models.start.assert_not_called()
+            self.assertEqual(value.controller.reservation().get("model_requests", []), [])
+            self.assertNotIn("model_policy", value.controller.reservation())
+
+    def test_reboot_requires_fresh_confinement_proof_before_model_access(self):
+        value = self.make("full")
+        def stale_after_reboot(row):
+            if value.rebooted: row["boot_id"] = remote_fixtures.BOOT
+        value.sandbox_mutation = stale_after_reboot
+        value.models.start = Mock(wraps=value.models.start)
+        report = value.controller.run_attempt(value.readiness, quote())
+        self.assertEqual((report["status"], report["cleanup"]), ("fail", "verified"))
+        self.assertEqual(cleanup.private_read(value.controller.path)["failure_stage"], "workspace_sandbox_after_reboot")
+        self.assertEqual(value.models.start.call_args_list, [unittest.mock.call("before_reboot")])
+        evidence = cleanup.private_read(value.checks.path)
+        self.assertEqual(set(evidence["workspace_sandbox_checks"]), {"before_reboot"})
+        self.assertEqual(len(value.controller.reservation()["model_requests"]), 2)
 
     def test_codex_startup_failure_cleans_without_paying_for_claude(self):
         value = self.make("full")

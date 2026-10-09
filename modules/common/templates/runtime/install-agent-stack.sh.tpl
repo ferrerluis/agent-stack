@@ -47,6 +47,9 @@ require_file workspace-para-memory-drive-skill.md
 require_file workspace-codex-update.sh
 require_file workspace-codex-control.py
 require_file workspace-cli-task.py
+require_file workspace-sandbox.py
+require_file workspace-sandbox-profiles.json
+require_file workspace-sandbox-LICENSE.txt
 require_file openclaw_config.py
 require_file openclaw-seed.json
 require_file hermes_config.py
@@ -573,10 +576,12 @@ prefetch_runtime_images || fail "runtime image download failed before applying r
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"
-for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
+for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
   [ -e "$app/$path" ] && cp -a "$app/$path" "$previous/" || true
 done
 backup_workspace_image
+[ ! -f /etc/systemd/system/agent-stack.service ] || cp -a /etc/systemd/system/agent-stack.service "$previous/agent-stack.service"
+[ ! -f "$app/workspace-seccomp.json" ] || cp -a "$app/workspace-seccomp.json" "$previous/workspace-seccomp.json"
 
 install -m 0644 "$staging/docker-compose.yml" "$app/docker-compose.yml"
 install -m 0600 "$staging/.env" "$app/.env"
@@ -587,6 +592,9 @@ install -m 0644 "$staging/hermes_npm_patch.json" "$app/hermes_npm_patch.json"
 install -m 0644 "$staging/hermes_config.py" "$app/hermes_config.py"
 install -m 0644 "$staging/openclaw_config.py" "$app/openclaw_config.py"
 install -m 0755 "$staging/workspace-cli-task.py" "$app/workspace-cli-task.py"
+install -m 0644 "$staging/workspace-sandbox.py" "$app/workspace-sandbox.py"
+install -m 0644 "$staging/workspace-sandbox-profiles.json" "$app/workspace-sandbox-profiles.json"
+install -m 0644 "$staging/workspace-sandbox-LICENSE.txt" "$app/workspace-sandbox-LICENSE.txt"
 OPENCLAW_CONFIG="$app/data/openclaw/openclaw.json"
 PREEXISTING_OPENCLAW_CONFIG=0
 [ ! -f "$OPENCLAW_CONFIG" ] || PREEXISTING_OPENCLAW_CONFIG=1
@@ -663,13 +671,22 @@ if ! wait_agent_stack_initial_restart; then
       rm -f "$app/data/hermes/config.yaml"
     fi
   fi
-  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py; do
+  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
     rm -rf "$app/$path"
     if [ -e "$previous/$path" ]; then
       cp -a "$previous/$path" "$app/$path"
     fi
   done
   restore_workspace_image || echo "[workspace] WARNING: could not restore the prior workspace image" >&2
+  if [ -f "$previous/workspace-seccomp.json" ]; then
+    cp -a "$previous/workspace-seccomp.json" "$app/workspace-seccomp.json"
+  else
+    rm -f "$app/workspace-seccomp.json"
+  fi
+  if [ -f "$previous/agent-stack.service" ]; then
+    cp -a "$previous/agent-stack.service" /etc/systemd/system/agent-stack.service
+    systemctl daemon-reload
+  fi
   systemctl restart agent-stack || true
   fail "agent-stack restart failed"
 fi

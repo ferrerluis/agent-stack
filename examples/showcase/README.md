@@ -73,6 +73,12 @@ The controller keeps the existing named stages and declares their input and prer
 
 Recipes alone cannot carry a pass. On the paid VM, `showcase_contents.py` records the native provider’s resolved boot image ID, actual OCI image IDs, filesystem layers/platform, installed host package metadata and Docker/Tailscale/SSH binary hashes. It hashes every installed Hermes npm dependency, both repaired workspaces, compiled interfaces, patched manifests and the repair marker twice to reject changes during observation. This covers the mutable Ubuntu base/packages and Hermes startup repair without a separate image build or cache pipeline. Full acceptance captures contents before model work and after reboot; light acceptance captures them after the stability check.
 
+The showcase opts in to `workspace_codex_sandbox_enabled`; its true default is false. Scoped Docker-derived seccomp and AppArmor profiles allow Codex's unprivileged bubblewrap setup, including mount and pivot-root operations inside the user namespace. They add no host capabilities, privileged setting or unconfined profile, and retain Docker's other syscall and file denials. Startup reloads the managed profile before starting containers, including after reboot; installation refuses changed source bundles, unsafe paths and a profile that is not enforcing.
+
+The contents observation also matches Docker's loaded seccomp object and the installed AppArmor profile to qualified source bytes, recording their hashes, parser bytes and enforcement settings twice. These actual security inputs join the per-check fingerprints. Older contents manifests without this observation require a new baseline.
+
+Before model access and again after reboot, `workspace_sandbox` checks run the actual pinned Codex sandbox as UID 1000 without a model request or credentials. A fresh file must be written inside the workspace; writes outside it and into `.git` / `.codex` must fail and preserve their sentinels. The controller independently checks the file hash, current boot, zero effective capabilities, seccomp, AppArmor and no-new-privileges. A failed confinement check stops the full trial before paid tasks.
+
 | Change | Proofs to review again |
 | --- | --- |
 | README or linked plan | Documentation check; runtime proofs can carry |

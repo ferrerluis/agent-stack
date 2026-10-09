@@ -32,7 +32,7 @@ def cell_names(mode):
     return ("vm_and_containers",) if mode == "light" else FULL_GROUPS if mode == "full" else CELLS
 
 
-SOURCES = ("modules/common/runtime/hermes_health.py", "modules/common/runtime/workspace_cli_task.py") + tuple("scripts/" + name + ".py" for name in ("showcase_fingerprints", "showcase_contents", "showcase_light", "showcase_launch", "showcase_network_prices", "showcase_watchdog", "showcase_credentials", "showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
+SOURCES = ("modules/common/runtime/hermes_health.py", "modules/common/runtime/workspace_cli_task.py", "modules/common/runtime/workspace_sandbox.py", "modules/common/runtime/workspace_sandbox_profiles.json") + tuple("scripts/" + name + ".py" for name in ("showcase_fingerprints", "showcase_contents", "showcase_workspace_sandbox", "showcase_light", "showcase_launch", "showcase_network_prices", "showcase_watchdog", "showcase_credentials", "showcase_controller", "showcase_attempt", "showcase_cleanup", "showcase_policy",
     "showcase_preflight", "showcase_models", "showcase_model_completion", "showcase_task_evidence", "showcase_model_spend", "showcase_model_prices", "showcase_model_gateway", "showcase_model_transport", "showcase_model_relay", "showcase_model_session", "showcase_model_container", "showcase_runtime_routes", "showcase_runtime_environment", "showcase_runtime_probe", "showcase_runtime_task", "showcase_runtime_evidence", "showcase_runtime_lifecycle", "showcase_prices", "showcase_aws_prices", "showcase_gcp_prices", "showcase_hetzner_prices", "showcase_terraform", "showcase_remote", "showcase_agents", "showcase_browser", "showcase_peer", "showcase_container_probe", "test_containers"))
 
 
@@ -268,6 +268,12 @@ class RunController:
         if "containers" in observed:
             require(evidence.get("containers") == observed["containers"] and checks.get("container_tests") == "pass", "container_proof_changed")
         if self.mode == "full":
+            from showcase_workspace_sandbox import verify
+            for stage, name, baseline in (("before_reboot", "workspace_sandbox", before), ("after_reboot", "workspace_sandbox_after_reboot", after)):
+                row = evidence.get("workspace_sandbox_checks", {}).get(stage)
+                require(isinstance(row, dict) and row == observed[name] and row.get("boot_id") == baseline["boot_id"], "workspace_sandbox_proof_changed")
+                try: verify(row, row["nonce"])
+                except (AssertionError, ValueError, TypeError, KeyError): raise PolicyError("workspace_sandbox_unverified") from None
             require(not evidence.get("agents") and not any(hold["role"] in ("openclaw", "hermes")
                     for hold in model_account["model_requests"]), "unexpected_runtime_task")
             return {key: "pass" if key in FULL_GROUPS[:4] else "unverified" for key in FULL_GROUPS}
@@ -400,6 +406,7 @@ class RunController:
             observed["containers"] = step("containers", self.remote.container_tests)
         if self.mode == "full":
             observed["resolved_contents"] = step("resolved_contents", self.remote.resolved_contents)
+            observed["workspace_sandbox"] = step("workspace_sandbox", lambda: self.remote.workspace_sandbox("before_reboot"))
         observed["model_channel"] = step("model_channel", lambda: self.models.start("before_reboot"))
         for runtime in ("openclaw", "hermes"):
             observed[runtime + "_activation"] = step(runtime + "_activation", lambda runtime=runtime: self.models.activate_runtime(runtime))
@@ -416,6 +423,7 @@ class RunController:
         observed["reboot"] = step("reboot", lambda: self.remote.reboot(defer_doctors=True))
         if self.mode == "full":
             observed["resolved_contents_after_reboot"] = step("resolved_contents_after_reboot", self.remote.resolved_contents)
+            observed["workspace_sandbox_after_reboot"] = step("workspace_sandbox_after_reboot", lambda: self.remote.workspace_sandbox("after_reboot"))
         observed["model_channel_after_reboot"] = step("model_channel_after_reboot", lambda: self.models.start("after_reboot"))
         for runtime in ("openclaw", "hermes"):
             observed[runtime + "_activation_after_reboot"] = step(runtime + "_activation_after_reboot", lambda runtime=runtime: self.models.activate_runtime(runtime))

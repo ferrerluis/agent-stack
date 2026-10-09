@@ -82,6 +82,39 @@ variables {
   openai_codex_auth_json_base64                  = ""
 }
 
+run "workspace_confinement_preserves_ordinary_defaults" {
+  command = plan
+  assert {
+    condition     = !var.workspace_codex_sandbox_enabled && !strcontains(local.runtime_docker_compose, "workspace-seccomp.json") && !strcontains(local.runtime_agent_stack_service, "workspace-sandbox.py")
+    error_message = "Scoped Codex confinement must remain an explicit opt-in."
+  }
+}
+
+run "workspace_confinement_loads_before_start_and_after_reboot" {
+  command = plan
+  variables {
+    enabled_services                = ["openclaw", "hermes", "workspace"]
+    workspace_password              = "workspace-plan-fixture-password"
+    workspace_codex_sandbox_enabled = true
+  }
+  assert {
+    condition     = strcontains(local.runtime_agent_stack_service, "ExecStartPre=/usr/bin/python3 -B /opt/agent-stack/workspace-sandbox.py") && strcontains(local.runtime_docker_compose, "seccomp=/opt/agent-stack/workspace-seccomp.json") && strcontains(local.runtime_docker_compose, "apparmor=agent-stack-workspace-codex") && strcontains(local.runtime_docker_compose, "no-new-privileges:true")
+    error_message = "Workspace startup must load the scoped policy before Docker creates its confined containers."
+  }
+  assert {
+    condition     = !strcontains(local.runtime_docker_compose, "SYS_ADMIN") && !strcontains(local.runtime_docker_compose, "unconfined") && !strcontains(local.runtime_docker_compose, "privileged: true")
+    error_message = "The Codex policy must not grant host administration or disable container confinement."
+  }
+}
+
+run "workspace_confinement_requires_workspace" {
+  command = plan
+  variables {
+    workspace_codex_sandbox_enabled = true
+  }
+  expect_failures = [var.workspace_codex_sandbox_enabled]
+}
+
 run "rejects_unknown_cloud_provider" {
   command = plan
 

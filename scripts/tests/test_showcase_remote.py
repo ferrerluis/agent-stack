@@ -202,6 +202,11 @@ class RemoteChecksTest(unittest.TestCase):
     def execute(self, args, env, timeout, input):
         self.calls.append({"args": args, "env": env, "input": input, "timeout": timeout})
         words = shlex.split(args[-1])
+        if "-c" in words and words[-1] == (ROOT / "scripts/showcase_workspace_sandbox.py").read_text():
+            from test_showcase_workspace_sandbox import report
+            proof = report(json.loads(input)["nonce"], self.boot)
+            if getattr(self, "sandbox_mutation", None): self.sandbox_mutation(proof)
+            return json.dumps(proof).encode()
         if "-c" in words and "workspace_model_route_unverified" in words[-1]:
             return json.dumps(self.models.fake_probe(json.loads(input))).encode()
         if input == remote.BOOTSTRAP.encode():

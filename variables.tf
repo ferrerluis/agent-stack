@@ -559,6 +559,17 @@ variable "workspace_codex_release" {
   }
 }
 
+variable "workspace_codex_sandbox_enabled" {
+  description = "Opt in to scoped Docker seccomp and AppArmor profiles that let Codex use its confined workspace sandbox inside the workspace container. Adds no host capabilities and requires the workspace service and host AppArmor."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.workspace_codex_sandbox_enabled || contains(var.enabled_services, "workspace")
+    error_message = "workspace_codex_sandbox_enabled requires enabled_services to include workspace."
+  }
+}
+
 variable "workspace_codex_auto_update_enabled" {
   description = "Opt in to a root-managed workspace Codex updater. It checks the latest stable release daily at workspace_codex_auto_update_time in workspace_codex_auto_update_timezone without rebuilding the stack. It requires a stable pinned image fallback. A new release may interrupt active Codex work when the app server restarts."
   type        = bool

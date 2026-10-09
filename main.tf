@@ -501,6 +501,7 @@ locals {
     workspace_claude_enabled                       = var.workspace_claude_enabled
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
+    workspace_codex_sandbox_enabled                = var.workspace_codex_sandbox_enabled
     workspace_codex_auto_update_enabled            = var.workspace_codex_auto_update_enabled
     workspace_codex_auto_update_timezone           = trimspace(var.workspace_codex_auto_update_timezone)
     workspace_codex_auto_update_time               = trimspace(var.workspace_codex_auto_update_time)
@@ -523,47 +524,50 @@ locals {
     tailscale_host_enabled                         = local.tailscale_host_enabled
   }
 
-  runtime_docker_compose          = templatefile("${path.module}/modules/common/templates/runtime/docker-compose.yml.tpl", local.runtime_template_vars)
-  runtime_env                     = templatefile("${path.module}/modules/common/templates/runtime/env.tpl", local.runtime_template_vars)
-  runtime_hermes_seed             = jsonencode({ model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model })
-  runtime_openclaw_seed           = jsonencode({ gateway_bind = local.runtime_template_vars.openclaw_gateway_bind, gateway_token = local.resolved_gateway_token })
-  runtime_openclaw_config         = file("${path.module}/modules/common/runtime/openclaw_config.py")
-  runtime_workspace_cli_task      = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
-  runtime_hermes_config           = file("${path.module}/modules/common/runtime/hermes_config.py")
-  runtime_hermes_health           = file("${path.module}/modules/common/runtime/hermes_health.py")
-  runtime_hermes_npm_patch        = file("${path.module}/modules/common/runtime/hermes_npm_patch.py")
-  runtime_hermes_npm_patch_bundle = file("${path.module}/modules/common/runtime/hermes_npm_patch.json")
-  runtime_workspace_env           = templatefile("${path.module}/modules/common/templates/runtime/workspace.env.tpl", local.runtime_template_vars)
-  runtime_caddyfile_template      = templatefile("${path.module}/modules/common/templates/runtime/Caddyfile.template.tpl", local.runtime_template_vars)
-  runtime_tailscale_bootstrap     = templatefile("${path.module}/modules/common/templates/runtime/tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
-  runtime_host_tailscale          = templatefile("${path.module}/modules/common/templates/runtime/host-tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
-  runtime_workspace_dockerfile    = templatefile("${path.module}/modules/common/templates/runtime/workspace.Dockerfile.tpl", local.runtime_template_vars)
-  runtime_workspace_entrypoint    = templatefile("${path.module}/modules/common/templates/runtime/workspace-entrypoint.sh.tpl", local.runtime_template_vars)
-  runtime_workspace_drive_skill   = file("${path.module}/skills/para-memory-drive/SKILL.md")
-  runtime_workspace_codex_update  = templatefile("${path.module}/modules/common/templates/runtime/workspace-codex-update.sh.tpl", local.runtime_template_vars)
-  runtime_workspace_codex_control = templatefile("${path.module}/modules/common/templates/runtime/workspace-codex-control.py.tpl", local.runtime_template_vars)
-  runtime_workspace_update_host   = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-workspace-codex-update.sh.tpl", local.runtime_template_vars)
-  runtime_workspace_update_unit   = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-workspace-codex-update.service.tpl", local.runtime_template_vars)
-  runtime_workspace_update_timer  = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-workspace-codex-update.timer.tpl", local.runtime_template_vars)
-  runtime_vpn_manager             = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-vpn.sh.tpl", local.runtime_template_vars)
-  runtime_vpn_openvpn             = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-vpn-openvpn.sh.tpl", local.runtime_template_vars)
-  runtime_vpn_auth                = var.vpn_enabled && var.vpn_provider == "nordvpn_openvpn" ? "${var.vpn_username}\n${var.vpn_password}\n" : ""
-  runtime_vpn_token               = var.vpn_enabled && var.vpn_provider == "nordvpn_nordlynx" ? "${var.vpn_nordvpn_token}\n" : ""
-  runtime_diagnostics_helper      = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-diagnostics.sh.tpl", local.runtime_template_vars)
-  runtime_diagnostics_ssh_helper  = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-diagnostics-ssh.sh.tpl", local.runtime_template_vars)
-  runtime_layout_migrator         = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-migrate-layout.sh.tpl", local.runtime_template_vars)
-  runtime_mount_volume            = templatefile("${path.module}/modules/common/templates/runtime/mount-agent-stack-volume.sh.tpl", local.runtime_template_vars)
-  runtime_installer               = templatefile("${path.module}/modules/common/templates/runtime/install-agent-stack.sh.tpl", local.runtime_template_vars)
-  runtime_agent_stack_service     = templatefile("${path.module}/modules/common/templates/runtime/agent-stack.service.tpl", local.runtime_template_vars)
-  runtime_openclaw_service        = templatefile("${path.module}/modules/common/templates/runtime/openclaw.service.tpl", local.runtime_template_vars)
-  runtime_watchdog                = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-tailscale-watchdog.sh.tpl", local.runtime_template_vars)
-  runtime_watchdog_service        = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-tailscale-watchdog.service.tpl", local.runtime_template_vars)
-  runtime_watchdog_timer          = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-tailscale-watchdog.timer.tpl", local.runtime_template_vars)
-  runtime_enabled_services        = jsonencode(var.enabled_services)
-  runtime_starter_soul            = file("${path.module}/modules/common/templates/starter/SOUL.${var.starter_soul_profile}.md")
-  runtime_starter_agents          = file("${path.module}/modules/common/templates/starter/AGENTS.default.md")
-  runtime_starter_tools           = file("${path.module}/modules/common/templates/starter/TOOLS.default.md")
-  runtime_starter_user            = file("${path.module}/modules/common/templates/starter/USER.default.md")
+  runtime_docker_compose             = templatefile("${path.module}/modules/common/templates/runtime/docker-compose.yml.tpl", local.runtime_template_vars)
+  runtime_env                        = templatefile("${path.module}/modules/common/templates/runtime/env.tpl", local.runtime_template_vars)
+  runtime_hermes_seed                = jsonencode({ model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model })
+  runtime_openclaw_seed              = jsonencode({ gateway_bind = local.runtime_template_vars.openclaw_gateway_bind, gateway_token = local.resolved_gateway_token })
+  runtime_openclaw_config            = file("${path.module}/modules/common/runtime/openclaw_config.py")
+  runtime_workspace_cli_task         = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
+  runtime_workspace_sandbox          = file("${path.module}/modules/common/runtime/workspace_sandbox.py")
+  runtime_workspace_sandbox_profiles = file("${path.module}/modules/common/runtime/workspace_sandbox_profiles.json")
+  runtime_workspace_sandbox_license  = file("${path.module}/modules/common/runtime/workspace_sandbox_LICENSE.txt")
+  runtime_hermes_config              = file("${path.module}/modules/common/runtime/hermes_config.py")
+  runtime_hermes_health              = file("${path.module}/modules/common/runtime/hermes_health.py")
+  runtime_hermes_npm_patch           = file("${path.module}/modules/common/runtime/hermes_npm_patch.py")
+  runtime_hermes_npm_patch_bundle    = file("${path.module}/modules/common/runtime/hermes_npm_patch.json")
+  runtime_workspace_env              = templatefile("${path.module}/modules/common/templates/runtime/workspace.env.tpl", local.runtime_template_vars)
+  runtime_caddyfile_template         = templatefile("${path.module}/modules/common/templates/runtime/Caddyfile.template.tpl", local.runtime_template_vars)
+  runtime_tailscale_bootstrap        = templatefile("${path.module}/modules/common/templates/runtime/tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
+  runtime_host_tailscale             = templatefile("${path.module}/modules/common/templates/runtime/host-tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
+  runtime_workspace_dockerfile       = templatefile("${path.module}/modules/common/templates/runtime/workspace.Dockerfile.tpl", local.runtime_template_vars)
+  runtime_workspace_entrypoint       = templatefile("${path.module}/modules/common/templates/runtime/workspace-entrypoint.sh.tpl", local.runtime_template_vars)
+  runtime_workspace_drive_skill      = file("${path.module}/skills/para-memory-drive/SKILL.md")
+  runtime_workspace_codex_update     = templatefile("${path.module}/modules/common/templates/runtime/workspace-codex-update.sh.tpl", local.runtime_template_vars)
+  runtime_workspace_codex_control    = templatefile("${path.module}/modules/common/templates/runtime/workspace-codex-control.py.tpl", local.runtime_template_vars)
+  runtime_workspace_update_host      = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-workspace-codex-update.sh.tpl", local.runtime_template_vars)
+  runtime_workspace_update_unit      = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-workspace-codex-update.service.tpl", local.runtime_template_vars)
+  runtime_workspace_update_timer     = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-workspace-codex-update.timer.tpl", local.runtime_template_vars)
+  runtime_vpn_manager                = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-vpn.sh.tpl", local.runtime_template_vars)
+  runtime_vpn_openvpn                = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-vpn-openvpn.sh.tpl", local.runtime_template_vars)
+  runtime_vpn_auth                   = var.vpn_enabled && var.vpn_provider == "nordvpn_openvpn" ? "${var.vpn_username}\n${var.vpn_password}\n" : ""
+  runtime_vpn_token                  = var.vpn_enabled && var.vpn_provider == "nordvpn_nordlynx" ? "${var.vpn_nordvpn_token}\n" : ""
+  runtime_diagnostics_helper         = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-diagnostics.sh.tpl", local.runtime_template_vars)
+  runtime_diagnostics_ssh_helper     = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-diagnostics-ssh.sh.tpl", local.runtime_template_vars)
+  runtime_layout_migrator            = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-migrate-layout.sh.tpl", local.runtime_template_vars)
+  runtime_mount_volume               = templatefile("${path.module}/modules/common/templates/runtime/mount-agent-stack-volume.sh.tpl", local.runtime_template_vars)
+  runtime_installer                  = templatefile("${path.module}/modules/common/templates/runtime/install-agent-stack.sh.tpl", local.runtime_template_vars)
+  runtime_agent_stack_service        = templatefile("${path.module}/modules/common/templates/runtime/agent-stack.service.tpl", local.runtime_template_vars)
+  runtime_openclaw_service           = templatefile("${path.module}/modules/common/templates/runtime/openclaw.service.tpl", local.runtime_template_vars)
+  runtime_watchdog                   = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-tailscale-watchdog.sh.tpl", local.runtime_template_vars)
+  runtime_watchdog_service           = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-tailscale-watchdog.service.tpl", local.runtime_template_vars)
+  runtime_watchdog_timer             = templatefile("${path.module}/modules/common/templates/runtime/agent-stack-tailscale-watchdog.timer.tpl", local.runtime_template_vars)
+  runtime_enabled_services           = jsonencode(var.enabled_services)
+  runtime_starter_soul               = file("${path.module}/modules/common/templates/starter/SOUL.${var.starter_soul_profile}.md")
+  runtime_starter_agents             = file("${path.module}/modules/common/templates/starter/AGENTS.default.md")
+  runtime_starter_tools              = file("${path.module}/modules/common/templates/starter/TOOLS.default.md")
+  runtime_starter_user               = file("${path.module}/modules/common/templates/starter/USER.default.md")
   runtime_artifact_checksum = nonsensitive(sha256(join("\n---agent-stack-artifact---\n", [
     local.deployment_input_fingerprints.deployment,
     nonsensitive(local.runtime_docker_compose),
@@ -572,6 +576,9 @@ locals {
     nonsensitive(local.runtime_openclaw_seed),
     local.runtime_openclaw_config,
     local.runtime_workspace_cli_task,
+    local.runtime_workspace_sandbox,
+    local.runtime_workspace_sandbox_profiles,
+    local.runtime_workspace_sandbox_license,
     local.runtime_hermes_config,
     local.runtime_hermes_health,
     local.runtime_hermes_npm_patch,
@@ -689,6 +696,18 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_workspace_cli_task
     destination = "${local.runtime_staging_dir}/workspace-cli-task.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_workspace_sandbox
+    destination = "${local.runtime_staging_dir}/workspace-sandbox.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_workspace_sandbox_profiles
+    destination = "${local.runtime_staging_dir}/workspace-sandbox-profiles.json"
+  }
+  provisioner "file" {
+    content     = local.runtime_workspace_sandbox_license
+    destination = "${local.runtime_staging_dir}/workspace-sandbox-LICENSE.txt"
   }
 
   provisioner "file" {
@@ -966,6 +985,7 @@ locals {
     workspace_claude_enabled                       = var.workspace_claude_enabled
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
+    workspace_codex_sandbox_enabled                = var.workspace_codex_sandbox_enabled
     workspace_codex_auto_update_enabled            = var.workspace_codex_auto_update_enabled
     workspace_codex_auto_update_timezone           = trimspace(var.workspace_codex_auto_update_timezone)
     workspace_codex_auto_update_time               = trimspace(var.workspace_codex_auto_update_time)

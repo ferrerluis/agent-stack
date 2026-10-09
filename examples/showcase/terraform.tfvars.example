@@ -14,6 +14,7 @@ hermes_npm_security_patch_enabled   = true
 hermes_dashboard_enabled            = true
 hermes_api_server_enabled           = true
 workspace_claude_enabled            = true
+workspace_codex_sandbox_enabled      = true
 workspace_codex_auto_update_enabled = false
 tailscale_enabled                   = true
 tailscale_mode                      = "host"

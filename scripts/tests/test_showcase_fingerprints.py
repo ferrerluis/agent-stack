@@ -17,14 +17,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def contents(binding=None):
-    return {"schema": 1, "status": "resolved_contents_verified", "boot_image": "aws:ami-fixture",
+    return {"schema": 2, "status": "resolved_contents_verified", "boot_image": "aws:ami-fixture",
         "binding": binding or {"run_id": "as7-fingerprint01", "source_revision": "a" * 40, "checksum": "b" * 64, "vm_id": "vm-fixture"},
         "images": {role: {"image_id": "sha256:" + char * 64, "layers": ["sha256:" + char * 64], "os": "linux", "architecture": "amd64", "variant": ""}
                    for role, char in zip(("openclaw", "hermes", "workspace"), "123")},
         "containers": {role: {"container_id": char * 64, "image_id": "sha256:" + char * 64}
                        for role, char in zip(("openclaw", "hermes", "workspace"), "123")},
         "hermes_repair_sha256": "4" * 64, "host": {"packages_sha256": "5" * 64, "kernel": "6.1.0-fixture", "os_release_sha256": "6" * 64,
-            "tools": {name: "7" * 64 for name in ("/usr/bin/docker", "/usr/bin/tailscale", "/usr/sbin/sshd")}}}
+            "tools": {name: "7" * 64 for name in ("/usr/bin/docker", "/usr/bin/tailscale", "/usr/sbin/sshd")}},
+        "workspace_security": {"profile": "agent-stack-workspace-codex", "kernel_enforcing": True, "privileged": False,
+            "cap_add": [], "no_new_privileges": True, **{key: "8" * 64 for key in
+            ("installer_sha256", "bundle_sha256", "seccomp_file_sha256", "loaded_seccomp_sha256", "apparmor_sha256", "parser_sha256")}}}
 
 
 class FingerprintTest(unittest.TestCase):
@@ -81,6 +84,17 @@ class FingerprintTest(unittest.TestCase):
     def test_resolved_boot_image_change_invalidates_even_same_packages(self):
         manifest = contents(); manifest["boot_image"] = "aws:ami-new-image"
         self.assertEqual(self.evaluate(components=fp.context(ROOT, self.config, "aws", self.recipe, manifest))["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_loaded_workspace_policy_change_requires_reproof(self):
+        manifest = contents(); manifest["workspace_security"]["loaded_seccomp_sha256"] = "e" * 64
+        self.assertEqual(self.evaluate(components=fp.context(ROOT, self.config, "aws", self.recipe, manifest))["groups"]["vm_and_containers"]["status"], "reproof")
+
+    def test_unsafe_or_missing_workspace_security_cannot_carry(self):
+        for key, bad in (("privileged", True), ("kernel_enforcing", False), ("no_new_privileges", False),
+                         ("cap_add", ["SYS_ADMIN"]), ("profile", "unconfined"), ("loaded_seccomp_sha256", None)):
+            with self.subTest(key=key):
+                value = contents(); value["workspace_security"][key] = bad
+                with self.assertRaisesRegex(PolicyError, "workspace_security_unverified"): fp.validate_contents(value)
 
     def test_docs_edit_preserves_runtime_verifier(self):
         with tempfile.TemporaryDirectory() as directory:

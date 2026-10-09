@@ -330,7 +330,11 @@ class RemoteChecks:
         require(path.is_file() and not path.is_symlink(), "resolved_contents_verifier_required")
         source = path.read_bytes()
         boot_image = self.boot_image(target)
-        request = json.dumps({"binding": binding, "boot_image": boot_image, "source": base64.b64encode(source).decode()}).encode()
+        workspace_sources = {key: hashlib.sha256((self.attempt.checkout / name).read_bytes()).hexdigest()
+            for key, name in {"installer": "modules/common/runtime/workspace_sandbox.py",
+                              "bundle": "modules/common/runtime/workspace_sandbox_profiles.json"}.items()}
+        request = json.dumps({"binding": binding, "boot_image": boot_image, "source": base64.b64encode(source).decode(),
+                              "workspace_sources": workspace_sources}).encode()
         until = self.now() + 900
         while True:
             try:
@@ -672,11 +676,40 @@ class RemoteChecks:
         return proof
 
     @exclusive
+    def workspace_sandbox(self, stage):
+        from showcase_workspace_sandbox import verify
+        require(stage in ("before_reboot", "after_reboot"), "workspace_sandbox_stage_refused")
+        evidence = self.evidence()
+        self.require_container_gate(evidence)
+        require(stage not in evidence.setdefault("workspace_sandbox_checks", {}), "workspace_sandbox_already_invoked")
+        target = self.bind()
+        baseline = evidence["baseline"] if stage == "before_reboot" else evidence.get("after_reboot")
+        require(isinstance(baseline, dict) and baseline.get("checksum") == target["checksum"], "bootstrap_proof_required")
+        path = self.attempt.checkout / "scripts/showcase_workspace_sandbox.py"
+        require(path.is_file() and not path.is_symlink(), "workspace_sandbox_verifier_required")
+        nonce = secrets.token_hex(16)
+        report = decoded(self.ssh(target, ["sudo", "-n", "docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml",
+            "exec", "-T", "--user", "1000", "-e", "HOME=/home/user", "workspace", "python3", "-B", "-c", path.read_text()],
+            input=json.dumps({"nonce": nonce}).encode(), timeout=90, capture_failure=True))
+        try:
+            verify(report, nonce)
+            require(report["boot_id"] == baseline["boot_id"], "workspace_sandbox_boot_changed")
+        except (AssertionError, ValueError, TypeError, KeyError):
+            raise PolicyError("workspace_sandbox_unverified") from None
+        evidence["workspace_sandbox_checks"][stage] = report
+        private_write(self.path, evidence)
+        return report
+
+    @exclusive
     def workspace_task(self, cli):
         require(cli in ("codex", "claude"), "invalid_workspace_cli")
         evidence = self.evidence()
         self.require_container_gate(evidence)
         require(evidence["checks"].get("launch_ssh") == "pass", "bootstrap_proof_required")
+        from showcase_policy import acceptance_mode
+        if acceptance_mode(self.config, self.provider) == "full":
+            require(evidence.get("workspace_sandbox_checks", {}).get("before_reboot", {}).get("status") == "workspace_sandbox_verified",
+                    "workspace_sandbox_proof_required")
         require(cli not in evidence["tasks"], "workspace_task_already_invoked")
         require(self.models is not None, "model_session_required")
         target = self.bind()

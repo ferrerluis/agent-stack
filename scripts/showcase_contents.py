@@ -80,7 +80,48 @@ def containers():
     return result
 
 
-def observe(binding, source, boot_image):
+def workspace_container_policy(container, expected_seccomp):
+    config = container["HostConfig"]
+    assert container["State"]["Running"] and container["AppArmorProfile"] == "agent-stack-workspace-codex"
+    assert config["Privileged"] is False and not config["CapAdd"]
+    options = config["SecurityOpt"]
+    assert isinstance(options, list) and len(options) == 3 and all(isinstance(x, str) for x in options)
+    assert sum(x in ("no-new-privileges", "no-new-privileges:true") for x in options) == 1
+    assert "apparmor=agent-stack-workspace-codex" in options
+    policies = [json.loads(x.split("=", 1)[1]) for x in options if x.startswith("seccomp=")]
+    assert policies == [json.loads(expected_seccomp)]
+    return digest(policies[0])
+
+
+def workspace_security(expected_sources):
+    """Match Docker's loaded seccomp object to qualified installed bytes."""
+    paths = {"installer": Path("/opt/agent-stack/workspace-sandbox.py"),
+             "bundle": Path("/opt/agent-stack/workspace-sandbox-profiles.json")}
+    assert set(expected_sources) == set(paths)
+    actual = {}
+    for key, path in paths.items():
+        info = path.lstat()
+        assert stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and info.st_mode & 0o022 == 0
+        actual[key] = path.read_bytes()
+        assert hashlib.sha256(actual[key]).hexdigest() == expected_sources[key]
+    module = {"__name__": "qualified_workspace_sandbox", "__file__": str(paths["installer"])}
+    exec(compile(actual["installer"], str(paths["installer"]), "exec"), module)
+    expected_seccomp, expected_apparmor = module["render"](json.loads(actual["bundle"]), abi4=Path("/etc/apparmor.d/abi/4.0").is_file())
+    seccomp_path = Path("/opt/agent-stack/workspace-seccomp.json")
+    apparmor_path = Path("/etc/apparmor.d/agent-stack-workspace-codex")
+    assert module["read_owned"](seccomp_path) == expected_seccomp and module["read_owned"](apparmor_path) == expected_apparmor
+    assert module["loaded"]("/sys/kernel/security/apparmor/profiles")
+    ids = run("docker", "compose", "-f", "/opt/agent-stack/docker-compose.yml", "ps", "-q", "workspace").split()
+    assert len(ids) == 1
+    container = json.loads(run("docker", "inspect", ids[0].decode()))[0]
+    loaded_seccomp = workspace_container_policy(container, expected_seccomp)
+    return {"profile": module["PROFILE"], "installer_sha256": expected_sources["installer"], "bundle_sha256": expected_sources["bundle"],
+            "seccomp_file_sha256": hashlib.sha256(expected_seccomp).hexdigest(), "loaded_seccomp_sha256": loaded_seccomp,
+            "apparmor_sha256": hashlib.sha256(expected_apparmor).hexdigest(), "parser_sha256": file_hash(Path("/usr/sbin/apparmor_parser")),
+            "kernel_enforcing": True, "privileged": False, "cap_add": [], "no_new_privileges": True}
+
+
+def observe(binding, source, boot_image, workspace_sources):
     assert os.geteuid() == 0
     applied = json.loads(Path("/opt/agent-stack/.last-apply.json").read_bytes())
     assert applied["status"] == "success" and applied["checksum"] == binding["checksum"]
@@ -98,10 +139,13 @@ def observe(binding, source, boot_image):
     host = {"packages_sha256": hashlib.sha256(packages).hexdigest(), "kernel": os.uname().release,
             "os_release_sha256": file_hash(Path("/etc/os-release")),
             "tools": {name: file_hash(Path(name)) for name in ("/usr/bin/docker", "/usr/bin/tailscale", "/usr/sbin/sshd")}}
+    security = workspace_security(workspace_sources)
     assert before == containers()
+    assert security == workspace_security(workspace_sources)
     assert packages == run("dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${Architecture}\n")
-    return {"schema": 1, "status": "resolved_contents_verified", "binding": binding,
-            "containers": before, "images": images, "hermes_repair_sha256": repair, "host": host, "boot_image": boot_image}
+    return {"schema": 2, "status": "resolved_contents_verified", "binding": binding,
+            "containers": before, "images": images, "hermes_repair_sha256": repair, "host": host, "boot_image": boot_image,
+            "workspace_security": security}
 
 
 def main():
@@ -114,7 +158,7 @@ def main():
     import base64
     request = json.load(sys.stdin)
     source = base64.b64decode(request["source"], validate=True)
-    print(json.dumps(observe(request["binding"], source, request["boot_image"]), sort_keys=True))
+    print(json.dumps(observe(request["binding"], source, request["boot_image"], request["workspace_sources"]), sort_keys=True))
 
 
 if __name__ == "__main__":

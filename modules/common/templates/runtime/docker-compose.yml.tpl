@@ -102,6 +102,12 @@ services:
 
   workspace:
     image: agent-stack-workspace:local
+%{ if workspace_codex_sandbox_enabled }
+    security_opt:
+      - "no-new-privileges:true"
+      - "seccomp=/opt/agent-stack/workspace-seccomp.json"
+      - "apparmor=agent-stack-workspace-codex"
+%{ endif }
     restart: unless-stopped
     stop_grace_period: 2m
     env_file: workspace.env
