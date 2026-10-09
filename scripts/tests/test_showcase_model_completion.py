@@ -182,6 +182,51 @@ class CompletionTest(unittest.TestCase):
             changed = copy.deepcopy(rows); mutate(changed)
             self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in changed)))
 
+    def test_documented_null_container_and_stop_details_work_for_json_and_streams(self):
+        value = fixtures.response("messages"); value.update(container=None, stop_details=None)
+        self.assertIsNotNone(self.proof("messages", value))
+        rows = fixtures.stream_rows(value); rows[-2]["delta"].update(container=None, stop_details=None)
+        self.assertIsNotNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in rows)))
+        for field in ("container", "stop_details"):
+            for invalid in ({}, False, {"id": "container_fixture"}):
+                changed = copy.deepcopy(value); changed[field] = invalid
+                self.assertIsNone(self.proof("messages", changed))
+                changed = copy.deepcopy(rows); changed[-2]["delta"][field] = invalid
+                self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in changed)))
+        for change in (lambda r: r[-2]["delta"].update(unknown=None), lambda r: r[-2].update(model="different")):
+            changed = copy.deepcopy(rows); change(changed)
+            self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in changed)))
+
+    def test_supplied_completion_model_must_match_the_pinned_identity_at_every_update(self):
+        rows = fixtures.stream_rows(fixtures.response("messages"))
+        rows[-2].update(model=fixtures.MODEL); rows[-2]["delta"].update(model=fixtures.MODEL)
+        self.assertIsNotNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in rows)))
+        for nested in (False, True):
+            for invalid in (None, "different", False, {}):
+                changed = copy.deepcopy(rows)
+                (changed[-2]["delta"] if nested else changed[-2])["model"] = invalid
+                self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in changed)))
+
+    def test_optional_null_cumulative_inputs_keep_known_usage_but_output_remains_required(self):
+        rows = fixtures.stream_rows(fixtures.response("messages"))
+        rows[-2]["usage"].update(input_tokens=None, cache_read_input_tokens=None, cache_creation_input_tokens=None)
+        proof = self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in rows))
+        self.assertEqual(proof["usage"], {"input_tokens": 30, "output_tokens": 20, "cache_read_input_tokens": 10,
+            "cache_creation_input_tokens": 5, "context_tokens": 45})
+        for change in (lambda r: r[-2]["usage"].update(output_tokens=None), lambda r: r[-2]["usage"].pop("output_tokens"),
+                       lambda r: r[-2]["usage"].update(input_tokens=29)):
+            changed = copy.deepcopy(rows); change(changed)
+            self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in changed)))
+
+    def test_paid_server_usage_or_tier_cannot_be_hidden_by_a_later_null_update(self):
+        for invalid in ({"server_tool_use": {"web_search_requests": 1}}, {"service_tier": "priority"}):
+            for at_start in (False, True):
+                rows = fixtures.stream_rows(fixtures.response("messages"))
+                if at_start: rows[0]["message"]["usage"].update(invalid)
+                else: rows.insert(-2, {"type": "message_delta", "delta": {}, "usage": {"output_tokens": 10, **invalid}})
+                rows[-2]["usage"].update({key: None for key in invalid})
+                self.assertIsNone(self.proof("messages", streaming=True, raw=b"".join(fixtures.frame(row) for row in rows)))
+
     def test_rejection_selects_only_fingerprinted_source_location_and_wire_checksum(self):
         value = fixtures.response("messages", text=spending.PRIVATE, response_id=spending.PRIVATE)
         value["model"] = spending.PRIVATE

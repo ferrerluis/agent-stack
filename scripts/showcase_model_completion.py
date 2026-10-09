@@ -16,7 +16,8 @@ COUNTS = {"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_cre
 FINISHES = {"responses": {"completed"}, "chat": {"stop", "tool_calls"}, "messages": {"end_turn", "stop_sequence", "tool_use"}}
 REJECTION_STAGES = {"completion": "request", "decoded": "json", "events": "events", "identity": "identity",
                     "responses_stream": "responses_stream", "chat_stream": "chat_stream", "messages_stream": "messages_stream",
-                    "responses": "responses", "chat": "chat", "messages": "messages", "usage": "usage", "validate_proof": "proof"}
+                    "responses": "responses", "chat": "chat", "messages": "messages", "message_features": "messages",
+                    "message_usage_features": "usage", "usage": "usage", "validate_proof": "proof"}
 
 
 def validate_rejection(value):
@@ -89,6 +90,19 @@ def identifier(value):
     return value
 
 
+def message_features(value):
+    # Stable SDK metadata may explicitly be null. Non-null container or
+    # refusal details cannot attest this client-tools-only acceptance task.
+    check(value.get("container") is None)
+    check(value.get("stop_details") is None)
+
+
+def message_usage_features(value):
+    check(value.get("service_tier") in (None, "standard"))
+    server = value.get("server_tool_use")
+    check(server is None or isinstance(server, dict) and all(integer(v) == 0 for v in server.values()))
+
+
 def usage(value, api):
     check(isinstance(value, dict))
     if api == "messages":
@@ -96,9 +110,7 @@ def usage(value, api):
         read = integer(value.get("cache_read_input_tokens", 0))
         write = integer(value.get("cache_creation_input_tokens", 0))
         context = inp + read + write
-        check(value.get("service_tier") in (None, "standard"))
-        server = value.get("server_tool_use")
-        check(server is None or isinstance(server, dict) and all(integer(v) == 0 for v in server.values()))
+        message_usage_features(value)
         cache = value.get("cache_creation")
         check(cache is None or isinstance(cache, dict) and sum(integer(v) for v in cache.values()) == write)
     else:
@@ -207,6 +219,7 @@ def chat(value, model, allowed):
 
 def messages(value, model, allowed):
     identity(value, model)
+    message_features(value)
     check(value.get("type") == "message" and value.get("role") == "assistant"
           and value.get("stop_reason") in ("end_turn", "stop_sequence", "tool_use"))
     parts = value.get("content")
@@ -354,8 +367,10 @@ def messages_stream(rows, model):
     meaningful = [row for row in rows if row.get("type") != "ping"]
     check(meaningful and meaningful[0].get("type") == "message_start" and meaningful[-1].get("type") == "message_stop")
     message = meaningful[0].get("message"); identity(message, model)
+    message_features(message)
     check(message.get("content") == [] and message.get("stop_reason") is None and isinstance(message.get("usage"), dict))
     counts = dict(message["usage"]); blocks, active, parts, stopped, finish, stop_sequence, saw_usage = [], None, "", False, None, None, False
+    message_usage_features(counts)
     deltas_started = False
     for offset, row in enumerate(meaningful):
         kind = row.get("type")
@@ -378,10 +393,19 @@ def messages_stream(rows, model):
             active = None
         elif kind == "message_delta":
             check(active is None and isinstance(row.get("delta"), dict) and isinstance(row.get("usage"), dict))
-            check(not row["delta"].keys() - {"stop_reason", "stop_sequence"} and "model" not in row)
+            check(not row["delta"].keys() - {"stop_reason", "stop_sequence", "container", "stop_details", "model"})
+            # A supplied model identity must remain the exact priced model;
+            # its presence alone cannot turn a complete response into failure.
+            check(row.get("model", model) == model)
+            check(row["delta"].get("model", model) == model)
+            message_features(row["delta"])
+            message_usage_features(row["usage"])
             deltas_started = True
             for key, value in row["usage"].items():
                 if key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                    # Optional cumulative input/cache fields can be null when
+                    # this event supplies no update. Keep the known counts.
+                    if key != "output_tokens" and value is None: continue
                     check(integer(value) >= integer(counts.get(key, 0)))
                 counts[key] = value
             check("output_tokens" in row["usage"]); saw_usage = True
