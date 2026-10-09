@@ -407,7 +407,9 @@ class RunController:
         observed["doctor_evidence"] = step("doctor_evidence", self.remote.doctor_receipt)
         for runtime in (("openclaw", "hermes") if self.mode == "legacy_full" else ()):
             observed[runtime] = step(runtime, lambda runtime=runtime: self.remote.runtime_task(runtime))
-        for cli in ("claude", "codex"):
+        # A Codex startup failure must not cause an unnecessary Claude call.
+        # Both named checks and their independent evidence are required.
+        for cli in ("codex", "claude"):
             observed[cli] = step(cli, lambda cli=cli: self.remote.workspace_task(cli))
         observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
         observed["model_channel_closed"] = step("model_channel_closed", self.models.close)

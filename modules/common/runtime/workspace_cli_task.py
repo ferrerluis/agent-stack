@@ -15,6 +15,50 @@ import time
 
 PROMPT = "Read input.json. Write result.json containing only the integer sum of lhs and rhs as sum, and the unchanged nonce as nonce. Then reply with only the same JSON object."
 
+# Match only fixed diagnostic names. Native stderr, URLs, prompts, paths and
+# credentials never become part of the report, even when a CLI echoes them.
+GATEWAY_FAILURES = (
+    "model_gateway_auth_required", "model_gateway_route_refused", "model_gateway_frame_refused",
+    "model_gateway_body_too_large", "model_gateway_header_refused", "model_gateway_method_refused",
+    "model_gateway_closed", "model_task_start_required", "model_request_scope_changed",
+    "invalid_model_request", "model_paid_feature_refused", "model_endpoint_or_body_refused",
+    "model_request_already_admitted", "model_request_limit_reached", "model_completion_unverified",
+    "model_budget_exhausted", "model_work_deadline_reached", "active_model_reservation_required",
+    "model_spend_scope_changed", "model_spend_policy_changed", "short_model_context_required",
+    "onepassword_unavailable_or_locked", "model_request_failed",
+)
+FAILURE_SIGNALS = {
+    "configuration": r"error loading config|failed to load config|error parsing|invalid value|unexpected argument|unrecognized subcommand|missing field",
+    "permission": r"permission denied|operation not permitted|access is denied",
+    "sandbox": r"bwrap:|bubblewrap|sandbox initialization|sandbox setup|sandbox failed|failed to create[^\n]{0,80}namespace",
+    "dns": r"dns error|dns lookup|failed to lookup address|could not resolve|failed to resolve",
+    "connection": r"connection refused|could not connect|error sending request|connection reset",
+    "authentication": r"unauthorized|status[^\n]{0,16}401|missing api key|api key must be provided",
+    "binary": r"exec format error|command not found|cannot execute binary",
+    "panic": r"panicked at|fatal runtime error",
+}
+
+
+def failure_diagnostic(code, output, errors):
+    """Bounded clues for a failed native child, never its raw output."""
+    if type(code) is not int or not -128 <= code <= 255 or not isinstance(output, str) or not isinstance(errors, str):
+        return None
+    raw_output, raw_errors = output.encode(), errors.encode()
+    # The hashes cover all captured bytes; inspect only a bounded prefix.
+    text = (output[:2 * 1024 * 1024] + "\n" + errors[:2 * 1024 * 1024]).lower()
+    events = set()
+    for line in output[:2 * 1024 * 1024].splitlines():
+        try: event = strict_json(line)
+        except (ValueError, TypeError, RecursionError): continue
+        if isinstance(event, dict) and event.get("type") in ("thread.started", "turn.started", "turn.completed", "turn.failed", "error"):
+            events.add(event["type"])
+    return {"schema": 1, "exit_code": code,
+            "stdout_bytes": len(raw_output), "stderr_bytes": len(raw_errors),
+            "stdout_sha256": hashlib.sha256(raw_output).hexdigest(), "stderr_sha256": hashlib.sha256(raw_errors).hexdigest(),
+            "signals": sorted(name for name, pattern in FAILURE_SIGNALS.items() if re.search(pattern, text)),
+            "gateway_codes": [name for name in GATEWAY_FAILURES if re.search(r"(?<![a-z0-9_])" + name + r"(?![a-z0-9_])", text)],
+            "native_events": sorted(events)}
+
 
 def strict_json(raw):
     def unique(pairs):
@@ -158,8 +202,8 @@ def invoke(command_args, directory, env, timeout):
     process = subprocess.Popen(command_args, cwd=directory, env=env, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        output, _ = process.communicate(timeout=timeout)
-        return process.returncode, output
+        output, errors = process.communicate(timeout=timeout)
+        return process.returncode, output, errors
     except subprocess.TimeoutExpired:
         # Stop descendants too; a timed-out parent must not leave model work running.
         try:
@@ -167,7 +211,7 @@ def invoke(command_args, directory, env, timeout):
         except ProcessLookupError:
             pass
         process.communicate()
-        return 124, ""
+        return 124, "", ""
 
 
 def run_task(cli, model, api_key, timeout, model_gateway=False, challenge=None):
@@ -206,14 +250,14 @@ def run_task(cli, model, api_key, timeout, model_gateway=False, challenge=None):
     if gateway is None:
         env["CODEX_API_KEY" if cli == "codex" else "ANTHROPIC_API_KEY"] = api_key
         env["DISABLE_AUTOUPDATER"] = "1"
-        code, output = invoke(command(cli, model), directory, env, timeout)
+        code, output, errors = invoke(command(cli, model), directory, env, timeout)
     else:
         with tempfile.TemporaryDirectory(prefix="client-", dir=directory) as client_temp:
             # The pinned Codex CLI requires CODEX_HOME to exist before startup.
             # This task owns the fresh directory; no saved auth is copied.
             if cli == "codex":
                 (Path(client_temp) / "codex").mkdir(mode=0o700)
-            code, output = invoke(command(cli, model, gateway), directory,
+            code, output, errors = invoke(command(cli, model, gateway), directory,
                                   gateway_environment(cli, model, gateway, Path(client_temp)), timeout)
     usage = model_usage(cli, output) if code == 0 else None
     verified = verify_result(directory, challenge)
@@ -228,6 +272,8 @@ def run_task(cli, model, api_key, timeout, model_gateway=False, challenge=None):
         # success. The controller must independently match gateway receipts.
         result["model_route"] = {"kind": "budget_gateway", "role": cli, "provider": gateway["provider"],
                                  "base_url_sha256": hashlib.sha256(gateway["base_url"].encode()).hexdigest()}
+    if not passed:
+        result["failure_diagnostic"] = failure_diagnostic(code, output, errors)
     return result
 
 

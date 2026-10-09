@@ -37,7 +37,7 @@ class WorkspaceTaskTest(unittest.TestCase):
                 self.assertEqual((directory / "input.json").read_text(), json.dumps(challenge, sort_keys=True, separators=(",", ":")))
                 self.assertIn("reply with only the same JSON object", args[-1])
                 (directory / "result.json").write_text(json.dumps({"sum": 43, "nonce": challenge["nonce"]}))
-                return 0, self.good_output("codex")
+                return 0, self.good_output("codex"), ""
             with patch.object(task, "invoke", side_effect=invoke), patch.object(task.secrets, "randbelow", side_effect=AssertionError("controller challenge must be used")):
                 result = task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True, challenge=challenge)
             self.assertEqual(result["status"], "pass")
@@ -58,6 +58,41 @@ class WorkspaceTaskTest(unittest.TestCase):
             value["usage"].update({"cached_input_tokens" if cli == "codex" else "cache_read_input_tokens": 12,
                                    "cache_write_input_tokens" if cli == "codex" else "cache_creation_input_tokens": 5})
             self.assertEqual(task.model_usage(cli, json.dumps(value)), {"input_tokens": 30, "output_tokens": 20, "cache_read_tokens": 12, "cache_write_tokens": 5})
+
+    def test_failed_native_child_reports_fixed_clues_without_raw_secret_or_path(self):
+        private = "sk-private-fixture-do-not-report"
+        path = "/private/client/secret.toml"
+        child = [sys.executable, "-c", "import json,sys;print(json.dumps({'type':'turn.failed','error':{'message':'private-native-error'}}));sys.stderr.write('Error loading config: model_paid_feature_refused ' + sys.argv[1] + ' ' + sys.argv[2]);sys.exit(42)", private, path]
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), owned_home(home), patch.object(task, "command", return_value=child):
+            result = task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True)
+        self.assertEqual(result["status"], "fail")
+        self.assertFalse(result["verified"])
+        self.assertIsNone(result["model_usage"])
+        diagnostic = result["failure_diagnostic"]
+        self.assertEqual(diagnostic["exit_code"], 42)
+        self.assertEqual(diagnostic["signals"], ["configuration"])
+        self.assertEqual(diagnostic["gateway_codes"], ["model_paid_feature_refused"])
+        self.assertEqual(diagnostic["native_events"], ["turn.failed"])
+        for value in (private, path, "private-native-error", "Error loading config"):
+            self.assertNotIn(value, json.dumps(result))
+
+    def test_zero_exit_with_usage_but_missing_file_still_fails_with_safe_diagnostic(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), owned_home(home), patch.object(task, "invoke", return_value=(0, self.good_output("codex"), "unrelated-private-detail")):
+            result = task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True)
+        self.assertEqual(result["status"], "fail")
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["failure_diagnostic"]["exit_code"], 0)
+        self.assertEqual(result["failure_diagnostic"]["native_events"], ["turn.completed"])
+        self.assertNotIn("unrelated-private-detail", json.dumps(result))
+
+    def test_failure_clues_never_accept_unknown_or_suffixed_gateway_codes(self):
+        raw = 'model_gateway_auth_required_private unknown_sensitive_code\n{"type":"secret-event","secret":"private"}'
+        diagnostic = task.failure_diagnostic(1, raw, "")
+        self.assertEqual(diagnostic["gateway_codes"], [])
+        self.assertEqual(diagnostic["native_events"], [])
+        self.assertNotIn("private", json.dumps(diagnostic))
+        self.assertIsNone(task.failure_diagnostic(True, raw, ""))
+        self.assertIsNone(task.failure_diagnostic(256, raw, ""))
 
     def test_duplicate_nonfinite_boolean_or_unbounded_native_usage_cannot_pass(self):
         for cli in ("codex", "claude"):
@@ -162,7 +197,7 @@ class WorkspaceTaskTest(unittest.TestCase):
                     self.assertNotIn("ANTHROPIC_API_KEY" if cli == "codex" else "CODEX_API_KEY", env)
                     data = json.loads((directory / "input.json").read_text())
                     (directory / "result.json").write_text(json.dumps({"sum": data["lhs"] + data["rhs"], "nonce": data["nonce"]}))
-                    return 0, self.good_output(cli)
+                    return 0, self.good_output(cli), ""
                 with patch.dict(os.environ, {"HOME": temp, "OPENAI_API_KEY": "unrelated-key"}), patch.object(
                     task.os, "geteuid", return_value=1000
                 ), patch.object(Path, "stat", stat), patch.object(task, "invoke", side_effect=fake):
@@ -289,7 +324,7 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
 
     def test_gateway_client_home_is_removed_after_failure_timeout_or_exception(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), owned_home(home):
-            for outcome in ((1, ""), (124, ""), OSError("fixture failure")):
+            for outcome in ((1, "", ""), (124, "", ""), OSError("fixture failure")):
                 homes = []
                 def fake(args, directory, env, timeout):
                     homes.append(Path(env["HOME"]))

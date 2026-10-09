@@ -344,6 +344,20 @@ class FullRunTest(unittest.TestCase):
             changed = copy.deepcopy(evidence); mutate(changed)
             with self.assertRaises(terraform.PolicyError): value.controller.verdict(observed, changed)
 
+    def test_codex_startup_failure_cleans_without_paying_for_claude(self):
+        value = self.make("full")
+        invoked = []
+        def fail_before_request(cli):
+            invoked.append(cli)
+            raise terraform.PolicyError("command_failed")
+        value.checks.workspace_task = fail_before_request
+        report = value.controller.run_attempt(value.readiness, quote())
+        self.assertEqual(invoked, ["codex"])
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["cleanup"], "verified")
+        self.assertEqual(cleanup.private_read(value.controller.path)["failure_stage"], "codex")
+        self.assertEqual(value.controller.reservation()["model_requests"], [])
+
     def light_fixture(self):
         value = self.make("light")
         value.controller.models = value.checks.models = None
