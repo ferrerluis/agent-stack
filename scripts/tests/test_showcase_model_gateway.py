@@ -111,6 +111,42 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(all(row["status"] == "response_received" for row in account["model_requests"]))
         self.assertNotIn(PRIVATE, json.dumps(account)); self.assertTrue(all(token not in json.dumps(account) for token in tokens))
 
+    def test_native_scope_refusal_records_shape_and_source_without_names_values_or_spending(self):
+        token = self.gateway.client("codex")["credential"]
+        metadata = {"session_id": PRIVATE, "private-field-" + PRIVATE: token}
+        status, _, raw = self.request(raw=body(text=PRIVATE, client_metadata=metadata))
+        self.assertEqual(status, 400)
+        receipt = self.gateway.rejection_receipt(); self.assertEqual(len(receipt["requests"]), 1)
+        report = receipt["requests"][0]
+        self.assertEqual(report["reason"], "model_request_scope_changed")
+        self.assertIs(type(report["verifier_line"]), int)
+        self.assertEqual(len(report["verifier_sha256"]), 64)
+        self.assertTrue(report["model_matches_policy"])
+        self.assertEqual(report["client_metadata"]["unknown_field_count"], 1)
+        self.assertEqual(report["client_metadata"]["known_fields"]["session_id"], {"kind": "string", "utf8_bytes": len(PRIVATE)})
+        serialized = json.dumps(receipt).encode() + raw
+        self.assertNotIn(PRIVATE.encode(), serialized); self.assertNotIn(token.encode(), serialized)
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+        self.assertEqual(self.account()["model_requests"], [])
+
+    def test_scope_report_limit_and_snapshots_do_not_relax_refused_models_or_cache_keys(self):
+        cases = [body(model=PRIVATE, prompt_cache_retention="24h", **{PRIVATE: PRIVATE}),
+                 body(prompt_cache_key=True), body(client_metadata={})]
+        for raw in cases + [cases[0]] * 6:
+            self.assertEqual(self.request(raw=raw)[0], 400)
+        receipt = self.gateway.rejection_receipt()
+        self.assertEqual(len(receipt["requests"]), 8); self.assertTrue(receipt["truncated"])
+        first, cache, metadata = receipt["requests"][:3]
+        self.assertFalse(first["model_matches_policy"]); self.assertEqual(first["unknown_field_count"], 1)
+        self.assertIn("prompt_cache_retention", first["fields"])
+        self.assertEqual(cache["prompt_cache_key"], {"kind": "boolean", "uuid_shape": False})
+        self.assertEqual(metadata["client_metadata"]["field_count"], 0)
+        self.assertNotIn(PRIVATE, json.dumps(receipt))
+        receipt["requests"][0]["reason"] = "changed"
+        self.assertEqual(self.gateway.rejection_receipt()["requests"][0]["reason"], "model_request_scope_changed")
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+        self.assertEqual(self.account()["model_requests"], [])
+
     def test_pinned_claude_sdk_decorations_are_validated_then_removed_upstream(self):
         headers = self.headers("claude") | {"anthropic-version": "2023-06-01",
                     "anthropic-beta": ",".join(sorted(gateway.CLAUDE_SDK_MARKERS))}

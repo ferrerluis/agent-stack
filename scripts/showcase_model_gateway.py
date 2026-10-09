@@ -8,6 +8,7 @@ upstream request uses the original durable model-spending ledger. Native pinned
 runtime/tool compatibility and the full cost/launch gates remain unverified.
 """
 from contextlib import contextmanager
+import copy
 import hmac
 from http.client import LineTooLong
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +19,7 @@ import socket
 import threading
 import time
 
-from showcase_model_spend import ModelSpend, RequestGate, ROLES, MAX_BODY
+from showcase_model_spend import ModelSpend, RequestGate, ROLES, MAX_BODY, scope_rejection_diagnostic
 from showcase_policy import PolicyError, require
 
 FRAME_SECONDS = 5
@@ -163,8 +164,8 @@ class Handler(BaseHTTPRequestHandler):
     do_GET = do_HEAD = do_OPTIONS = do_PUT = do_PATCH = do_DELETE = do_CONNECT = reject_method
 
     def do_POST(self):
+        gateway, role, path, raw = self.server.gateway, None, None, None
         try:
-            gateway = self.server.gateway
             match = re.fullmatch(r"/(openclaw|hermes|codex|claude)(/v1/(?:responses|chat/completions|messages)|/_transport)(\?beta=true)?", self.path)
             require(match is not None, "model_gateway_route_refused")
             role, path, query = match.groups()
@@ -203,6 +204,9 @@ class Handler(BaseHTTPRequestHandler):
                                permit=lambda: gateway.permitted(self.request))
             gate.forward(role, path, raw, gateway.timeout, sink=self)
         except PolicyError as error:
+            if str(error) == "model_request_scope_changed":
+                try: gateway.record_scope_rejection(role, path, raw, error)
+                except BaseException: pass  # Diagnostic failure cannot change the refusal.
             self.safe_error(str(error))
         except BaseException:
             self.safe_error("model_request_failed")
@@ -223,6 +227,18 @@ class BudgetGateway:
         self.stop_watchdog = threading.Event()
         self.started_roles = None
         self.diagnostic_roles = set()
+        self.scope_rejections, self.scope_rejections_truncated = [], False
+
+    def record_scope_rejection(self, role, path, raw, error):
+        diagnostic = scope_rejection_diagnostic(self.spend.policy, role, path, raw, error)
+        if diagnostic is None: return
+        with self.condition:
+            if len(self.scope_rejections) < 8: self.scope_rejections.append(diagnostic)
+            else: self.scope_rejections_truncated = True
+
+    def rejection_receipt(self):
+        with self.condition:
+            return {"schema": 1, "requests": copy.deepcopy(self.scope_rejections), "truncated": self.scope_rejections_truncated}
 
     def gate_task_starts(self):
         """The model session calls this before listening; it cannot be undone."""

@@ -478,6 +478,7 @@ class ModelSession:
             row = evidence.get("model_channels", {}).get(self.stage)
             if row is not None:
                 row["shutdown"] = "uncertain" if failed else "verified"
+                if isinstance(self.gateway, BudgetGateway): row["request_rejections"] = self.gateway.rejection_receipt()
                 if restored: row["runtime_config_restores"] = restored
                 for role, config in self.runtime_configs.items():
                     if config.get("lifecycle"):

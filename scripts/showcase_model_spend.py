@@ -12,6 +12,7 @@ from decimal import Decimal
 import hashlib
 import json
 import math
+from pathlib import Path
 import re
 import time
 from urllib.error import HTTPError
@@ -36,6 +37,8 @@ FIELDS = {
         "temperature", "top_p", "top_k", "max_tokens", "stop_sequences"},
 }
 CONTENT_TYPES = {"text", "input_text", "output_text", "message", "function_call", "function_call_output", "reasoning", "tool_use", "tool_result", "thinking", "redacted_thinking"}
+CODEX_TRACKING_NAMES = {"x-codex-installation-id", "x-codex-window-id", "thread_id", "turn_id",
+                        "session_id", "x-codex-turn-metadata"}
 
 
 def digest(value):
@@ -197,9 +200,7 @@ def prepare_request(policy, role, path, raw):
     if role == "codex" and path == "/v1/responses" and isinstance(value, dict):
         if "client_metadata" in value:
             metadata = value.pop("client_metadata")
-            names = {"x-codex-installation-id", "x-codex-window-id", "thread_id", "turn_id",
-                     "session_id", "x-codex-turn-metadata"}
-            require(isinstance(metadata, dict) and bool(metadata) and not metadata.keys() - names
+            require(isinstance(metadata, dict) and bool(metadata) and not metadata.keys() - CODEX_TRACKING_NAMES
                     and all(isinstance(item, str) and 0 < len(item.encode("utf-8", "surrogatepass")) <=
                             (16384 if name == "x-codex-turn-metadata" else 256)
                             for name, item in metadata.items()), "model_request_scope_changed")
@@ -250,6 +251,48 @@ def prepare_request(policy, role, path, raw):
         if terms["model"] == "claude-haiku-5-5":
             value["output_config"] = {"effort": "low"}
     return ORIGINS[provider] + path, json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def scope_rejection_diagnostic(policy, role, path, raw, error):
+    """Describe a refused request's bounded shape, never its names or values."""
+    if (role not in ROLES or path not in FIELDS or not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_BODY
+            or not isinstance(error, PolicyError) or str(error) != "model_request_scope_changed"):
+        return None
+    line = None
+    trace = error.__traceback__
+    while trace is not None:
+        if trace.tb_frame.f_code is prepare_request.__code__: line = trace.tb_lineno
+        trace = trace.tb_next
+    try: value = strict_json(raw)
+    except (ValueError, UnicodeError, RecursionError): value = None
+    def kind(item):
+        return ("null" if item is None else "boolean" if type(item) is bool else "string" if isinstance(item, str)
+                else "object" if isinstance(item, dict) else "array" if isinstance(item, list) else "number")
+    diagnostic = {"schema": 1, "role": role, "path": path, "reason": "model_request_scope_changed",
+                  "request_sha256": hashlib.sha256(raw).hexdigest(), "request_bytes": len(raw),
+                  "verifier_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "verifier_line": line,
+                  "body_kind": kind(value)}
+    if not isinstance(value, dict): return diagnostic
+    observed = FIELDS[path] | {"metadata", "client_metadata", "prompt_cache_key", "include",
+                             "prompt_cache_retention", "context_management", "truncation", "max_tool_calls", "safety_identifier"}
+    unknown = sorted(value.keys() - observed)
+    diagnostic.update(fields=sorted(value.keys() & observed), unknown_field_count=len(unknown),
+                      unknown_names_sha256=digest(unknown), model_matches_policy=value.get("model") == policy["roles"][role]["model"],
+                      model_kind=kind(value.get("model")))
+    for name, names in (("client_metadata", CODEX_TRACKING_NAMES), ("metadata", {"user_id"})):
+        if name not in value: continue
+        item = value[name]; shapes = {"kind": kind(item)}
+        if isinstance(item, dict):
+            unknown = sorted(item.keys() - names)
+            shapes.update(field_count=len(item), unknown_field_count=len(unknown), unknown_names_sha256=digest(unknown),
+                          known_fields={key: {"kind": kind(item[key]), "utf8_bytes": len(item[key].encode("utf-8", "surrogatepass"))
+                                              if isinstance(item[key], str) else None} for key in sorted(item.keys() & names)})
+        diagnostic[name] = shapes
+    if "prompt_cache_key" in value:
+        key = value["prompt_cache_key"]
+        diagnostic["prompt_cache_key"] = {"kind": kind(key), "uuid_shape": isinstance(key, str) and re.fullmatch(
+            r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", key) is not None}
+    return diagnostic
 
 
 class RequestGate:

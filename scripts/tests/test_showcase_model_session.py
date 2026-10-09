@@ -101,6 +101,25 @@ class ContainerRouteTest(unittest.TestCase):
 
 
 class OriginalAccountSessionTest(unittest.TestCase):
+    def test_actual_scope_refusal_survives_channel_shutdown_without_granting_spending(self):
+        fixture = self.make(real_gateway=True)
+        channel = fixture.models.gateway; channel.authorize_role("codex")
+        bundle = channel.client("codex")
+        connection = HTTPConnection("127.0.0.1", channel.server.server_port, timeout=3)
+        try:
+            connection.request("POST", "/codex/v1/responses", body(model=PRIVATE),
+                               {"Content-Type": "application/json", "Authorization": "Bearer " + bundle["credential"]})
+            response = connection.getresponse(); raw = response.read(); self.assertEqual(response.status, 400)
+        finally: connection.close()
+        expected = channel.rejection_receipt(); self.assertEqual(len(expected["requests"]), 1)
+        self.assertFalse(expected["requests"][0]["model_matches_policy"])
+        self.assertNotIn(PRIVATE.encode(), raw); fixture.reader.assert_not_called(); fixture.opener.open.assert_not_called()
+        self.assertEqual(self.account(fixture)["model_requests"], [])
+        fixture.models.close()
+        row = cleanup.private_read(fixture.checks.path)["model_channels"]["before_reboot"]
+        self.assertEqual(row["shutdown"], "verified"); self.assertEqual(row["request_rejections"], expected)
+        self.assertNotIn(PRIVATE, json.dumps(row)); self.assertNotIn(bundle["credential"], json.dumps(row))
+
     def test_runtime_coordinator_uses_actual_gateway_nonce_grants_completion_ledger_and_role_revocation(self):
         fixture = self.make(real_gateway=True)
         fixture.models.lifecycle_calls = []; fixture.models.agent_mutation = fixture.models.runtime_task_mutation = None
