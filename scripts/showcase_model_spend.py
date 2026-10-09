@@ -37,7 +37,7 @@ FIELDS = {
         "temperature", "top_p", "top_k", "max_tokens", "stop_sequences"},
 }
 CONTENT_TYPES = {"text", "input_text", "output_text", "message", "function_call", "function_call_output", "reasoning", "tool_use", "tool_result", "thinking", "redacted_thinking"}
-CODEX_TRACKING_NAMES = {"x-codex-installation-id", "x-codex-window-id", "thread_id", "turn_id",
+CODEX_TRACKING_NAMES = {"x-codex-installation-id", "x-codex-window-id", "thread_id", "turn_id", "root_turn_id",
                         "session_id", "x-codex-turn-metadata"}
 
 

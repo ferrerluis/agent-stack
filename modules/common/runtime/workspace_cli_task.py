@@ -145,7 +145,29 @@ def gateway_client(raw, cli):
     return value
 
 
-def command(cli, model, gateway=None):
+def codex_task_catalog(model, path):
+    """Task-owned metadata selects the public text/function Responses format.
+
+    Codex 0.160 embeds internal additional_tools items for built-in model
+    metadata. This isolated acceptance task uses ordinary local shell tools;
+    the gateway continues to refuse internal, custom and paid server tools.
+    No routing, credentials, answer or task challenge belongs in the catalog.
+    """
+    metadata = {"slug": model, "display_name": model, "description": None,
+                "default_reasoning_level": "none", "supported_reasoning_levels": [],
+                "shell_type": "unified_exec", "visibility": "list", "supported_in_api": True,
+                "priority": 1, "availability_nux": None, "upgrade": None,
+                "base_instructions": "You are a coding assistant. Use the available tools to complete the user task.",
+                "support_verbosity": False, "default_verbosity": None, "apply_patch_tool_type": None,
+                "truncation_policy": {"mode": "bytes", "limit": 10000},
+                "experimental_supported_tools": [], "context_window": 100000,
+                "use_responses_lite": False, "include_apps_usage_instructions": False, "tool_mode": "direct"}
+    path.write_text(json.dumps({"models": [metadata]}, sort_keys=True, separators=(",", ":")))
+    path.chmod(0o600)
+    return path
+
+
+def command(cli, model, gateway=None, model_catalog=None):
     if cli == "codex":
         args = ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
                 "-c", 'approval_policy="never"', "--model", model]
@@ -158,6 +180,8 @@ def command(cli, model, gateway=None):
                             "env_key": "AGENT_STACK_MODEL_CREDENTIAL", "wire_api": "responses", "requires_openai_auth": False,
                             "supports_websockets": False, "request_max_retries": 0, "stream_max_retries": 0,
                             "stream_idle_timeout_ms": 60000}}
+            if model_catalog is not None:
+                settings["model_catalog_json"] = str(model_catalog)
             for key, value in settings.items():
                 if isinstance(value, dict):
                     # TOML inline table; no credential is in any argument.
@@ -257,7 +281,8 @@ def run_task(cli, model, api_key, timeout, model_gateway=False, challenge=None):
             # This task owns the fresh directory; no saved auth is copied.
             if cli == "codex":
                 (Path(client_temp) / "codex").mkdir(mode=0o700)
-            code, output, errors = invoke(command(cli, model, gateway), directory,
+            catalog = codex_task_catalog(model, Path(client_temp) / "codex" / "task-model.json") if cli == "codex" else None
+            code, output, errors = invoke(command(cli, model, gateway, model_catalog=catalog), directory,
                                   gateway_environment(cli, model, gateway, Path(client_temp)), timeout)
     usage = model_usage(cli, output) if code == 0 else None
     verified = verify_result(directory, challenge)

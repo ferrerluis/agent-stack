@@ -129,6 +129,16 @@ class GatewayTest(unittest.TestCase):
         self.reader.assert_not_called(); self.opener.open.assert_not_called()
         self.assertEqual(self.account()["model_requests"], [])
 
+    def test_root_turn_tracking_does_not_admit_internal_or_custom_tools_or_spend(self):
+        for extra in ({"client_metadata": {"root_turn_id": True}},
+                      {"client_metadata": {"root_turn_id": PRIVATE}, "input": [{"type": "additional_tools", "tools": []}]},
+                      {"client_metadata": {"root_turn_id": PRIVATE}, "tools": [{"type": "custom", "name": "apply_patch"}]}):
+            with self.subTest(extra=extra):
+                status, _, raw = self.request(raw=body(**extra))
+                self.assertEqual(status, 400); self.assertNotIn(PRIVATE.encode(), raw)
+        self.reader.assert_not_called(); self.opener.open.assert_not_called()
+        self.assertEqual(self.account()["model_requests"], [])
+
     def test_scope_report_limit_and_snapshots_do_not_relax_refused_models_or_cache_keys(self):
         cases = [body(model=PRIVATE, prompt_cache_retention="24h", **{PRIVATE: PRIVATE}),
                  body(prompt_cache_key=True), body(client_metadata={})]

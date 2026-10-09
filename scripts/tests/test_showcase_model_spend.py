@@ -236,6 +236,7 @@ class RequestValidationTest(unittest.TestCase):
 
     def test_codex_native_tracking_is_bounded_and_discarded_before_forwarding(self):
         tracking = {"client_metadata": {"session_id": "fixture-session", "x-codex-window-id": "{fixture-window}",
+                    "root_turn_id": "019c1234-abcd-7000-8000-123456789abc",
                     "x-codex-turn-metadata": '{"sandbox":"workspace-write"}'},
                     "prompt_cache_key": "019c1234-abcd-7000-8000-123456789abc", "include": ["reasoning.encrypted_content"]}
         _, prepared = spend.prepare_request(self.policy, "codex", "/v1/responses", body(**tracking))
@@ -246,6 +247,7 @@ class RequestValidationTest(unittest.TestCase):
 
     def test_codex_tracking_refuses_unknown_unbounded_or_ambiguous_shapes(self):
         changes = [{"client_metadata": item} for item in (None, [], {}, {"session_id": ""}, {"session_id": True},
+                   {"root_turn_id": ""}, {"root_turn_id": None}, {"root_turn_id": "x" * 257},
                    {"session_id": "x" * 257}, {"session_id": "é" * 129}, {"x-codex-turn-metadata": "x" * 16385},
                    {"session_id": "fixture", "service_tier": "priority"})]
         changes += [{"prompt_cache_key": item} for item in (None, True, "", "foreign-identity", "x" * 1024)]
@@ -266,10 +268,18 @@ class RequestValidationTest(unittest.TestCase):
                 with self.subTest(role=role, path=path, extra=extra), self.assertRaises(PolicyError):
                     spend.prepare_request(self.policy, role, path, body(path, **extra))
         for change in ({"model": "alias"}, {"store": True}, {"background": True}, {"service_tier": "priority"},
-                       {"tools": [{"type": "namespace", "name": "multi_agent_v1", "tools": []}]}):
+                        {"tools": [{"type": "namespace", "name": "multi_agent_v1", "tools": []}]}):
             with self.assertRaises(PolicyError):
                 spend.prepare_request(self.policy, "codex", "/v1/responses",
                                       body(client_metadata={"session_id": "fixture"}, **change))
+
+    def test_known_root_tracking_does_not_admit_internal_or_custom_tool_formats(self):
+        for change in ({"input": [{"type": "additional_tools", "role": "developer", "tools": []}]},
+                       {"tools": [{"type": "custom", "name": "apply_patch"}]},
+                       {"tools": [{"type": "namespace", "tools": [{"type": "function"}]}]}):
+            with self.subTest(change=change), self.assertRaisesRegex(PolicyError, "model_paid_feature_refused"):
+                spend.prepare_request(self.policy, "codex", "/v1/responses",
+                                      body(client_metadata={"root_turn_id": "fixture-root"}, **change))
 
     def test_claude_tracking_is_bounded_discarded_and_not_available_to_other_roles(self):
         _, prepared = spend.prepare_request(self.policy, "claude", "/v1/messages",

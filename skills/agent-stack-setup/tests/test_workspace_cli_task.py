@@ -30,6 +30,28 @@ def owned_home(home):
 
 
 class WorkspaceTaskTest(unittest.TestCase):
+    def test_gateway_catalog_is_task_owned_selected_model_only_and_deleted_after_execution(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), owned_home(home):
+            def invoke(args, directory, env, timeout):
+                settings = tomllib.loads("\n".join(args[i + 1] for i, arg in enumerate(args) if arg == "-c"))
+                catalog = Path(settings["model_catalog_json"]); seen.append(catalog)
+                self.assertEqual(catalog.parent, Path(env["CODEX_HOME"]))
+                self.assertEqual(catalog.stat().st_mode & 0o777, 0o600)
+                raw = catalog.read_text(); metadata = json.loads(raw)["models"]
+                self.assertEqual(len(metadata), 1); self.assertEqual(metadata[0]["slug"], "test-model")
+                self.assertFalse(metadata[0]["use_responses_lite"])
+                self.assertIsNone(metadata[0]["apply_patch_tool_type"])
+                for private in (self.bundle()["credential"], self.bundle()["base_url"], "nonce", "result.json"):
+                    self.assertNotIn(private, raw)
+                self.assertEqual(args[-1], task.PROMPT)
+                self.assertIn("workspace-write", args)
+                return 1, "", ""
+            with patch.object(task, "invoke", side_effect=invoke):
+                result = task.run_task("codex", "test-model", json.dumps(self.bundle()), 10, model_gateway=True)
+            self.assertEqual(result["status"], "fail")
+            self.assertEqual(len(seen), 1); self.assertFalse(seen[0].exists())
+
     def test_controller_challenge_is_written_exactly_before_native_execution(self):
         challenge = {"lhs": 17, "rhs": 26, "nonce": "a1" * 16}
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), owned_home(home):
@@ -281,12 +303,17 @@ if cli == "codex":
     assert codex_home.is_dir() and not codex_home.is_symlink()
     assert codex_home.stat().st_mode & 0o777 == 0o700
     assert codex_home.stat().st_uid == os.geteuid()
-    assert not list(codex_home.iterdir())
+    assert {p.name for p in codex_home.iterdir()} == {"task-model.json"}
 if cli == "codex":
     settings = {}
     for i, arg in enumerate(args):
         if arg == "-c": settings.update(tomllib.loads(args[i + 1]))
     provider = settings["model_providers"][settings["model_provider"]]
+    catalog = pathlib.Path(settings["model_catalog_json"])
+    assert catalog == codex_home / "task-model.json"
+    assert catalog.stat().st_mode & 0o777 == 0o600
+    assert json.loads(catalog.read_text())["models"][0]["slug"] == args[args.index("--model") + 1]
+    assert "a" * 64 not in catalog.read_text()
     assert os.environ[provider["env_key"]] == "a" * 64
     assert provider["base_url"] == "http://127.0.0.1:12345/codex/v1"
     assert provider["requires_openai_auth"] is False
