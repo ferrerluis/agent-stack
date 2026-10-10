@@ -105,13 +105,13 @@ sys.exit(0 if report['status']=='pass' else 1)
 """
 
 
-def decoded(data):
+def decoded(data, expected_schema=1):
     require(isinstance(data, bytes) and len(data) <= 65536, "remote_report_invalid")
     try:
         result = json.loads(data)
     except (ValueError, UnicodeError):
         raise PolicyError("remote_report_invalid") from None
-    require(isinstance(result, dict) and type(result.get("schema")) is int and result["schema"] == 1, "remote_report_invalid")
+    require(isinstance(result, dict) and type(result.get("schema")) is int and result["schema"] == expected_schema, "remote_report_invalid")
     return result
 
 
@@ -339,7 +339,7 @@ class RemoteChecks:
         while True:
             try:
                 report = decoded(self.ssh(target, ["sudo", "-n", "python3", "-B", "-I", "-c", source.decode()],
-                                          input=request, timeout=420))
+                                          input=request, timeout=420), expected_schema=2)
                 validate_contents(report, binding)
                 require(report["boot_image"] == boot_image, "resolved_boot_image_unverified")
                 return report

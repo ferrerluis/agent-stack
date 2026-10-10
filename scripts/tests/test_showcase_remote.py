@@ -31,6 +31,14 @@ DISK = "33333333-3333-3333-3333-333333333333"
 
 
 class RemoteChecksTest(unittest.TestCase):
+    def test_contents_schema_does_not_relax_other_remote_receipts(self):
+        value = json.dumps({"schema": 2, "status": "resolved_contents_verified"}).encode()
+        self.assertEqual(remote.decoded(value, expected_schema=2)["schema"], 2)
+        with self.assertRaisesRegex(remote.PolicyError, "remote_report_invalid"): remote.decoded(value)
+        for bad in (True, 2.0, "2"):
+            with self.subTest(schema=bad), self.assertRaisesRegex(remote.PolicyError, "remote_report_invalid"):
+                remote.decoded(json.dumps({"schema": bad}).encode(), expected_schema=2)
+
     def test_resolved_contents_executes_checked_source_with_native_binding(self):
         from test_showcase_fingerprints import contents
         import base64
