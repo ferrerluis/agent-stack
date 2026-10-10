@@ -77,6 +77,8 @@ The showcase opts in to `workspace_codex_sandbox_enabled`; its true default is f
 
 The contents observation also matches Docker's loaded seccomp object and the installed AppArmor profile to qualified source bytes, recording their hashes, parser bytes and enforcement settings twice. These actual security inputs join the per-check fingerprints. Older contents manifests without this observation require a new baseline.
 
+Host SSH must report the verified second peer's Tailscale address. Docker forwarding may make workspace SSH report the workspace's bridge gateway instead. The pinned VM collector measures that exact private IPv4 gateway, network and published port twice; only the workspace may report that gateway. The controller rechecks it against its collected value, together with the pinned host key, fresh nonce, UID 1000 and current boot. Other private or public source addresses fail.
+
 Before model access and again after reboot, `workspace_sandbox` checks run the actual pinned Codex sandbox as UID 1000 without a model request or credentials. A fresh file must be written inside the workspace; writes outside it and into `.git` / `.codex` must fail and preserve their sentinels. The controller independently checks the file hash, current boot, zero effective capabilities, seccomp, AppArmor and no-new-privileges. A failed confinement check stops the full trial before paid tasks.
 
 | Change | Proofs to review again |

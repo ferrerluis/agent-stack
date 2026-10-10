@@ -595,7 +595,7 @@ class RemoteChecks:
             phase = "vm_collector"
             raw = module.strict_json(self.ssh(target, ["sudo", "-n", "python3", "-"], input=module.VM_SOURCE.encode(), timeout=120))
             require(isinstance(raw, dict) and set(raw) == {"schema", "status", "browser_url", "hermes_username", "hermes_password",
-                    "host_public_key", "workspace_public_key", "boot_id"} and type(raw["schema"]) is int and raw["schema"] == 1
+                    "host_public_key", "workspace_public_key", "workspace_gateway", "boot_id"} and type(raw["schema"]) is int and raw["schema"] == 1
                     and raw["status"] == "pass" and raw["boot_id"] == baseline["boot_id"], "private_peer_inputs_unverified")
             phase = "peer_payload"
             request = {"schema": 1, "request_id": request_id, "runner_dns": self.config["tailnet"]["runner_dns"],
@@ -603,6 +603,7 @@ class RemoteChecks:
                 "hermes_username": raw["hermes_username"], "hermes_password": raw["hermes_password"]}
             payload = {"browser": request, "ssh": {"nonce": nonce, "boot_id": baseline["boot_id"],
                 "host_public_key": module.public_key(raw["host_public_key"]), "workspace_public_key": module.public_key(raw["workspace_public_key"]),
+                "workspace_gateway": module.bridge_gateway(raw["workspace_gateway"]),
                 "private_key": (self.attempt.checkout / KEY_PATH).read_text()}}
             module.payload_valid(payload)
             phase = "peer_source"

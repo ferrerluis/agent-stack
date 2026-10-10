@@ -45,7 +45,7 @@ except Exception:
 print(json.dumps(report))
 sys.exit(0 if report['status']=='pass' else 1)
 """
-VM_SOURCE = """import json,os,pathlib,re,signal,subprocess,sys
+VM_SOURCE = """import ipaddress,json,os,pathlib,re,signal,subprocess,sys
 def deadline(_signum,_frame): raise RuntimeError('collector_deadline')
 signal.signal(signal.SIGALRM,deadline)
 signal.alarm(110)
@@ -59,6 +59,22 @@ def run(*args):
     result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,check=True,timeout=35).stdout
     assert len(result)<=65536
     return result
+def workspace_network(identifier):
+    value=json.loads(run('/usr/bin/docker','inspect','--format','{{json .NetworkSettings}}',identifier),object_pairs_hook=pairs)
+    networks=value['Networks']; assert isinstance(networks,dict) and len(networks)==1
+    network=next(iter(networks.values()))
+    assert re.fullmatch(r'[a-f0-9]{64}',network['NetworkID'])
+    gateway=ipaddress.IPv4Address(network['Gateway']); address=ipaddress.IPv4Address(network['IPAddress'])
+    prefix=network['IPPrefixLen']; assert type(prefix) is int and 1<=prefix<=30
+    subnet=ipaddress.IPv4Network((str(address),prefix),strict=False)
+    private=[ipaddress.IPv4Network(cidr) for cidr in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16')]
+    assert any(subnet.subnet_of(cidr) for cidr in private)
+    assert gateway in subnet and gateway!=address and gateway not in (subnet.network_address,subnet.broadcast_address)
+    assert address not in (subnet.network_address,subnet.broadcast_address)
+    ports=value['Ports']['22/tcp']; assert isinstance(ports,list) and 1<=len(ports)<=4
+    assert all(isinstance(row,dict) and set(row)=={'HostIp','HostPort'} and row['HostPort']=='2222' for row in ports)
+    assert any(row['HostIp']=='0.0.0.0' for row in ports)
+    return value,str(gateway)
 phase='container_state'
 try:
     assert os.geteuid()==0
@@ -70,6 +86,8 @@ try:
         state=json.loads(run('/usr/bin/docker','inspect','--format','{{json .State}}',identifier))
         assert state.get('Running') is True and state.get('Restarting') is False
         ids[service]=identifier
+    phase='workspace_network'
+    network,gateway=workspace_network(ids['workspace'])
     phase='dashboard_handoff'
     handoff=json.loads(run('/usr/bin/docker','exec',ids['openclaw'],'openclaw','dashboard','--json'),object_pairs_hook=pairs)
     assert isinstance(handoff,dict) and isinstance(handoff.get('browserUrl'),str)
@@ -84,11 +102,14 @@ try:
     for service,identifier in ids.items():
         assert run(*compose,'ps','-q',service).decode().strip()==identifier
         assert json.loads(run('/usr/bin/docker','inspect','--format','{{json .State}}',identifier)).get('Running') is True
+    phase='workspace_network'
+    assert workspace_network(ids['workspace'])==(network,gateway)
     phase='boot_identity'
     report={'schema':1,'status':'pass','browser_url':handoff['browserUrl'],
         'hermes_username':auth['HERMES_DASHBOARD_BASIC_AUTH_USERNAME'],
         'hermes_password':auth['HERMES_DASHBOARD_BASIC_AUTH_PASSWORD'],
         'host_public_key':host,'workspace_public_key':workspace,
+        'workspace_gateway':gateway,
         'boot_id':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
 except Exception as error:
     reason='collector_invalid'
@@ -167,14 +188,34 @@ def ssh_args(host, port, user, key, known, command):
         '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', user + '@' + host, command]
 
 
-def validate_ssh(raw, role, nonce, boot, runner_addresses):
+def bridge_gateway(value):
+    """Only the exact private IPv4 gateway measured by the pinned VM collector."""
+    need(isinstance(value, str) and len(value) <= 15, 'workspace_network_unverified')
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError:
+        raise ProbeError('workspace_network_unverified') from None
+    need(str(address) == value and any(address in ipaddress.IPv4Network(cidr)
+         for cidr in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')), 'workspace_network_unverified')
+    return str(address)
+
+
+def validate_ssh(raw, role, nonce, boot, runner_addresses, workspace_gateway=None):
     fields = {'schema', 'status', 'role', 'nonce', 'uid', 'user', 'boot_id', 'client_address'}
     need(isinstance(raw, dict) and set(raw) == fields and type(raw['schema']) is int and raw['schema'] == 1
          and raw['status'] == 'pass' and raw['role'] == role and raw['nonce'] == nonce and raw['boot_id'] == boot
          and type(raw['uid']) is int and 0 < raw['uid'] < 2147483648
          and raw['user'] == ('admin' if role == 'host' else 'user')
          and (role != 'workspace' or raw['uid'] == 1000), 'peer_ssh_proof_invalid')
-    need(browser.ts_ip(raw['client_address']) in runner_addresses, 'second_peer_ssh_source_unverified')
+    need(isinstance(raw['client_address'], str), 'second_peer_ssh_source_unverified')
+    try:
+        source = str(ipaddress.ip_address(raw['client_address']))
+    except ValueError:
+        raise ProbeError('second_peer_ssh_source_unverified') from None
+    allowed = set(runner_addresses)
+    if role == 'workspace' and workspace_gateway is not None:
+        allowed.add(bridge_gateway(workspace_gateway))
+    need(source in allowed, 'second_peer_ssh_source_unverified')
     return raw
 
 
@@ -182,20 +223,21 @@ def payload_valid(payload):
     need(isinstance(payload, dict) and set(payload) == {'browser', 'ssh'}, 'peer_request_invalid')
     browser.request_valid(payload['browser'])
     ssh = payload['ssh']
-    need(isinstance(ssh, dict) and set(ssh) == {'private_key', 'host_public_key', 'workspace_public_key', 'nonce', 'boot_id'}, 'peer_request_invalid')
+    need(isinstance(ssh, dict) and set(ssh) == {'private_key', 'host_public_key', 'workspace_public_key', 'workspace_gateway', 'nonce', 'boot_id'}, 'peer_request_invalid')
     key_bytes(ssh['private_key'])
     for role in ('host', 'workspace'):
         public_key(ssh[role + '_public_key'])
+    bridge_gateway(ssh['workspace_gateway'])
     need(isinstance(ssh['nonce'], str) and re.fullmatch(r'[a-f0-9]{32}', ssh['nonce'])
          and isinstance(ssh['boot_id'], str) and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', ssh['boot_id']), 'peer_request_invalid')
     need(len(json.dumps(payload).encode()) <= 4096, 'peer_request_too_large')
 
 
 FAILURE_PHASES = frozenset({'container_state', 'dashboard_handoff', 'hermes_credentials', 'ssh_host_keys',
-    'container_recheck', 'boot_identity', 'request', 'peer_identity', 'host_ssh', 'workspace_ssh', 'browser_apps'})
+    'container_recheck', 'workspace_network', 'boot_identity', 'request', 'peer_identity', 'host_ssh', 'workspace_ssh', 'browser_apps'})
 FAILURE_REASONS = frozenset({'collector_invalid', 'child_exit', 'child_timeout', 'unexpected_error',
     'peer_not_ready', 'runner_peer_mismatch', 'target_peer_unverified', 'peer_traffic_unverified',
-    'tailnet_dns_unverified', 'peer_ssh_proof_invalid', 'second_peer_ssh_source_unverified',
+    'tailnet_dns_unverified', 'peer_ssh_proof_invalid', 'second_peer_ssh_source_unverified', 'workspace_network_unverified',
     'probe_command_failed', 'probe_command_timeout', 'peer_browser_dependency_missing',
     'openclaw_document_failed', 'openclaw_session_unverified', 'openclaw_authenticated_read_unverified',
     'hermes_login_failed', 'hermes_anonymous_access_not_denied', 'hermes_login_form_missing',
@@ -236,7 +278,7 @@ def run_probe(payload, execute=invoke, resolve=None, factory=None, now=time.time
             args = ssh_args(peer['address'], port, user, key, known,
                 shlex.join(['python3', '-I', '-c', SSH_PROOF, role, credentials['nonce']]))
             raw = strict_json(execute(args, input=None, env=ENV, timeout=30))
-        reports[role] = validate_ssh(raw, role, credentials['nonce'], credentials['boot_id'], peer['runner_addresses'])
+        reports[role] = validate_ssh(raw, role, credentials['nonce'], credentials['boot_id'], peer['runner_addresses'], credentials['workspace_gateway'])
     diagnostic['phase'] = 'browser_apps'
     if factory is None:
         try:
@@ -254,19 +296,20 @@ def run_probe(payload, execute=invoke, resolve=None, factory=None, now=time.time
     # wrapper additionally proves both SSH paths under its 240-second deadline.
     browser_proof = {**proof, 'duration_seconds': browser_duration}
     browser.validate_proof(browser_proof, request)
-    return {**proof, 'ssh': reports, 'browser_duration_seconds': browser_duration}
+    return {**proof, 'ssh': reports, 'workspace_gateway': credentials['workspace_gateway'], 'browser_duration_seconds': browser_duration}
 
 
 def validate_proof(proof, payload):
     payload_valid(payload)
-    need(isinstance(proof, dict) and set(proof) == {'schema', 'status', 'request_id', 'peer', 'apps', 'ssh', 'duration_seconds', 'browser_duration_seconds'}
+    need(isinstance(proof, dict) and set(proof) == {'schema', 'status', 'request_id', 'peer', 'apps', 'ssh', 'workspace_gateway', 'duration_seconds', 'browser_duration_seconds'}
          and type(proof['duration_seconds']) in (int, float) and 0 <= proof['duration_seconds'] < 240, 'peer_proof_invalid')
-    selected = {k: v for k, v in proof.items() if k not in ('ssh', 'browser_duration_seconds')}
+    selected = {k: v for k, v in proof.items() if k not in ('ssh', 'workspace_gateway', 'browser_duration_seconds')}
     browser.validate_proof({**selected, 'duration_seconds': proof['browser_duration_seconds']}, payload['browser'])
     need(proof['browser_duration_seconds'] <= proof['duration_seconds'], 'peer_proof_invalid')
+    need(proof['workspace_gateway'] == payload['ssh']['workspace_gateway'], 'peer_proof_invalid')
     need(isinstance(proof['ssh'], dict) and set(proof['ssh']) == {'host', 'workspace'}, 'peer_proof_invalid')
     for role, raw in proof['ssh'].items():
-        validate_ssh(raw, role, payload['ssh']['nonce'], payload['ssh']['boot_id'], proof['peer']['runner_addresses'])
+        validate_ssh(raw, role, payload['ssh']['nonce'], payload['ssh']['boot_id'], proof['peer']['runner_addresses'], payload['ssh']['workspace_gateway'])
     return {**proof, 'proof_sha256': hashlib.sha256(json.dumps(proof, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
 
 

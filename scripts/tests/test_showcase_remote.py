@@ -238,7 +238,8 @@ class RemoteChecksTest(unittest.TestCase):
             report = {"schema": 1, "status": "pass", "boot_id": self.boot,
                 "browser_url": "http://127.0.0.1:18789/#bootstrapToken=fake-handoff&gatewayUrl=ws%3A%2F%2F127.0.0.1%3A18789",
                 "hermes_username": "fixture", "hermes_password": terraform_fixtures.SECRET,
-                "host_public_key": peer_fixtures.KEY, "workspace_public_key": peer_fixtures.KEY}
+                "host_public_key": peer_fixtures.KEY, "workspace_public_key": peer_fixtures.KEY,
+                "workspace_gateway": peer_fixtures.GATEWAY}
             if self.private_mutation: self.private_mutation(report)
             return json.dumps(report).encode()
         if "--remote" in words:
@@ -334,6 +335,7 @@ class RemoteChecksTest(unittest.TestCase):
         ssh = {role: {**peer_fixtures.ssh_proof(role), "nonce": payload["ssh"]["nonce"], "boot_id": payload["ssh"]["boot_id"]}
             for role in ("host", "workspace")}
         report = {"schema": 1, "status": "pass", "request_id": request["request_id"], "peer": peer, "ssh": ssh,
+            "workspace_gateway": payload["ssh"]["workspace_gateway"],
             "duration_seconds": 1.5, "browser_duration_seconds": 1, "apps": {
                 "openclaw": {"origin": "https://" + request["target_dns"], "authentication": "gateway_hello", "rendered": True, "read_rpc": True},
                 "hermes": {"origin": "https://" + request["target_dns"] + ":8443", "authentication": "basic_session", "rendered": True, "gateway_running": True, "version": "fixture"}}}
@@ -593,7 +595,7 @@ class RemoteChecksTest(unittest.TestCase):
     def test_bad_private_handoff_key_or_changed_boot_never_dispatched(self):
         self.ready()
         for changes in ({"browser_url": "https://external.test/#bootstrapToken=secret"}, {"host_public_key": "ssh-ed25519 bad"},
-            {"hermes_password": 0}, {"boot_id": NEW_BOOT}, {"extra": terraform_fixtures.SECRET}):
+            {"hermes_password": 0}, {"boot_id": NEW_BOOT}, {"workspace_gateway": "203.0.113.4"}, {"extra": terraform_fixtures.SECRET}):
             self.private_mutation = lambda raw, changes=changes: raw.update(changes)
             with self.assertRaisesRegex(terraform.PolicyError, "network_acceptance_failed"):
                 self.checks.network_checks("before_reboot", self.peer_execute)
