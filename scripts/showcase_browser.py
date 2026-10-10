@@ -55,6 +55,14 @@ HERMES_READ = """async path => {
     expires_at:d.expires_at} : {status:r.status, auth_required:d.auth_required,
     auth_providers:d.auth_providers, gateway_running:d.gateway_running, version:d.version};
 }"""
+BROWSER_PHASES = frozenset({"browser_launch", "openclaw_document", "openclaw_session",
+    "openclaw_authenticated_read", "openclaw_route", "hermes_login_document",
+    "hermes_anonymous_session", "hermes_login_form", "hermes_login_submit",
+    "hermes_session_redirect", "hermes_dashboard_render", "hermes_authenticated_session",
+    "hermes_route"})
+BROWSER_FAILURE_REASONS = frozenset({"browser_http_denied", "browser_websocket_denied",
+    "browser_write_denied", "browser_response_denied", "hermes_session_unverified",
+    "hermes_dashboard_unverified", "browser_probe_failed"})
 
 
 def dns(value):
@@ -158,6 +166,13 @@ class NetworkGuard:
         self.origin, self.runtime = origin(name, runtime), runtime
         self.failed, self.login_count = False, 0
         self.hello, self.read_rpc = False, False
+        self.failure_reason = None
+
+    def deny(self, reason):
+        # Keep the first fixed clue; URLs, credentials and message bodies stay private.
+        if not self.failed:
+            self.failure_reason = reason
+        self.failed = True
 
     def http(self, route):
         request = route.request
@@ -176,7 +191,7 @@ class NetworkGuard:
                 need(not parsed.path.startswith(("/auth/", "/api/auth/native")))
             route.continue_()
         except (ProbeError, TypeError):
-            self.failed = True
+            self.deny("browser_http_denied")
             route.abort()
 
     def websocket(self, ws):
@@ -187,7 +202,7 @@ class NetworkGuard:
                  and not parsed.query and not parsed.fragment)
             server = ws.connect_to_server()
         except ProbeError:
-            self.failed = True
+            self.deny("browser_websocket_denied")
             ws.close(code=1008, reason="probe_route_denied")
             return
 
@@ -223,7 +238,7 @@ class NetworkGuard:
                 pending[data["id"]] = data["method"]
                 server.send(message)  # Forward unchanged to the real gateway; never synthesize a reply.
             except (ProbeError, TypeError):
-                self.failed = True
+                self.deny("browser_write_denied")
                 ws.close(code=1008, reason="probe_write_denied")
                 server.close(code=1008, reason="probe_write_denied")
         ws.on_message(send)
@@ -245,7 +260,7 @@ class NetworkGuard:
                         self.read_rpc = True
                 ws.send(message)  # Preserve actual responses and events; do not return raw data.
             except (ProbeError, TypeError):
-                self.failed = True
+                self.deny("browser_response_denied")
                 ws.close(code=1008, reason="probe_response_denied")
                 server.close(code=1008, reason="probe_response_denied")
         server.on_message(receive)
@@ -262,15 +277,18 @@ def verify_hermes(me, status, username, now):
     return {"authentication": "basic_session", "rendered": True, "gateway_running": True, "version": status["version"]}
 
 
-def browser_check(request, peer, playwright, now=time.time):
+def browser_check(request, peer, playwright, now=time.time, diagnostic=None):
     request_valid(request)
     need(peer.get("runner_dns") == request["runner_dns"] and peer.get("target_dns") == request["target_dns"]
          and peer.get("traffic") == "tailscale_ping" and peer.get("dns") == "matches_peer", "peer_proof_required")
     address = ts_ip(peer.get("address"))
     mapped = "[" + address + "]" if ":" in address else address
-    browser = context = None
+    browser = context = guard = None
     results = {}
+    if diagnostic is None:
+        diagnostic = {}
     try:
+        diagnostic['phase'] = 'browser_launch'
         browser = playwright.chromium.launch(headless=True, timeout=20000,
             args=["--no-proxy-server", "--host-resolver-rules=MAP " + request["target_dns"] + " " + mapped],
             env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
@@ -284,39 +302,54 @@ def browser_check(request, peer, playwright, now=time.time):
             context.route_web_socket("**/*", guard.websocket)
             page = context.new_page()
             if runtime == "openclaw":
+                diagnostic['phase'] = 'openclaw_document'
                 reply = page.goto(request["openclaw_url"], wait_until="domcontentloaded", timeout=30000)
                 need(reply is not None and reply.status == 200, "openclaw_document_failed")
+                diagnostic['phase'] = 'openclaw_session'
                 page.wait_for_function(OPENCLAW_READY, timeout=30000)
                 need(page.evaluate(OPENCLAW_READY) is True, "openclaw_session_unverified")
+                diagnostic['phase'] = 'openclaw_authenticated_read'
                 deadline = time.monotonic() + 10
                 while not guard.failed and not (guard.hello and guard.read_rpc) and time.monotonic() < deadline:
                     page.wait_for_timeout(100)  # Pump browser events while an actual read is pending.
                 need(guard.hello and guard.read_rpc, "openclaw_authenticated_read_unverified")
                 results[runtime] = {"authentication": "gateway_hello", "rendered": True, "read_rpc": True}
             else:
+                diagnostic['phase'] = 'hermes_login_document'
                 reply = page.goto(guard.origin + "/login?next=%2Fsessions", wait_until="domcontentloaded", timeout=30000)
                 need(reply is not None and reply.status == 200, "hermes_login_failed")
+                diagnostic['phase'] = 'hermes_anonymous_session'
                 me = page.evaluate(HERMES_READ, "/api/auth/me")
                 need(isinstance(me, dict) and me.get("status") == 401, "hermes_anonymous_access_not_denied")
+                diagnostic['phase'] = 'hermes_login_form'
                 form = page.locator('form.provider-form[data-provider="basic"]')
                 need(form.count() == 1 and form.is_visible(), "hermes_login_form_missing")
                 form.locator('input[name="username"]').fill(request["hermes_username"])
                 form.locator('input[name="password"]').fill(request["hermes_password"])
+                diagnostic['phase'] = 'hermes_login_submit'
                 form.locator('button[type="submit"]').click()
+                diagnostic['phase'] = 'hermes_session_redirect'
                 page.wait_for_url(guard.origin + "/sessions", timeout=30000)
+                diagnostic['phase'] = 'hermes_dashboard_render'
                 page.get_by_role("heading", name="Sessions", exact=True).wait_for(state="visible")
                 need(page.locator('#root a[href="/sessions"]').first.is_visible()
                      and page.locator("#root").is_visible() and len(page.locator("#root").inner_text().strip()) > 40
                      and page.locator('form.provider-form').count() == 0, "hermes_dashboard_not_rendered")
+                diagnostic['phase'] = 'hermes_authenticated_session'
                 results[runtime] = verify_hermes(page.evaluate(HERMES_READ, "/api/auth/me"),
                     page.evaluate(HERMES_READ, "/api/status"), request["hermes_username"], now())
                 need(guard.login_count == 1, "hermes_login_not_observed")
+            diagnostic['phase'] = runtime + '_route'
             parsed = split_url(page.url)
             need(parsed.scheme == "https" and "https://" + parsed.netloc == guard.origin and not guard.failed, "browser_route_not_verified")
             results[runtime]["origin"] = guard.origin
             context.close()
             context = None
         return results
+    except (Exception, KeyboardInterrupt):
+        if guard is not None and guard.failed:
+            raise ProbeError(guard.failure_reason) from None
+        raise
     finally:
         try:
             if context is not None:

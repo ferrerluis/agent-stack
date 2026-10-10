@@ -234,7 +234,7 @@ def payload_valid(payload):
 
 
 FAILURE_PHASES = frozenset({'container_state', 'dashboard_handoff', 'hermes_credentials', 'ssh_host_keys',
-    'container_recheck', 'workspace_network', 'boot_identity', 'request', 'peer_identity', 'host_ssh', 'workspace_ssh', 'browser_apps'})
+    'container_recheck', 'workspace_network', 'boot_identity', 'request', 'peer_identity', 'host_ssh', 'workspace_ssh', 'browser_apps'}) | browser.BROWSER_PHASES
 FAILURE_REASONS = frozenset({'collector_invalid', 'child_exit', 'child_timeout', 'unexpected_error',
     'peer_not_ready', 'runner_peer_mismatch', 'target_peer_unverified', 'peer_traffic_unverified',
     'tailnet_dns_unverified', 'peer_ssh_proof_invalid', 'second_peer_ssh_source_unverified', 'workspace_network_unverified',
@@ -242,7 +242,7 @@ FAILURE_REASONS = frozenset({'collector_invalid', 'child_exit', 'child_timeout',
     'openclaw_document_failed', 'openclaw_session_unverified', 'openclaw_authenticated_read_unverified',
     'hermes_login_failed', 'hermes_anonymous_access_not_denied', 'hermes_login_form_missing',
     'hermes_dashboard_not_rendered', 'hermes_login_not_observed', 'browser_route_not_verified',
-    'browser_websocket_routing_required', 'peer_deadline_exceeded'})
+    'browser_websocket_routing_required', 'peer_deadline_exceeded'}) | browser.BROWSER_FAILURE_REASONS
 
 
 def failure_details(raw):
@@ -288,7 +288,7 @@ def run_probe(payload, execute=invoke, resolve=None, factory=None, now=time.time
         factory = sync_playwright
     browser_started = now()
     with factory() as playwright:
-        apps = browser.browser_check(request, peer, playwright, now)
+        apps = browser.browser_check(request, peer, playwright, now, diagnostic=diagnostic)
     browser_duration = round(now() - browser_started, 3)
     proof = {'schema': 1, 'status': 'pass', 'request_id': request['request_id'], 'peer': peer, 'apps': apps,
              'duration_seconds': round(now() - started, 3)}

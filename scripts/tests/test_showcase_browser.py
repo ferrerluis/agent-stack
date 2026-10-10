@@ -356,6 +356,36 @@ class BrowserTest(unittest.TestCase):
         fixture = BrowserFixture(); fixture.blank = True
         with self.assertRaisesRegex(probe.ProbeError, 'hermes_dashboard_not_rendered'): self.check(fixture)
 
+    def test_failure_phase_identifies_actual_failed_browser_step(self):
+        for attr, phase in (('ui_ready', 'openclaw_session'),
+                            ('login_ok', 'hermes_session_redirect'),
+                            ('heading_ready', 'hermes_dashboard_render')):
+            fixture = BrowserFixture(); setattr(fixture, attr, False)
+            diagnostic = {}
+            with self.assertRaises(RuntimeError):
+                probe.browser_check(request(), peer(), fixture, diagnostic=diagnostic)
+            self.assertEqual(diagnostic, {'phase': phase})
+            self.assertNotIn(SECRET, json.dumps(diagnostic))
+            fixture.browser.close.assert_called_once()
+
+    def test_first_route_refusal_survives_subsequent_browser_timeout(self):
+        fixture = BrowserFixture()
+        original = fixture.goto
+        def denied(context, index, url):
+            reply = original(context, index, url)
+            if index == 1:
+                context.http(route('https://outside.invalid/?private=' + SECRET))
+                context.websocket(FakeWS('wss://outside.invalid/'))
+                context.page.wait_for_function.side_effect = RuntimeError(SECRET)
+            return reply
+        fixture.goto = denied
+        diagnostic = {}
+        with self.assertRaisesRegex(probe.ProbeError, '^browser_http_denied$') as caught:
+            probe.browser_check(request(), peer(), fixture, diagnostic=diagnostic)
+        self.assertEqual(diagnostic, {'phase': 'openclaw_session'})
+        self.assertNotIn(SECRET, str(caught.exception))
+        fixture.browser.close.assert_called_once()
+
     def test_read_response_can_arrive_after_the_connected_shell_renders(self):
         fixture = BrowserFixture(); fixture.hello_ready = False
         original = fixture.goto

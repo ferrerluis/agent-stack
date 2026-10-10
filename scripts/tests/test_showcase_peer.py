@@ -336,6 +336,22 @@ class PeerTest(unittest.TestCase):
                        {'diagnostic': value['diagnostic'] | {'extra': SECRET}}):
             self.assertIsNone(peer.failure_details(json.dumps(value | change)))
 
+    def test_browser_failure_steps_and_typed_auth_failures_are_preserved(self):
+        for phase, reason in (('hermes_authenticated_session', 'hermes_session_unverified'),
+                              ('hermes_authenticated_session', 'hermes_dashboard_unverified'),
+                              ('openclaw_session', 'browser_write_denied')):
+            printed = io.StringIO()
+            def fail(value, diagnostic):
+                diagnostic['phase'] = phase
+                raise peer.ProbeError(reason)
+            with (patch.object(peer, 'run_probe', side_effect=fail),
+                  patch.object(sys, 'stdin', Mock(buffer=io.BytesIO(json.dumps(payload()).encode()))),
+                  patch.object(signal, 'signal'), patch.object(signal, 'alarm'), contextlib.redirect_stdout(printed)):
+                self.assertEqual(peer.main(), 1)
+            self.assertEqual(peer.failure_details(printed.getvalue()), {
+                'phase': phase, 'reason': reason, 'exit_code': None})
+            self.assertNotIn(SECRET, printed.getvalue()); self.assertNotIn(PRIVATE, printed.getvalue())
+
 
 if __name__ == '__main__':
     unittest.main()

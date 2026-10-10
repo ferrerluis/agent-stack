@@ -4,6 +4,8 @@ One fresh VM runs OpenClaw, Hermes and a workspace containing Claude Code and Co
 
 The current acceptance scope requires six groups on DigitalOcean and a light deployment pass on Hetzner, AWS and GCP. Every cloud requires independently verified cleanup. Git revisions identify where evidence came from. Per-check input and verifier fingerprints now decide whether that evidence carries forward. Code and local tests alone cannot establish live acceptance. Read the selected batch's private receipts for its current status.
 
+The latest qualified source passed 1,035 Python tests and 79 Terraform checks. DO28 passed both real runtime doctors and the container suite, then failed authenticated browser verification before paid tasks or reboot; live acceptance remains incomplete. All 50 trials are independently cleaned up, with a conservative $26.02 upper bound against the $35 cap. Improved fixed-field browser diagnostics have passed focused tests and a free test using the actual pinned frontends with simulated backends; fresh native verification remains required.
+
 Use [the named settings](terraform.tfvars.example) and [private input example](execution-inputs.example.json) in an isolated checkout with new state and test-only SSH keys. `variables.tf` remains the schema and true-default source; examples supply suggestions and required placeholders.
 
 ## Inputs
