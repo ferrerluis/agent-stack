@@ -412,13 +412,17 @@ class RunController:
             observed[runtime + "_activation"] = step(runtime + "_activation", lambda runtime=runtime: self.models.activate_runtime(runtime))
         observed["doctors"] = step("doctors", self.remote.doctors)
         observed["doctor_evidence"] = step("doctor_evidence", self.remote.doctor_receipt)
+        if self.mode == "full":
+            # Catch browser/peer failures before either paid workspace task.
+            observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
         for runtime in (("openclaw", "hermes") if self.mode == "legacy_full" else ()):
             observed[runtime] = step(runtime, lambda runtime=runtime: self.remote.runtime_task(runtime))
         # A Codex startup failure must not cause an unnecessary Claude call.
         # Both named checks and their independent evidence are required.
         for cli in ("codex", "claude"):
             observed[cli] = step(cli, lambda cli=cli: self.remote.workspace_task(cli))
-        observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
+        if self.mode == "legacy_full":
+            observed["before_reboot"] = step("before_reboot", lambda: self.remote.network_checks("before_reboot"))
         observed["model_channel_closed"] = step("model_channel_closed", self.models.close)
         observed["reboot"] = step("reboot", lambda: self.remote.reboot(defer_doctors=True))
         if self.mode == "full":

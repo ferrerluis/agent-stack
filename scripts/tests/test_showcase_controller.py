@@ -344,6 +344,7 @@ class FullRunTest(unittest.TestCase):
             self.assertEqual(guards[stage]["boot_id"], evidence[baseline]["boot_id"])
         steps = [step["name"] for step in cleanup.private_read(value.controller.path)["steps"]]
         self.assertLess(steps.index("workspace_sandbox"), steps.index("model_channel"))
+        self.assertLess(steps.index("before_reboot"), steps.index("codex"))
         self.assertLess(steps.index("workspace_sandbox_after_reboot"), steps.index("model_channel_after_reboot"))
         observed = cleanup.private_read(value.controller.path)["acceptance"]["observed"]
         for mutate in (lambda e: e["tasks"].pop("codex"), lambda e: e["network"]["after_reboot"].update(status="fail"),
@@ -351,6 +352,19 @@ class FullRunTest(unittest.TestCase):
                        lambda e: e["model_channels"]["before_reboot"]["runtime_doctors"]["hermes"].update(uid=0)):
             changed = copy.deepcopy(evidence); mutate(changed)
             with self.assertRaises(terraform.PolicyError): value.controller.verdict(observed, changed)
+
+    def test_full_browser_failure_cleans_before_either_paid_workspace_task(self):
+        value = self.make("full")
+        value.checks.network_checks = Mock(side_effect=terraform.PolicyError("network_acceptance_failed"))
+        value.checks.workspace_task = Mock(wraps=value.checks.workspace_task)
+        report = value.controller.run_attempt(value.readiness, quote())
+        self.assertEqual((report["status"], report["cleanup"]), ("fail", "verified"))
+        self.assertEqual(cleanup.private_read(value.controller.path)["failure_stage"], "before_reboot")
+        value.checks.network_checks.assert_called_once_with("before_reboot")
+        value.checks.workspace_task.assert_not_called()
+        self.assertEqual(value.controller.reservation().get("model_requests", []), [])
+        self.assertFalse(cleanup.private_read(value.checks.path)["tasks"])
+        self.assertEqual(set(report["cells"].values()), {"unverified"})
 
     def test_failed_free_confinement_guard_cleans_before_model_access(self):
         for mutate in (lambda r: r["checks"].update(outside_denied=False),
@@ -450,6 +464,8 @@ class FullRunTest(unittest.TestCase):
         report = value.controller.run_attempt(value.readiness, quote())
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["cells"], {name: "pass" for name in controller.CELLS})
+        steps = [step["name"] for step in cleanup.private_read(value.controller.path)["steps"]]
+        self.assertLess(steps.index("claude"), steps.index("before_reboot"))
         self.assertEqual(report["cleanup"], "verified")
         ledger = cleanup.private_read(value.fixture.batch / "reservations.json")
         self.assertEqual(ledger["attempts"][0]["status"], "cleaned")

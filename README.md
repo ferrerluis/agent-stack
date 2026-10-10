@@ -179,6 +179,8 @@ Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --
 
 TODO #7 requires the full six acceptance groups on DigitalOcean and light VM/container passes on AWS, GCP and Hetzner, with independently verified cleanup on every cloud. Each proof records its tested source, actual contents, relevant input and verifier fingerprints; matching proofs can carry across commits. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation](docs/plans/showcase-readiness-implementation.md) and [test](docs/plans/showcase-readiness-tests.md) plans for the acceptance requirements and recorded results.
 
+The full trial verifies browser access before running paid Codex and Claude tasks. A failed browser check stops those tasks and proceeds to cleanup; both tasks and fresh browser checks after reboot remain required for a passing trial.
+
 ---
 
 ## Accessing OpenClaw
