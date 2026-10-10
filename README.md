@@ -86,7 +86,7 @@ terraform apply
 # - else it uses/creates ./.ssh/id_ed25519_agent_stack(.pub)
 # Terraform also writes ./.ssh/config (disable with generate_repo_ssh_config = false)
 
-# 6. Watch bootstrap/provisioning (takes ~2-3 min)
+# 6. Watch bootstrap/provisioning (downloads and container builds vary)
 # Terraform waits for cloud-init and then runs the runtime installer over SSH.
 # The SSH command and log tail command are shown in the outputs.
 ```
@@ -177,7 +177,7 @@ OpenClaw receives a minimal authenticated local gateway configuration before its
 
 Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host` to enforce service/config/doctor/tool/route checks, including both native doctors. Human diagnostics collect evidence but do not establish a passing deployment; real model tasks and second-peer browser checks are separate acceptance requirements.
 
-The TODO #7 live matrix requires separate evidence for AWS, DigitalOcean, GCP and Hetzner at the tested revision. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation](docs/plans/showcase-readiness-implementation.md) and [test](docs/plans/showcase-readiness-tests.md) plans for the acceptance requirements and recorded results.
+TODO #7 requires the full six acceptance groups on DigitalOcean and light VM/container passes on AWS, GCP and Hetzner, with independently verified cleanup on every cloud. Each proof records its tested source, actual contents, relevant input and verifier fingerprints; matching proofs can carry across commits. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation](docs/plans/showcase-readiness-implementation.md) and [test](docs/plans/showcase-readiness-tests.md) plans for the acceptance requirements and recorded results.
 
 ---
 

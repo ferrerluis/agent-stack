@@ -585,15 +585,19 @@ class RemoteChecks:
         evidence["network"][stage] = {"status": "started", "request_id": request_id, "boot_id": baseline["boot_id"], "nonce": nonce}
         evidence["checks"]["tailscale.acceptance"] = "started"
         private_write(self.path, evidence)
+        phase = "vm_binding"
         try:
             target = self.bind()
             require(self.probe(target) == baseline, "network_boot_baseline_changed")
+            phase = "tailnet_authority"
             check_tailnet(self.config["tailnet"], self.attempt.session.secret(self.config["tailnet"]["cleanup_key_ref"]),
                           self.attempt.session.http)
+            phase = "vm_collector"
             raw = module.strict_json(self.ssh(target, ["sudo", "-n", "python3", "-"], input=module.VM_SOURCE.encode(), timeout=120))
             require(isinstance(raw, dict) and set(raw) == {"schema", "status", "browser_url", "hermes_username", "hermes_password",
                     "host_public_key", "workspace_public_key", "boot_id"} and type(raw["schema"]) is int and raw["schema"] == 1
                     and raw["status"] == "pass" and raw["boot_id"] == baseline["boot_id"], "private_peer_inputs_unverified")
+            phase = "peer_payload"
             request = {"schema": 1, "request_id": request_id, "runner_dns": self.config["tailnet"]["runner_dns"],
                 "target_dns": target["dns"], "openclaw_url": module.browser.rebase_handoff(raw["browser_url"], target["dns"]),
                 "hermes_username": raw["hermes_username"], "hermes_password": raw["hermes_password"]}
@@ -601,6 +605,7 @@ class RemoteChecks:
                 "host_public_key": module.public_key(raw["host_public_key"]), "workspace_public_key": module.public_key(raw["workspace_public_key"]),
                 "private_key": (self.attempt.checkout / KEY_PATH).read_text()}}
             module.payload_valid(payload)
+            phase = "peer_source"
             command = module.source_command(self.attempt.checkout)
             # Leave the full peer deadline after collection; never let a stale
             # preparation window dispatch beyond the attempt's work deadline.
@@ -613,13 +618,20 @@ class RemoteChecks:
                 else:
                     reader = self.attempt.session.reader
                     peer_execute = lambda access, command, payload: module.existing_peer_execute(access, command, payload, reader)
+            phase = "peer_execution"
             report = module.strict_json(peer_execute(access, command, payload))
+            phase = "peer_verdict"
             proof = module.validate_proof(report, payload)
+            phase = "vm_recheck"
             require(self.probe(target) == baseline, "network_boot_baseline_changed")
             evidence["network"][stage].update(proof)
             evidence["checks"]["tailscale.acceptance"] = "pass"
         except BaseException as error:
             evidence["network"][stage]["status"] = "uncertain"
+            evidence["network"][stage]["failure_diagnostic"] = {"phase": phase}
+            detail = module.failure_details(getattr(error, "stdout", None))
+            if detail is not None:
+                evidence["network"][stage]["failure_diagnostic"]["child"] = detail
             evidence["checks"]["tailscale.acceptance"] = "uncertain"
             private_write(self.path, evidence)
             # Collector/browser errors may contain credentials or private URLs.

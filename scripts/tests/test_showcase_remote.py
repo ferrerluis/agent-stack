@@ -39,6 +39,20 @@ class RemoteChecksTest(unittest.TestCase):
             with self.subTest(schema=bad), self.assertRaisesRegex(remote.PolicyError, "remote_report_invalid"):
                 remote.decoded(json.dumps({"schema": bad}).encode(), expected_schema=2)
 
+    def test_network_failure_keeps_selected_child_phase_without_keys_or_raw_errors(self):
+        from showcase_agents import ProbeCommandFailed
+        self.ready()
+        raw = json.dumps({'schema': 1, 'status': 'fail', 'diagnostic': {
+            'phase': 'workspace_ssh', 'reason': 'probe_command_failed', 'exit_code': 7}}).encode()
+        def fail(*args): raise ProbeCommandFailed(1, raw, terraform_fixtures.SECRET.encode())
+        with self.assertRaisesRegex(terraform.PolicyError, '^network_acceptance_failed$'):
+            self.checks.network_checks('before_reboot', fail)
+        value = cleanup.private_read(self.checks.path)
+        self.assertEqual(value['network']['before_reboot']['failure_diagnostic'], {
+            'phase': 'peer_execution', 'child': {'phase': 'workspace_ssh', 'reason': 'probe_command_failed', 'exit_code': 7}})
+        self.assertEqual(value['checks']['tailscale.acceptance'], 'uncertain')
+        self.assertNotIn(terraform_fixtures.SECRET, json.dumps(value))
+
     def test_resolved_contents_executes_checked_source_with_native_binding(self):
         from test_showcase_fingerprints import contents
         import base64

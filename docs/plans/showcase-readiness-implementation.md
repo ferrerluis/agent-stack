@@ -1,5 +1,19 @@
 # AgentStack showcase readiness: implementation plan
 
+## Current approved scope — 2026-10-10
+
+- The total cloud/model cap is **$35**. Necessary test and bug-fix attempts are authorized within that cap; run one owned deployment at a time and preserve every original cost and cleanup record.
+- **DigitalOcean:** require both native doctors green; independently correlated real API-key Codex and Claude Code file tasks as UID 1000; direct authenticated Tailscale browser access to both apps; reboot and persistence; an evidence-matched README and saved linked plans; independently verified cleanup.
+- **Hetzner, AWS and GCP:** require native VM provisioning, all three containers running without replacement/restart for at least 120 seconds, resolved contents and independently verified cleanup. Doctors, paid tasks, browser access and reboot are outside these light passes.
+- Keep normal deployment defaults unchanged. Builds remain on the owned paid VMs; no separate build/cache pipeline is part of this change.
+- A commit identifies proof provenance. Each named check carries only when its normalized per-cloud inputs, actual image/host/Hermes repair contents, verifier fingerprint, intact evidence and prerequisite proofs match. Generated trial names, keys and deadlines alone do not invalidate a proof. Every new attempt needs fresh native cleanup.
+
+The last qualified source, `e84b7ad`, passed 1,017 Python tests and 79 Terraform checks with zero skips. DigitalOcean trial `as7-do-1010-iter22` passed deployment, bootstrap, the real container suite, resolved contents, free Codex confinement, both native doctors and both real coding tasks, then failed the first browser check before reboot. Its native cloud/tailnet cleanup is independently verified; the cloud cost bound closed at $0.12, bringing the conservative total to $25.36/$35. Six provider request records were admitted for its two coding tasks; these use already-counted prepaid credits. They do not establish browser, reboot or completed acceptance.
+
+The goal and TODO #7 remain active. Network failure diagnostics and their local qualification are next, followed by the missing native proofs and final documentation review. The historical checkpoints below describe the original scope and intermediate facts; they do not override the current constraints above.
+
+## Historical checkpoints — superseded scope and intermediate results
+
 Current work: TODO #7 is active; all 24 live cells remain unverified. The $25 cap is unchanged and the request for $30 is withdrawn.
 
 - Confirmed prepaid purchases are $10.30; actual cloud bills remain unreconciled. The former $22.24 figure included conservative reservations, rather than confirmed spending.
@@ -50,7 +64,7 @@ Important findings:
 
 Docker is absent on this review host, so image build/runtime behavior remains unverified. No cloud resource, deployed host, real credential, or local Codex auth file was inspected.
 
-## Recommended design
+## Original design and implementation history
 
 - Retain the existing flat Terraform inputs, provider modules, common loader, SSH installer, service selection and storage layout. Add GCP through that structure; a provider-plugin framework or configuration rewrite is unnecessary for this outcome.
 - Use one temporary VM per cloud running `openclaw`, `hermes`, and `workspace` together. The same workspace contains both coding tools; this tests coexistence using four deployments rather than requiring eight runtime-specific deployments.
@@ -215,9 +229,9 @@ Retrieve passwords through `op` immediately before use without printing or savin
 
 ## Defined goal
 
-Use [define-goal](/home/ferrerluis/repos/codex-config/skills/define-goal/SKILL.md). A matching full goal was created on 2026-10-05; reuse it rather than creating duplicates. No token budget was requested.
+Use [define-goal](/home/ferrerluis/repos/codex-config/skills/define-goal/SKILL.md). The existing goal was created on 2026-10-05. Continue it using Luis’s later explicit scope, budget and invalidation changes above; do not create a duplicate. No token budget was requested.
 
-> Make AgentStack satisfy TODO #7: pass local and container suites, then prove all 24 required matrix cells at the final revision across AWS, DigitalOcean, Google Cloud and Hetzner with both runtimes and both workspace coding tools. Require both runtime doctors green, real independently verified API-key CLI tasks as the workspace user, direct authenticated Tailscale URLs verified from another peer, reboot/persistence checks, an evidence-matched README, saved and linked plans, and confirmed cleanup. Stay within $25 total cloud/model spend, one fresh-deployment retry per cloud and four hours per attempt; continue independent implementation while credentials/accounts are unavailable and ask before exceeding limits or affecting existing resources.
+> Make AgentStack satisfy the approved TODO #7 showcase: preserve existing defaults, pass local and actual container checks, prove the six required DigitalOcean groups and light VM/container passes on Hetzner, AWS and GCP, and independently verify cleanup for every owned trial. Require real UID-1000 API-key file tasks from both coding tools, both native doctors, direct authenticated URLs and reboot/persistence on DigitalOcean; require stable containers for at least 120 seconds on the light clouds. Match the final README and saved linked plans to actual evidence. Track per-check normalized inputs, resolved contents, verifier fingerprints and dependencies; retain matching proofs across commits. Allow necessary attempts within $35 total cloud/model spend, original account/project bindings and bounded cleanup deadlines; ask before exceeding the cap or affecting existing resources.
 
 Starting implementation does not complete the goal or TODO #7. Both remain incomplete until real acceptance and cleanup pass.
 

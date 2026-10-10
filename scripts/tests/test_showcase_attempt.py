@@ -151,6 +151,16 @@ class IsolationTest(unittest.TestCase):
                     self.assertTrue(value["truncated"])
                     self.assertEqual(report.stat().st_mode & 0o777, 0o600)
 
+    def test_failed_command_receipt_is_memory_only_and_exception_text_stays_fixed(self):
+        code = "import sys;sys.stdout.write('fixture-private-receipt');sys.stderr.write('fixture-private-error');sys.exit(7)"
+        with self.assertRaises(attempt.CommandFailed) as caught:
+            attempt.command([sys.executable, '-c', code])
+        self.assertEqual(str(caught.exception), 'command_failed')
+        self.assertEqual(caught.exception.returncode, 7)
+        self.assertEqual(caught.exception.stdout, b'fixture-private-receipt')
+        self.assertNotIn('fixture-private', repr(caught.exception))
+        self.assertEqual(attempt.CommandFailed(1, b'x' * 1048577).stdout, b'')
+
     def test_interrupted_native_command_preserves_private_failure_and_does_not_follow_report_links(self):
         with tempfile.TemporaryDirectory() as temp:
             report = Path(temp) / "terraform-command-error.json"

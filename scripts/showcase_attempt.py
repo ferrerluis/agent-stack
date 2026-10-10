@@ -48,6 +48,14 @@ PROFILE = {
 }
 
 
+class CommandFailed(PolicyError):
+    """Selected callers may parse a bounded receipt in memory; never print it."""
+    def __init__(self, returncode, stdout):
+        super().__init__("command_failed")
+        self.returncode = returncode
+        self.stdout = stdout if len(stdout) <= 1048576 else b""
+
+
 def command(args, env=None, timeout=60, input=None, failure_report=None):
     """Capture output privately; kill the process group on every interruption.
 
@@ -92,7 +100,7 @@ def command(args, env=None, timeout=60, input=None, failure_report=None):
         raise
     if process.returncode:
         save_failure(output, errors, process.returncode)
-        raise PolicyError("command_failed")
+        raise CommandFailed(process.returncode, output)
     return output
 
 

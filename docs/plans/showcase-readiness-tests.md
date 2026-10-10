@@ -1,5 +1,19 @@
 # AgentStack showcase readiness: agent-first test plan
 
+## Current approved scope — 2026-10-10
+
+- The total cloud/model cap is **$35**. Necessary test and bug-fix attempts are authorized within that cap; run one owned deployment at a time and preserve every original cost and cleanup record.
+- **DigitalOcean:** require both native doctors green; independently correlated real API-key Codex and Claude Code file tasks as UID 1000; direct authenticated Tailscale browser access to both apps; reboot and persistence; an evidence-matched README and saved linked plans; independently verified cleanup.
+- **Hetzner, AWS and GCP:** require native VM provisioning, all three containers running without replacement/restart for at least 120 seconds, resolved contents and independently verified cleanup. Doctors, paid tasks, browser access and reboot are outside these light passes.
+- Keep normal deployment defaults unchanged. Builds remain on the owned paid VMs; no separate build/cache pipeline is part of this change.
+- A commit identifies proof provenance. Each named check carries only when its normalized per-cloud inputs, actual image/host/Hermes repair contents, verifier fingerprint, intact evidence and prerequisite proofs match. Generated trial names, keys and deadlines alone do not invalidate a proof. Every new attempt needs fresh native cleanup.
+
+The last qualified source, `e84b7ad`, passed 1,017 Python tests and 79 Terraform checks with zero skips. DigitalOcean trial `as7-do-1010-iter22` passed deployment, bootstrap, the real container suite, resolved contents, free Codex confinement, both native doctors and both real coding tasks, then failed the first browser check before reboot. Its native cloud/tailnet cleanup is independently verified; the cloud cost bound closed at $0.12, bringing the conservative total to $25.36/$35. Six provider request records were admitted for its two coding tasks; these use already-counted prepaid credits. They do not establish browser, reboot or completed acceptance.
+
+The goal and TODO #7 remain active. Network failure diagnostics and their local qualification are next, followed by the missing native proofs and final documentation review. The historical checkpoints below describe the original scope and intermediate facts; they do not override the current constraints above.
+
+## Historical checkpoints — superseded scope and intermediate results
+
 Current work: TODO #7 is active; all 24 live cells remain unverified. The $25 cap is unchanged and the request for $30 is withdrawn.
 
 - Confirmed prepaid purchases are $10.30; actual cloud bills remain unreconciled. The former $22.24 figure included conservative reservations, rather than confirmed spending.
@@ -19,7 +33,7 @@ Scope: [TODO #7](https://drive.google.com/file/d/1hCUJTwh9t1Sao1h2QNiYi6Eel0IbtG
 
 Commands explicitly marked proposed describe interfaces to implement; they are not available in this revision. Runtime CLI flags must be checked against the pinned image/tool versions before live use.
 
-## Required matrix
+## Original required matrix — superseded by the scope above
 
 | Cloud | Terraform launch + SSH | OpenClaw + doctor | Hermes + doctor | Claude Code execution | Codex execution | Tailscale access |
 |---|---|---|---|---|---|---|

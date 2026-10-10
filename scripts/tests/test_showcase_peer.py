@@ -197,7 +197,8 @@ class PeerTest(unittest.TestCase):
         output = io.StringIO(); stdin = Mock(buffer=io.BytesIO(json.dumps(payload()).encode()))
         with patch.object(sys, 'stdin', stdin), contextlib.redirect_stdout(output), patch.object(peer, 'run_probe', side_effect=RuntimeError(SECRET)), patch.object(peer.signal, 'signal'), patch.object(peer.signal, 'alarm') as alarm:
             self.assertEqual(peer.main(), 1)
-        self.assertEqual(json.loads(output.getvalue()), {'schema': 1, 'status': 'fail'})
+        self.assertEqual(json.loads(output.getvalue()), {'schema': 1, 'status': 'fail', 'diagnostic': {
+            'phase': 'request', 'reason': 'unexpected_error', 'exit_code': None}})
         self.assertEqual(alarm.call_args_list[-1].args, (0,))
 
     def test_actual_vm_collector_selects_credentials_and_refuses_replaced_container(self):
@@ -229,12 +230,49 @@ class PeerTest(unittest.TestCase):
             self.assertEqual(stopped.exception.code, 1 if replaced else 0)
             self.assertEqual(sum('dashboard' in args for args in calls), 1)
             if replaced:
-                self.assertEqual(result, {'schema': 1, 'status': 'fail'})
+                self.assertEqual(result, {'schema': 1, 'status': 'fail', 'diagnostic': {
+                    'phase': 'container_recheck', 'reason': 'collector_invalid', 'exit_code': None}})
                 self.assertNotIn(SECRET, printed.getvalue())
             else:
                 self.assertEqual(result['hermes_password'], SECRET)
                 self.assertEqual(result['boot_id'], BOOT)
                 self.assertNotIn('ignored', result)
+
+    def test_vm_failure_identifies_the_command_without_emitting_its_private_output(self):
+        printed = io.StringIO()
+        def run(args, **kwargs):
+            if 'dashboard' in args:
+                raise subprocess.CalledProcessError(7, args, output=SECRET.encode(), stderr=PRIVATE.encode())
+            if args[1] == 'inspect': return Mock(stdout=b'{"Running":true,"Restarting":false}')
+            return Mock(stdout=b'a' * 64)
+        with (patch('subprocess.run', side_effect=run), patch('os.geteuid', return_value=0),
+              patch.object(signal, 'signal'), patch.object(signal, 'alarm'),
+              contextlib.redirect_stdout(printed), self.assertRaises(SystemExit) as stopped):
+            exec(compile(peer.VM_SOURCE, '<vm-collector-fixture>', 'exec'), {})
+        self.assertEqual(stopped.exception.code, 1)
+        self.assertEqual(peer.failure_details(printed.getvalue()), {
+            'phase': 'dashboard_handoff', 'reason': 'child_exit', 'exit_code': 7})
+        self.assertNotIn(SECRET, printed.getvalue()); self.assertNotIn(PRIVATE, printed.getvalue())
+
+    def test_peer_failure_and_parser_preserve_only_fixed_diagnostics(self):
+        printed = io.StringIO()
+        def fail(value, diagnostic):
+            diagnostic['phase'] = 'workspace_ssh'
+            raise RuntimeError(SECRET + PRIVATE)
+        with (patch.object(peer, 'run_probe', side_effect=fail),
+              patch.object(sys, 'stdin', Mock(buffer=io.BytesIO(json.dumps(payload()).encode()))),
+              patch.object(signal, 'signal'), patch.object(signal, 'alarm'), contextlib.redirect_stdout(printed)):
+            self.assertEqual(peer.main(), 1)
+        value = json.loads(printed.getvalue())
+        self.assertEqual(peer.failure_details(printed.getvalue()), {
+            'phase': 'workspace_ssh', 'reason': 'unexpected_error', 'exit_code': None})
+        self.assertNotIn(SECRET, printed.getvalue()); self.assertNotIn(PRIVATE, printed.getvalue())
+        for change in ({'schema': True}, {'status': 'pass'}, {'extra': SECRET},
+                       {'diagnostic': value['diagnostic'] | {'reason': SECRET}},
+                       {'diagnostic': value['diagnostic'] | {'phase': PRIVATE}},
+                       {'diagnostic': value['diagnostic'] | {'exit_code': True}},
+                       {'diagnostic': value['diagnostic'] | {'extra': SECRET}}):
+            self.assertIsNone(peer.failure_details(json.dumps(value | change)))
 
 
 if __name__ == '__main__':

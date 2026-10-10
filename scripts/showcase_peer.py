@@ -59,6 +59,7 @@ def run(*args):
     result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,check=True,timeout=35).stdout
     assert len(result)<=65536
     return result
+phase='container_state'
 try:
     assert os.geteuid()==0
     compose=['/usr/bin/docker','compose','-f','/opt/agent-stack/docker-compose.yml']
@@ -69,23 +70,33 @@ try:
         state=json.loads(run('/usr/bin/docker','inspect','--format','{{json .State}}',identifier))
         assert state.get('Running') is True and state.get('Restarting') is False
         ids[service]=identifier
+    phase='dashboard_handoff'
     handoff=json.loads(run('/usr/bin/docker','exec',ids['openclaw'],'openclaw','dashboard','--json'),object_pairs_hook=pairs)
     assert isinstance(handoff,dict) and isinstance(handoff.get('browserUrl'),str)
+    phase='hermes_credentials'
     auth=json.loads(run('/usr/bin/docker','exec',ids['hermes'],'/opt/hermes/.venv/bin/python','-c',
         'import json,os; print(json.dumps({k:os.environ[k] for k in ("HERMES_DASHBOARD_BASIC_AUTH_USERNAME","HERMES_DASHBOARD_BASIC_AUTH_PASSWORD")}))'),object_pairs_hook=pairs)
+    phase='ssh_host_keys'
     host=pathlib.Path('/etc/ssh/ssh_host_ed25519_key.pub').read_text().strip()
     workspace=run('/usr/bin/docker','exec',ids['workspace'],'/usr/bin/cat',
         '/var/lib/agent-stack-workspace/ssh-host-keys/ssh_host_ed25519_key.pub').decode().strip()
+    phase='container_recheck'
     for service,identifier in ids.items():
         assert run(*compose,'ps','-q',service).decode().strip()==identifier
         assert json.loads(run('/usr/bin/docker','inspect','--format','{{json .State}}',identifier)).get('Running') is True
+    phase='boot_identity'
     report={'schema':1,'status':'pass','browser_url':handoff['browserUrl'],
         'hermes_username':auth['HERMES_DASHBOARD_BASIC_AUTH_USERNAME'],
         'hermes_password':auth['HERMES_DASHBOARD_BASIC_AUTH_PASSWORD'],
         'host_public_key':host,'workspace_public_key':workspace,
         'boot_id':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
-except Exception:
-    report={'schema':1,'status':'fail'}
+except Exception as error:
+    reason='collector_invalid'
+    code=None
+    if isinstance(error,subprocess.CalledProcessError):
+        reason='child_exit'; code=error.returncode
+    elif isinstance(error,subprocess.TimeoutExpired):reason='child_timeout'
+    report={'schema':1,'status':'fail','diagnostic':{'phase':phase,'reason':reason,'exit_code':code}}
 print(json.dumps(report))
 sys.exit(0 if report['status']=='pass' else 1)
 """
@@ -180,14 +191,45 @@ def payload_valid(payload):
     need(len(json.dumps(payload).encode()) <= 4096, 'peer_request_too_large')
 
 
-def run_probe(payload, execute=invoke, resolve=None, factory=None, now=time.time):
+FAILURE_PHASES = frozenset({'container_state', 'dashboard_handoff', 'hermes_credentials', 'ssh_host_keys',
+    'container_recheck', 'boot_identity', 'request', 'peer_identity', 'host_ssh', 'workspace_ssh', 'browser_apps'})
+FAILURE_REASONS = frozenset({'collector_invalid', 'child_exit', 'child_timeout', 'unexpected_error',
+    'peer_not_ready', 'runner_peer_mismatch', 'target_peer_unverified', 'peer_traffic_unverified',
+    'tailnet_dns_unverified', 'peer_ssh_proof_invalid', 'second_peer_ssh_source_unverified',
+    'probe_command_failed', 'probe_command_timeout', 'peer_browser_dependency_missing',
+    'openclaw_document_failed', 'openclaw_session_unverified', 'openclaw_authenticated_read_unverified',
+    'hermes_login_failed', 'hermes_anonymous_access_not_denied', 'hermes_login_form_missing',
+    'hermes_dashboard_not_rendered', 'hermes_login_not_observed', 'browser_route_not_verified',
+    'browser_websocket_routing_required', 'peer_deadline_exceeded'})
+
+
+def failure_details(raw):
+    """Accept only a fixed failure schema, never arbitrary child output."""
+    try:
+        value = strict_json(raw)
+        need(isinstance(value, dict) and set(value) == {'schema', 'status', 'diagnostic'}
+             and type(value['schema']) is int and value['schema'] == 1 and value['status'] == 'fail')
+        row = value['diagnostic']
+        need(isinstance(row, dict) and set(row) == {'phase', 'reason', 'exit_code'}
+             and row['phase'] in FAILURE_PHASES and row['reason'] in FAILURE_REASONS
+             and (row['exit_code'] is None or type(row['exit_code']) is int and -255 <= row['exit_code'] <= 255))
+        return dict(row)
+    except (ProbeError, TypeError, KeyError):
+        return None
+
+
+def run_probe(payload, execute=invoke, resolve=None, factory=None, now=time.time, diagnostic=None):
+    if diagnostic is None: diagnostic = {}
+    diagnostic['phase'] = 'request'
     payload_valid(payload)
     started = now()
     request, credentials = payload['browser'], payload['ssh']
     kwargs = {} if resolve is None else {'resolve': resolve}
+    diagnostic['phase'] = 'peer_identity'
     peer = browser.peer_check(request, lambda args, timeout: execute(args, timeout=timeout, env=ENV), **kwargs)
     reports = {}
     for role, port, user in (('host', 22, 'admin'), ('workspace', 2222, 'user')):
+        diagnostic['phase'] = role + '_ssh'
         host_key = public_key(credentials[role + '_public_key'])
         names = peer['address'] if port == 22 else '[' + peer['address'] + ']:' + str(port)
         with memory_file(key_bytes(credentials['private_key'])) as key, memory_file((names + ' ' + host_key + '\n').encode()) as known:
@@ -195,6 +237,7 @@ def run_probe(payload, execute=invoke, resolve=None, factory=None, now=time.time
                 shlex.join(['python3', '-I', '-c', SSH_PROOF, role, credentials['nonce']]))
             raw = strict_json(execute(args, input=None, env=ENV, timeout=30))
         reports[role] = validate_ssh(raw, role, credentials['nonce'], credentials['boot_id'], peer['runner_addresses'])
+    diagnostic['phase'] = 'browser_apps'
     if factory is None:
         try:
             from playwright.sync_api import sync_playwright
@@ -269,14 +312,19 @@ def main():
     signal.signal(signal.SIGALRM, stop)
     signal.signal(signal.SIGTERM, stop)
     signal.alarm(240)
+    diagnostic = {'phase': 'request'}
     try:
         payload = strict_json(sys.stdin.buffer.read(4097))
-        proof = run_probe(payload)
+        proof = run_probe(payload, diagnostic=diagnostic)
         validate_proof(proof, payload)
         print(json.dumps(proof, sort_keys=True))
         return 0
-    except (Exception, KeyboardInterrupt):
-        print('{"schema":1,"status":"fail"}')
+    except (Exception, KeyboardInterrupt) as error:
+        reason = str(error) if isinstance(error, ProbeError) and str(error) in FAILURE_REASONS else 'unexpected_error'
+        code = getattr(error, 'returncode', None)
+        if type(code) is not int or not -255 <= code <= 255: code = None
+        print(json.dumps({'schema': 1, 'status': 'fail', 'diagnostic': {
+            'phase': diagnostic['phase'], 'reason': reason, 'exit_code': code}}))
         return 1
     finally:
         signal.alarm(0)
