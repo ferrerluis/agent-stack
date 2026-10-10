@@ -24,7 +24,17 @@ REQUEST = r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}"
 READ_RPC = frozenset({"health", "status", "config.get", "config.schema", "agents.list", "models.list",
     "sessions.list", "sessions.resolve", "sessions.preview", "chat.history", "channels.status",
     "system-presence", "usage.status", "usage.cost", "skills.status", "cron.status", "cron.list",
-    "node.list", "device.pair.list", "exec.approvals.get", "logs.tail", "agents.files.list"})
+    "node.list", "device.pair.list", "exec.approvals.get", "logs.tail", "agents.files.list",
+    "users.self", "users.prefs.get", "update.status", "exec.approval.list", "plugin.approval.list",
+    "openclaw.approval.list", "agent.identity.get", "models.authStatus", "sessions.describe",
+    "question.list", "talk.catalog", "chat.startup", "chat.metadata", "progressCard.get",
+    "sessions.branches.list", "sessions.companion.state"})
+# The pinned UI subscribes and reports its own visibility/activity on connect.
+# These cannot generate output or change app settings, and are not read proof.
+UI_ACTIVITY_RPC = frozenset({"sessions.subscribe", "presence.activity",
+    "sessions.observer.visibility", "sessions.messages.subscribe"})
+EMPTY_PARAMS_RPC = frozenset({"sessions.subscribe", "presence.activity", "users.self", "update.status",
+    "exec.approval.list", "plugin.approval.list", "openclaw.approval.list", "question.list", "talk.catalog"})
 OPENCLAW_READY = """() => {
   const app = document.querySelector('openclaw-app');
   const shell = document.querySelector('openclaw-app-shell');
@@ -185,9 +195,30 @@ class NetworkGuard:
 
         def send(message):
             try:
+                if self.failed:
+                    return
                 data = strict_json(message)
                 need(isinstance(data, dict) and data.get("type") == "req" and isinstance(data.get("id"), str)
-                     and data.get("method") in READ_RPC | {"connect"})
+                     and data.get("method") in READ_RPC | UI_ACTIVITY_RPC | {"connect"})
+                method, params = data["method"], data.get("params")
+                if method in EMPTY_PARAMS_RPC:
+                    need(params == {})  # In particular, no update refreshCheckout flag.
+                if method in UI_ACTIVITY_RPC:
+                    need(self.hello and isinstance(params, dict))
+                    if method == "sessions.observer.visibility":
+                        need(set(params) == {"visible"} and type(params["visible"]) is bool)
+                    elif method == "sessions.messages.subscribe":
+                        need({"key", "subscriptionId"} <= set(params) <= {"key", "subscriptionId", "includeApprovals"}
+                             and all(isinstance(params[key], str) and 0 < len(params[key]) <= limit
+                                     and not re.search(r"[\x00-\x1f\x7f]", params[key])
+                                     for key, limit in (("key", 1024), ("subscriptionId", 256))))
+                        if "includeApprovals" in params:
+                            need(type(params["includeApprovals"]) is bool)
+                if method == "models.authStatus":
+                    need(isinstance(params, dict) and set(params) <= {"agentId"}
+                         and ("agentId" not in params or isinstance(params["agentId"], str)
+                              and 0 < len(params["agentId"]) <= 256
+                              and not re.search(r"[\x00-\x1f\x7f]", params["agentId"])))
                 need(data["id"] not in pending and len(pending) < 256)
                 pending[data["id"]] = data["method"]
                 server.send(message)  # Forward unchanged to the real gateway; never synthesize a reply.

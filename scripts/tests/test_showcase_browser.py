@@ -240,10 +240,76 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(len(ws.server.sent), 2); self.assertEqual(len(ws.sent), 2)
         self.assertEqual(json.loads(ws.server.sent[1])['method'], 'agents.list')
 
+    def connect(self, ws):
+        ws.emit({"type": "req", "id": "connect1", "method": "connect", "params": {"role": "operator"}})
+        ws.server.emit({"type": "res", "id": "connect1", "ok": True, "payload": {"type": "hello-ok",
+            "auth": {"role": "operator", "scopes": ["operator.read"]}}})
+
+    def test_pinned_ui_startup_reads_and_subscriptions_retain_real_connection(self):
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+        guard.websocket(ws); self.connect(ws)
+        calls = [('sessions.subscribe', {}), ('sessions.list', {"limit": 50}), ('config.get', {}),
+            ('update.status', {}), ('presence.activity', {}), ('users.self', {}), ('agents.list', {}),
+            ('exec.approval.list', {}), ('plugin.approval.list', {}), ('openclaw.approval.list', {}),
+            ('sessions.observer.visibility', {"visible": True}), ('users.prefs.get', {"keys": ["ui.theme"]}),
+            ('agent.identity.get', {"agentId": "main"}), ('models.authStatus', {"agentId": "main"}),
+            ('sessions.describe', {"key": "agent:main:main"}), ('question.list', {}), ('talk.catalog', {}),
+            ('sessions.messages.subscribe', {"key": "agent:main:main", "subscriptionId": "fixture-subscription", "includeApprovals": True}),
+            ('chat.startup', {"sessionKey": "agent:main:main", "limit": 50, "maxBytes": 65536}),
+            ('chat.metadata', {"sessionKey": "agent:main:main", "agentId": "main"}),
+            ('progressCard.get', {"sessionKey": "agent:main:main"}),
+            ('sessions.branches.list', {"sessionKey": "agent:main:main"}),
+            ('sessions.companion.state', {"sessionKey": "agent:main:main", "agentId": "main"})]
+        for index, (method, params) in enumerate(calls):
+            request = {"type": "req", "id": "ui" + str(index), "method": method, "params": params}
+            ws.emit(request)
+            self.assertFalse(guard.failed, method)
+            self.assertEqual(json.loads(ws.server.sent[-1]), request)
+            reply = {"type": "res", "id": request["id"], "ok": True, "payload": {}}
+            ws.server.emit(reply)
+            self.assertEqual(json.loads(ws.sent[-1]), reply)
+        self.assertTrue(guard.hello and guard.read_rpc); self.assertFalse(ws.closed)
+
+    def test_activity_and_subscriptions_alone_are_not_authenticated_data_reads(self):
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+        guard.websocket(ws); self.connect(ws)
+        for index, (method, params) in enumerate((('sessions.subscribe', {}), ('presence.activity', {}),
+                ('sessions.observer.visibility', {"visible": True}),
+                ('sessions.messages.subscribe', {"key": "agent:main:main", "subscriptionId": "fixture", "includeApprovals": True}))):
+            ws.emit({"type": "req", "id": str(index), "method": method, "params": params})
+            ws.server.emit({"type": "res", "id": str(index), "ok": True, "payload": {}})
+        self.assertTrue(guard.hello); self.assertFalse(guard.read_rpc or guard.failed)
+
+    def test_startup_refresh_flags_and_malformed_activity_are_not_forwarded(self):
+        calls = [('update.status', {"refreshCheckout": True}), ('users.self', {"extra": True}),
+            ('presence.activity', {"wake": True}), ('sessions.subscribe', {"sessionKey": "other"}),
+            ('sessions.observer.visibility', {"visible": 1}), ('sessions.observer.visibility', {"visible": True, "sessionKey": "other"}),
+            ('sessions.messages.subscribe', {"key": "agent:main:main"}),
+            ('sessions.messages.subscribe', {"key": "agent:main:main", "subscriptionId": "fixture", "includeApprovals": 1}),
+            ('sessions.messages.subscribe', {"key": "agent:main:main", "subscriptionId": "fixture", "run": True}),
+            ('models.authStatus', {"agentId": "main", "refresh": True})]
+        for method, params in calls:
+            with self.subTest(method=method, params=params):
+                guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+                guard.websocket(ws); self.connect(ws); before = len(ws.server.sent)
+                ws.emit({"type": "req", "id": "bad", "method": method, "params": params})
+                self.assertTrue(guard.failed and ws.closed); self.assertEqual(len(ws.server.sent), before)
+
+    def test_activity_requires_real_hello_and_failure_stops_queued_reads(self):
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET); guard.websocket(ws)
+        ws.emit({"type": "req", "id": "early", "method": "sessions.subscribe", "params": {}})
+        self.assertTrue(guard.failed); self.assertFalse(ws.server.sent)
+        ws.emit({"type": "req", "id": "queued", "method": "agents.list", "params": {}})
+        self.assertFalse(ws.server.sent)
+
     def test_paid_or_unknown_or_malformed_socket_request_never_forwarded(self):
         for message in ({"type": "req", "id": "1", "method": "agent"}, {"type": "req", "id": "1", "method": "chat.send"},
             {"type": "req", "id": "1", "method": "cron.add"}, {"type": "req", "id": "1", "method": []},
-            {"type": "req", "id": "1", "method": "config.patch"}, 'not-json', '{"type":"req","type":"req"}'):
+            {"type": "req", "id": "1", "method": "config.patch"},
+            *({"type": "req", "id": "1", "method": method, "params": {}} for method in
+              ('update.run', 'models.probe', 'users.prefs.set', 'approval.resolve', 'talk.voice.complete',
+               'sessions.companion.ask', 'sessions.branches.switch', 'progressCard.refresh')),
+            'not-json', '{"type":"req","type":"req"}'):
             guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET); guard.websocket(ws); ws.emit(message)
             self.assertTrue(guard.failed); self.assertEqual(ws.server.sent, []); self.assertTrue(ws.closed)
 
