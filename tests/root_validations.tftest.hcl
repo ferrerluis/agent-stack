@@ -85,6 +85,10 @@ variables {
 run "workspace_confinement_preserves_ordinary_defaults" {
   command = plan
   assert {
+    condition     = jsondecode(nonsensitive(local.runtime_openclaw_seed)).trusted_loopback_proxies_enabled == false
+    error_message = "Ordinary deployments must not acquire proxy trust without the host-network opt-in."
+  }
+  assert {
     condition     = !var.workspace_codex_sandbox_enabled && !strcontains(local.runtime_docker_compose, "workspace-seccomp.json") && !strcontains(local.runtime_agent_stack_service, "workspace-sandbox.py")
     error_message = "Scoped Codex confinement must remain an explicit opt-in."
   }
@@ -200,6 +204,10 @@ run "accepts_openclaw_host_network_with_loopback_native_tailnet" {
   assert {
     condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=loopback") && strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "network_mode: \"host\"") && !strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "ports:")
     error_message = "Opt-in OpenClaw host networking must bind loopback without Docker port publication."
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(local.runtime_openclaw_seed)).trusted_loopback_proxies_enabled == true
+    error_message = "Opt-in host networking must seed trust for the loopback Tailscale proxy."
   }
 }
 

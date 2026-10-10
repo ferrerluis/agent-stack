@@ -1215,7 +1215,7 @@ refresh_openclaw_gateway_config() {
   gateway_token="$(env_value OPENCLAW_GATEWAY_TOKEN)"
   local tmp_config
   tmp_config="$(mktemp)"
-  if jq --argjson origins "$origins_json" --arg gateway_token "$gateway_token" --arg bind "${openclaw_gateway_bind}" '.gateway = ((.gateway // {}) + {bind:$bind}) | .gateway.auth = ((.gateway.auth // {}) + { mode: "token", token: $gateway_token }) | .gateway.controlUi = ((.gateway.controlUi // {}) + { allowedOrigins: $origins })' "$OPENCLAW_CONFIG" > "$tmp_config"; then
+  if jq --argjson origins "$origins_json" --arg gateway_token "$gateway_token" --arg bind "${openclaw_gateway_bind}" --argjson trust_loopback "${openclaw_host_network_enabled}" '.gateway = ((.gateway // {}) + {bind:$bind}) | .gateway.auth = ((.gateway.auth // {}) + { mode: "token", token: $gateway_token }) | .gateway.controlUi = ((.gateway.controlUi // {}) + { allowedOrigins: $origins }) | if $trust_loopback then .gateway.trustedProxies = (((.gateway.trustedProxies // []) + ["127.0.0.1", "::1"]) | unique) else . end' "$OPENCLAW_CONFIG" > "$tmp_config"; then
     if ! cmp -s "$tmp_config" "$OPENCLAW_CONFIG"; then
       mv "$tmp_config" "$OPENCLAW_CONFIG"
       chown 1000:1000 "$OPENCLAW_CONFIG" || true

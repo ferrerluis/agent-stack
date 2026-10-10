@@ -20,10 +20,15 @@ def seed_config(data_dir, seed):
         raise ValueError("invalid gateway seed or data directory")
     bind = seed.get("gateway_bind")
     token = seed.get("gateway_token")
+    trust_loopback = seed.get("trusted_loopback_proxies_enabled", False)
     if bind not in ("lan", "loopback") or not isinstance(token, str) or not token.strip():
         raise ValueError("invalid gateway seed")
+    if type(trust_loopback) is not bool or (trust_loopback and bind != "loopback"):
+        raise ValueError("invalid loopback proxy seed")
     config = {"gateway": {"mode": "local", "bind": bind, "auth": {"mode": "token", "token": token},
                           "controlUi": {"allowedOrigins": ["http://localhost:18789", "http://127.0.0.1:18789"]}}}
+    if trust_loopback:
+        config["gateway"]["trustedProxies"] = ["127.0.0.1", "::1"]
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".openclaw-", delete=False) as file:
         temporary = Path(file.name)

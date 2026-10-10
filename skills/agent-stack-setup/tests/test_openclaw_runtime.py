@@ -40,6 +40,33 @@ class OpenClawSeedTest(unittest.TestCase):
         self.assertFalse(config.seed_config(self.root, None))
         self.assertEqual(self.file.read_bytes(), original)
 
+    def test_host_loopback_proxy_seed_retains_token_auth_and_private_owner(self):
+        seed = {**self.seed, "gateway_bind": "loopback", "trusted_loopback_proxies_enabled": True}
+        self.assertTrue(config.seed_config(self.root, seed))
+        gateway = json.loads(self.file.read_text())["gateway"]
+        self.assertEqual(gateway["trustedProxies"], ["127.0.0.1", "::1"])
+        self.assertEqual(gateway["auth"], {"mode": "token", "token": seed["gateway_token"]})
+        self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o600)
+
+    def test_loopback_bind_does_not_enable_proxy_trust_by_default(self):
+        for enabled in (None, False):
+            with self.subTest(enabled=enabled):
+                seed = {**self.seed, "gateway_bind": "loopback"}
+                if enabled is not None:
+                    seed["trusted_loopback_proxies_enabled"] = enabled
+                self.assertTrue(config.seed_config(self.root, seed))
+                self.assertNotIn("trustedProxies", json.loads(self.file.read_text())["gateway"])
+                self.file.unlink()
+
+    def test_invalid_proxy_seed_does_not_create_config(self):
+        seeds = [{**self.seed, "trusted_loopback_proxies_enabled": True}]
+        seeds += [{**self.seed, "gateway_bind": "loopback", "trusted_loopback_proxies_enabled": value}
+                  for value in (None, 1, "true", [])]
+        for seed in seeds:
+            with self.subTest(seed=seed), self.assertRaises(ValueError):
+                config.seed_config(self.root, seed)
+            self.assertFalse(self.file.exists())
+
     def test_symlink_and_nonfile_are_refused_without_touching_target(self):
         target = self.root / "operator-config"
         target.write_text("operator")
@@ -76,6 +103,54 @@ class OpenClawSeedTest(unittest.TestCase):
 class OpenClawInstallerTest(unittest.TestCase):
     def source(self):
         return (ROOT / "modules/common/templates/runtime/install-agent-stack.sh.tpl").read_text()
+
+    def refresh_config(self, document, host_network):
+        source = self.source()
+        block = source[source.index("refresh_openclaw_gateway_config() {"):source.index("restart_agent_stack_for_config() {")]
+        values = {"tailscale_enabled": "true", "project_name": "fixture-stack", "openclaw_domain": "",
+                  "openclaw_gateway_bind": "loopback" if host_network else "lan",
+                  "openclaw_host_network_enabled": "true" if host_network else "false"}
+        block = re.sub(r"(?<!\$)\$\{([a-z_]+)\}", lambda m: values[m[1]], block).replace("$${", "${")
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "openclaw.json"
+            original = json.dumps(document).encode()
+            target.write_bytes(original)
+            mocks = ('wait_for_openclaw_config() { return 0; }; '
+                     'env_value() { printf "%s" "fixture-gateway-token"; }; '
+                     'mark_openclaw_restart_needed() { printf "%s" "restart" > "$restart_marker"; }; '
+                     'chown() { :; };\n')
+            result = subprocess.run(["bash", "-eu", "-c", mocks + block + '\nrefresh_openclaw_gateway_config fixture.tail.test\n'],
+                env={**os.environ, "TMPDIR": temp, "OPENCLAW_ENABLED": "true", "OPENCLAW_CONFIG": str(target),
+                     "restart_marker": str(Path(temp) / "restart")}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("fixture-gateway-token", result.stdout + result.stderr)
+            return json.loads(target.read_text()), target.read_bytes() == original, (Path(temp) / "restart").exists()
+
+    def test_host_refresh_adds_only_loopback_and_preserves_operator_proxy_and_settings(self):
+        document = {"agents": {"default": "operator"}, "gateway": {"trustedProxies": ["192.0.2.9", "127.0.0.1"],
+                    "auth": {"mode": "token", "token": "old", "operatorSetting": True}}}
+        result, unchanged, restarted = self.refresh_config(document, True)
+        self.assertEqual(result["gateway"]["trustedProxies"], ["127.0.0.1", "192.0.2.9", "::1"])
+        self.assertEqual(result["gateway"]["auth"], {"mode": "token", "token": "fixture-gateway-token", "operatorSetting": True})
+        self.assertEqual(result["agents"], document["agents"])
+        self.assertFalse(unchanged)
+        self.assertTrue(restarted)
+
+    def test_default_refresh_preserves_existing_trust_and_does_not_add_trust(self):
+        for gateway in ({}, {"trustedProxies": ["192.0.2.9"]}):
+            with self.subTest(gateway=gateway):
+                result, _, _ = self.refresh_config({"gateway": gateway}, False)
+                self.assertEqual(result["gateway"].get("trustedProxies"), gateway.get("trustedProxies"))
+                self.assertEqual(result["gateway"]["auth"]["mode"], "token")
+
+    def test_malformed_operator_proxy_list_is_not_overwritten(self):
+        for malformed in ("192.0.2.9", {"proxy": "192.0.2.9"}):
+            with self.subTest(malformed=malformed):
+                document = {"gateway": {"trustedProxies": malformed, "auth": {"mode": "token", "token": "operator"}}}
+                result, unchanged, restarted = self.refresh_config(document, True)
+                self.assertEqual(result, document)
+                self.assertTrue(unchanged)
+                self.assertFalse(restarted)
 
     def test_auto_manages_fresh_seed_and_preserves_existing_config(self):
         source = self.source()

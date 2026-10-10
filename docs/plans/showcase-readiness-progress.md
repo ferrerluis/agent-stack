@@ -1,5 +1,23 @@
 # TODO #7 implementation checkpoint
 
+## Current approved scope — 2026-10-10
+
+- The total cloud/model cap is **$35**. Necessary test and bug-fix attempts are authorized within that cap; run one owned deployment at a time and preserve every original cost and cleanup record.
+- **DigitalOcean:** require both native doctors green; independently correlated real API-key Codex and Claude Code file tasks as UID 1000; direct authenticated Tailscale browser access to both apps; reboot and persistence; an evidence-matched README and saved linked plans; independently verified cleanup.
+- **Hetzner, AWS and GCP:** require native VM provisioning, all three containers running without replacement/restart for at least 120 seconds, resolved contents and independently verified cleanup. Doctors, paid tasks, browser access and reboot are outside these light passes.
+- Keep normal deployment defaults unchanged. Builds remain on the owned paid VMs; no separate build/cache pipeline is part of this change.
+- A commit identifies proof provenance. Each named check carries only when its normalized per-cloud inputs, actual image/host/Hermes repair contents, verifier fingerprint, intact evidence and prerequisite proofs match. Generated trial names, keys and deadlines alone do not invalidate a proof. Every new attempt needs fresh native cleanup.
+
+The collector repair at `2e36a7d` passed all 1,025 Python tests and 79 Terraform checks with zero skips. DO25 then passed the real container suite, both native doctors and the measured workspace SSH gate; its first browser check failed before any paid task. The doctors carried only against the same observed installed contents and unchanged verifier at that source.
+
+DO26 independently reproduced the actual failure before cleanup: OpenClaw returned HTTP 403 with the native `proxy_attribution_required` response (212 bytes, SHA-256 `391ca996f6a3f001513a33a9d423ccbccf24c49e52fe558256e1afe5a1872765`), while Hermes returned HTTP 200. A read-only replay of the installed OpenClaw module rejected unconfigured proxy headers, accepted only the configured loopback proxy and still rejected a Docker-network proxy. No VM configuration or model request was changed by the diagnosis.
+
+The repair adds only `127.0.0.1` and `::1` to trusted proxies when the existing OpenClaw host-network option is enabled. It retains token authentication and preserves existing operator settings; defaults remain unchanged. Thirteen focused seed/actual-installer tests pass, but the repaired source still needs full source-bound local qualification and fresh native acceptance. The runtime input change requires a new affected baseline; old evidence is retained.
+
+All 48 paid trials have independently verified cleanup. The conservative cloud/model bound is **$25.80/$35**, leaving **$9.20**; DO26 closed at $0.11 before any paid request. Fourteen historical provider request records use already-counted prepaid credits. There is no active paid trial. Browser verification precedes paid tasks. TODO #7 and the goal remain active.
+
+## Historical checkpoints — superseded scope and intermediate results
+
 Current work: TODO #7 is active; all 24 live cells remain unverified. The $25 cap is unchanged and the request for $30 is withdrawn.
 
 - Confirmed prepaid purchases are $10.30; actual cloud bills remain unreconciled. The former $22.24 figure included conservative reservations, rather than confirmed spending.
