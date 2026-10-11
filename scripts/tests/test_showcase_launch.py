@@ -27,6 +27,64 @@ class LaunchTest(unittest.TestCase):
             prepared={'source_revision':'a'*40},record=lambda:{'plan_sha256':'b'*64},now=lambda:1000,
             config={'attempt_seconds':10800})
 
+    def local_attempt(self):
+        self.a.run = self.run / 'batch/attempts/as7-fixture01'
+        self.a.run.mkdir(parents=True)
+        self.a.run.parent.parent.chmod(0o700)
+        self.a.terraform = '/fixture/terraform'
+        source = self.run / 'fixture.py'
+        source.write_text('verified source\n')
+        prepared = {'source_revision': 'a'*40,
+                    'source_files': {'fixture.py': launch.hashlib.sha256(source.read_bytes()).hexdigest()}}
+        return prepared
+
+    def test_local_timeout_retains_output_without_issuing_a_pass(self):
+        prepared = self.local_attempt()
+        error = launch.subprocess.TimeoutExpired('fixture', 1800,
+                                                 output=b'completed phases\n', stderr=b'timeout detail\n')
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', side_effect=error):
+            with self.assertRaisesRegex(PolicyError, '^local_tests_timed_out$'):
+                launch.local_checks(self.a)
+        log = self.run / 'batch/local-checks.log'
+        self.assertEqual(log.read_bytes(), b'completed phases\ntimeout detail\n')
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.run / 'batch/local-checks.json').exists())
+
+    def test_failed_local_suite_retains_output_without_issuing_a_pass(self):
+        prepared = self.local_attempt()
+        result = SimpleNamespace(returncode=1, stdout=b'earlier phase passed\n', stderr=b'failure\n')
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', return_value=result):
+            with self.assertRaisesRegex(PolicyError, '^local_tests_failed$'):
+                launch.local_checks(self.a)
+        self.assertEqual((self.run / 'batch/local-checks.log').read_bytes(), result.stdout + result.stderr)
+        self.assertFalse((self.run / 'batch/local-checks.json').exists())
+
+    def test_successful_local_suite_is_cached_only_with_matching_source_and_output(self):
+        prepared = self.local_attempt()
+        result = SimpleNamespace(returncode=0, stdout=b'all phases passed\n', stderr=b'')
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', return_value=result) as run:
+            first = launch.local_checks(self.a)
+            self.assertEqual(first['status'], 'pass')
+            self.assertEqual(launch.local_checks(self.a), first)
+            run.assert_called_once()
+            (self.run / 'batch/local-checks.log').write_bytes(b'changed output')
+            launch.local_checks(self.a)
+            self.assertEqual(run.call_count, 2)
+
+    def test_changed_source_after_local_suite_cannot_issue_a_pass(self):
+        prepared = self.local_attempt()
+        def run(*args, **kwargs):
+            (self.run / 'fixture.py').write_text('changed source\n')
+            return SimpleNamespace(returncode=0, stdout=b'all phases passed\n', stderr=b'')
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', side_effect=run):
+            with self.assertRaisesRegex(PolicyError, '^local_test_source_changed$'):
+                launch.local_checks(self.a)
+        self.assertFalse((self.run / 'batch/local-checks.json').exists())
+
     def test_light_launch_skips_model_reads_extra_builds_and_second_peer_but_keeps_watchdog(self):
         self.a.config = funded() | {"acceptance_modes": dict(ACCEPTANCE_MODES)}
         self.a.resource_unit_prices = Mock(return_value={"native": "measured"})

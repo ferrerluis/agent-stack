@@ -60,9 +60,16 @@ def local_checks(attempt):
     if mirror_config.is_file():
         env["TF_CLI_CONFIG_FILE"] = str(mirror_config)
     env["PATH"] = str(Path(attempt.terraform).absolute().parent) + os.pathsep + env.get("PATH", "/usr/bin:/bin")
-    result = subprocess.run([str(ROOT / "scripts/test-local.sh")], env=env, capture_output=True, timeout=900)
-    output = result.stdout + result.stderr
     log = attempt.run.parent.parent / "local-checks.log"
+    try:
+        result = subprocess.run([str(ROOT / "scripts/test-local.sh")], env=env, capture_output=True, timeout=1800)
+    except subprocess.TimeoutExpired as error:
+        # Keep completed phases available for diagnosis, but never issue a pass
+        # receipt for a suite that did not finish. This is local fixture time;
+        # the separately bounded cloud lifetime is unchanged.
+        log.write_bytes((error.stdout or b"") + (error.stderr or b"")); log.chmod(0o600)
+        raise PolicyError("local_tests_timed_out") from None
+    output = result.stdout + result.stderr
     log.write_bytes(output); log.chmod(0o600)
     require(result.returncode == 0, "local_tests_failed")
     # Refuse any mismatch between the tested checkout and committed attempt.
