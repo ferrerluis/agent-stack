@@ -391,6 +391,26 @@ class RouteTest(unittest.TestCase):
                 self.assertTrue(guard.failed and ws.closed)
                 self.assertEqual(len(ws.server.sent), before)
 
+    def test_authenticated_mentions_startup_read_preserves_notification_state(self):
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+        guard.websocket(ws); self.connect(ws)
+        request = {'type': 'req', 'id': 'inbox', 'method': 'mentions.list', 'params': {}}
+        ws.emit(request)
+        self.assertFalse(guard.failed)
+        self.assertEqual(json.loads(ws.server.sent[-1]), request)
+        ws.server.emit({'type': 'res', 'id': 'inbox', 'ok': True,
+                        'payload': {'items': [], 'revision': 0, 'gatewayInstanceId': 'fixture'}})
+        self.assertFalse(guard.failed)
+        for method, params in [('mentions.list', {'refresh': True}),
+                               ('mentions.list', None), ('mentions.list', {'ids': ['notification']}),
+                               ('mentions.dismiss', {}), ('mentions.dismiss', {'ids': ['notification']})]:
+            with self.subTest(method=method, params=params):
+                guarded = probe.NetworkGuard(TARGET, 'openclaw'); socket = FakeWS('wss://' + TARGET)
+                guarded.websocket(socket); self.connect(socket); before = len(socket.server.sent)
+                socket.emit({'type': 'req', 'id': 'bad', 'method': method, 'params': params})
+                self.assertTrue(guarded.failed and socket.closed)
+                self.assertEqual(len(socket.server.sent), before)
+
     def test_startup_refresh_flags_and_malformed_activity_are_not_forwarded(self):
         calls = [('update.status', {"refreshCheckout": True}), ('users.self', {"extra": True}),
             ('presence.activity', {"wake": True}), ('sessions.subscribe', {"sessionKey": "other"}),

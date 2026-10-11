@@ -30,7 +30,7 @@ READ_RPC = frozenset({"health", "status", "config.get", "config.schema", "agents
     "question.list", "talk.catalog", "chat.startup", "chat.metadata", "progressCard.get",
     "sessions.branches.list", "sessions.companion.state", "plugins.controlUi.list", "board.get",
     "projects.list", "sessions.groups.list", "sessions.groups.defaults", "taskSuggestions.list",
-    "system.info", "session.discussion.info", "sessions.catalog.list"})
+    "system.info", "session.discussion.info", "sessions.catalog.list", "mentions.list"})
 # The pinned UI subscribes and reports its own visibility/activity on connect.
 # These cannot generate output or change app settings, and are not read proof.
 UI_ACTIVITY_RPC = frozenset({"sessions.subscribe", "presence.activity",
@@ -38,7 +38,8 @@ UI_ACTIVITY_RPC = frozenset({"sessions.subscribe", "presence.activity",
     "controlUi.sessionPullRequests.subscribe", "sessions.viewers.set", "plugin.surface.refresh"})
 EMPTY_PARAMS_RPC = frozenset({"sessions.subscribe", "presence.activity", "users.self", "update.status",
     "exec.approval.list", "plugin.approval.list", "openclaw.approval.list", "question.list", "talk.catalog",
-    "plugins.controlUi.list", "projects.list", "sessions.groups.list", "sessions.groups.defaults", "system.info"})
+    "plugins.controlUi.list", "projects.list", "sessions.groups.list", "sessions.groups.defaults", "system.info",
+    "mentions.list"})
 OPENCLAW_READY = """() => {
   const app = document.querySelector('openclaw-app');
   const shell = document.querySelector('openclaw-app-shell');
