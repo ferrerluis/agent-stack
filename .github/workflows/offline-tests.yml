@@ -1,0 +1,43 @@
+name: Offline tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install local test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes openssh-server iproute2
+          sudo mkdir -p /run/sshd
+          python -m pip install -r scripts/requirements-live.txt
+
+      - name: Run credential-free local suite
+        run: scripts/test-local.sh
