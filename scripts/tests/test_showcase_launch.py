@@ -46,7 +46,7 @@ class LaunchTest(unittest.TestCase):
         with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
              patch.object(launch.subprocess, 'run', return_value=result) as run:
             first = launch.local_checks(self.a)
-            (self.run / 'README.md').write_text('[source](fixture.py)\n')
+            (self.run / 'README.md').write_text('[source](fixture.py)\n`[example](absent-inline)`\n```markdown\n[example](absent-block)\n```\n')
             prepared['source_revision'] = 'b'*40
             prepared['source_files']['README.md'] = launch.hashlib.sha256((self.run / 'README.md').read_bytes()).hexdigest()
             reused = launch.local_checks(self.a)
@@ -70,7 +70,7 @@ class LaunchTest(unittest.TestCase):
             launch.local_checks(self.a)
             # A skill is executable guidance even though its extension is Markdown.
             skill = self.run / 'skills/fixture/SKILL.md'; skill.parent.mkdir(parents=True)
-            skill.write_text('runtime instruction')
+            skill.write_text('runtime instruction with a template [example](relative/path)')
             prepared['source_files']['skills/fixture/SKILL.md'] = launch.hashlib.sha256(skill.read_bytes()).hexdigest()
             launch.local_checks(self.a); self.assertEqual(run.call_count, 2)
             code = self.run / 'fixture.py'; code.chmod(0o700)

@@ -91,12 +91,15 @@ def local_execution_fingerprint(prepared, terraform):
 
 
 def changed_documentation_links(prepared, previous):
-    current = {name: value for name, value in prepared["source_files"].items() if Path(name).suffix.lower() == ".md"}
+    current = {name: value for name, value in prepared["source_files"].items() if prose_documentation(name)}
     for name, value in current.items():
         if previous.get(name) == value:
             continue
         source = ROOT / name
-        for target in re.findall(r"\]\(([^)]+)\)", source.read_text()):
+        # Markdown examples inside code blocks/spans are not navigation links.
+        text = re.sub(r"(?ms)^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?^ {0,3}\1[ \t]*$", "", source.read_text())
+        text = re.sub(r"(`+)(?!`).*?(?<!`)\1(?!`)", "", text, flags=re.S)
+        for target in re.findall(r"\]\(([^)]+)\)", text):
             target = target.strip().strip("<>").split("#", 1)[0]
             if not target or target.startswith("/") or re.match(r"[a-zA-Z][a-zA-Z0-9+.-]*:", target):
                 continue
