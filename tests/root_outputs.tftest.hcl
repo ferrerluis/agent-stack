@@ -89,7 +89,7 @@ variables {
   openai_codex_auth_json_base64                  = ""
 }
 
-run "hermes_inherits_legacy_openai_model" {
+run "hermes_rejects_incompatible_legacy_default" {
   command = plan
   variables {
     cloud_provider                = "digitalocean"
@@ -98,10 +98,7 @@ run "hermes_inherits_legacy_openai_model" {
     hermes_model                  = ""
     openai_codex_auth_json_base64 = base64encode("{\"tokens\":{\"access_token\":\"fixture\"}}")
   }
-  assert {
-    condition     = jsondecode(local.runtime_hermes_seed).model_ref == "openai/gpt-5.3-codex"
-    error_message = "Hermes must inherit legacy OpenAI references through its supported openai route."
-  }
+  expect_failures = [var.hermes_model]
 }
 
 run "hermes_explicit_model_override" {

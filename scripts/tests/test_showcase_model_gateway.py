@@ -296,10 +296,13 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
                     errors = errors.replace(secret, "[fixture credential]")
                 fixture_errors.append(errors[-3000:])
             return code, output, errors
+        host_geteuid = os.geteuid
+        task_os = SimpleNamespace(**{**vars(os), "geteuid": lambda: 1000})
         with patch.dict(os.environ, {"HOME": str(home), "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                      "OPENAI_API_KEY": PRIVATE, "ANTHROPIC_API_KEY": PRIVATE, "https_proxy": PRIVATE}), \
-             patch.object(task.os, "geteuid", return_value=1000), patch.object(Path, "stat", stat), \
+             patch.object(task, "os", task_os), patch.object(Path, "stat", stat), \
              patch.object(task, "invoke", side_effect=invoke):
+            self.assertIs(os.geteuid, host_geteuid, "The task UID fixture must not change ledger ownership checks.")
             for cli in ("codex", "claude"):
                 bundle = self.gateway.client(cli)
                 challenge = {"lhs": 17, "rhs": 26, "nonce": ("a1" if cli == "codex" else "b2") * 16}

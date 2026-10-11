@@ -39,8 +39,5 @@ jobs:
           sudo mkdir -p /run/sshd
           python -m pip install -r scripts/requirements-live.txt
 
-      - name: Verify coding gateway subprocess fixture
-        run: python -B -m unittest discover -s scripts/tests -p test_showcase_model_gateway.py
-
       - name: Run credential-free local suite
         run: scripts/test-local.sh

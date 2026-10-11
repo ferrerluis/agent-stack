@@ -852,6 +852,13 @@ variable "hermes_model" {
   description = "Optional Hermes model reference; blank inherits default_model."
   type        = string
   default     = ""
+  validation {
+    condition = !contains(var.enabled_services, "hermes") || contains(
+      ["anthropic", "openai", "google", "groq"],
+      split("/", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)[0]
+    )
+    error_message = "Hermes requires an anthropic/, openai/, google/ or groq/ model. If default_model uses legacy openai-codex/, supply a supported hermes_model override."
+  }
 }
 
 variable "hermes_config_mode" {

@@ -141,7 +141,7 @@ fallback_models                   = ["openai/gpt-5.4-mini"]
 openai_codex_auth_json_base64     = "..."
 ```
 
-Legacy `openai-codex/*` refs are still accepted for older configs, but new deployments should prefer `openai/*` plus `openai_auth_mode = "codex"`.
+Legacy `openai-codex/*` refs are still accepted for older configs, but new deployments should prefer `openai/*` plus `openai_auth_mode = "codex"`. If Hermes is enabled with a legacy default, set `hermes_model` to a supported `openai/*`, `anthropic/*`, `google/*` or `groq/*` reference; Terraform rejects an incompatible inherited route before provisioning.
 
 ## Repo-local SSH workflow
 
