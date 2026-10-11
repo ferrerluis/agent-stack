@@ -116,6 +116,40 @@ run "hermes_explicit_model_override" {
   }
 }
 
+run "hermes_preserved_config_allows_legacy_default" {
+  command = plan
+  variables {
+    cloud_provider                = "digitalocean"
+    model_providers_enabled       = ["openai"]
+    default_model                 = "openai-codex/gpt-5.3-codex"
+    hermes_config_mode            = "preserve"
+    openai_codex_auth_json_base64 = base64encode("{\"tokens\":{\"access_token\":\"fixture\"}}")
+  }
+  assert {
+    condition     = local.runtime_template_vars.hermes_config_mode == "preserve"
+    error_message = "Preserved Hermes configurations must remain independent of the OpenClaw model."
+  }
+}
+
+run "hermes_rejects_provider_without_model" {
+  command = plan
+  variables {
+    cloud_provider = "digitalocean"
+    hermes_model   = "openai"
+  }
+  expect_failures = [var.hermes_model]
+}
+
+run "hermes_managed_config_rejects_empty_model" {
+  command = plan
+  variables {
+    cloud_provider     = "digitalocean"
+    hermes_config_mode = "manage"
+    hermes_model       = "openai/"
+  }
+  expect_failures = [var.hermes_model]
+}
+
 run "tailscale_private_outputs" {
   command   = plan
   state_key = "tailscale-private-outputs"

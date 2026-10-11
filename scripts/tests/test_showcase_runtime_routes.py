@@ -122,19 +122,23 @@ class TransactionTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        # Real temporary files/locks/fsync/renames; logical root/runtime owners
-        # are replaced because the local runner is UID 1000, not VM root.
-        uid, gid = os.geteuid(), os.getegid()
+        # Real temporary files/locks/fsync/renames keep the runner's ownership;
+        # report VM ownership separately without changing service UIDs.
+        uid = os.geteuid()
         checked = routes.checked_path
         def owner_check(path, owner=None, directory=False):
-            return checked(path, owner=uid if owner == 0 else owner, directory=directory)
+            info = checked(path, owner=uid if owner is not None else None, directory=directory)
+            if owner is None:
+                return info
+            logical = changed_access_time(info, 0)
+            logical.st_uid = logical.st_gid = owner
+            return logical
         fstat = os.fstat
         def logical_root_stat(fd):
             value = list(fstat(fd)); value[4] = value[5] = 0
             return os.stat_result(value)
         self.chown = Mock()
         for patcher in (patch.object(routes.os, "geteuid", return_value=0),
-                        patch.dict(routes.OWNERS, {"openclaw": uid, "hermes": uid}),
                         patch.object(routes, "checked_path", side_effect=owner_check),
                         patch.object(routes.os, "fchown", self.chown), patch.object(routes.os, "fstat", side_effect=logical_root_stat)):
             patcher.start(); self.addCleanup(patcher.stop)
@@ -147,6 +151,14 @@ class TransactionTest(unittest.TestCase):
 
     def target(self, role="openclaw"): return self.root / routes.FILES[role]
     def journal(self, role="openclaw"): return self.transaction.journal / (role + ".json")
+
+    def test_logical_service_owners_remain_non_root_regardless_of_runner_uid(self):
+        self.assertEqual(routes.OWNERS, {"openclaw": 1000, "hermes": 10000})
+        for role, uid in routes.OWNERS.items():
+            self.transaction.install(binding(), route(role))
+            snapshot = routes.decoded(self.journal(role).read_bytes())
+            self.assertEqual((snapshot["uid"], snapshot["gid"]), (uid, uid))
+            self.transaction.restore(binding(), role)
 
     def secure_original(self):
         config = {'gateway': {'mode': 'local', 'bind': 'loopback',

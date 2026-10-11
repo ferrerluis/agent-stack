@@ -853,11 +853,10 @@ variable "hermes_model" {
   type        = string
   default     = ""
   validation {
-    condition = !contains(var.enabled_services, "hermes") || contains(
-      ["anthropic", "openai", "google", "groq"],
-      split("/", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)[0]
+    condition = !contains(var.enabled_services, "hermes") || var.hermes_config_mode == "preserve" || can(
+      regex("^(anthropic|openai|google|groq)/.+$", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)
     )
-    error_message = "Hermes requires an anthropic/, openai/, google/ or groq/ model. If default_model uses legacy openai-codex/, supply a supported hermes_model override."
+    error_message = "When Hermes config may be seeded or managed, use an anthropic/, openai/, google/ or groq/ reference with a non-empty model name. If default_model uses legacy openai-codex/, supply a supported hermes_model override or preserve an existing Hermes config."
   }
 }
 
