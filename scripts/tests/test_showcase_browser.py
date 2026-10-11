@@ -106,7 +106,13 @@ class BrowserFixture:
         page.locator.side_effect = lambda selector: form if selector.startswith('form.provider-form[data') else root if selector == '#root' else link if selector.startswith('#root a') else missing
         page.get_by_role.return_value.wait_for.side_effect = None if self.heading_ready else RuntimeError(SECRET)
         page.goto.side_effect = lambda url, **kw: self.goto(context, index, url)
-        page.wait_for_url.side_effect = lambda url, **kw: setattr(page, "url", url) if self.login_ok else (_ for _ in ()).throw(RuntimeError(SECRET))
+        def redirected(url, **kwargs):
+            actual = getattr(self, 'hermes_redirect', 'https://' + TARGET + ':8443/sessions')
+            matched = url == actual if isinstance(url, str) else url.search(actual) is not None
+            if not self.login_ok or not matched:
+                raise RuntimeError(SECRET)
+            page.url = actual
+        page.wait_for_url.side_effect = redirected
         page.wait_for_function.side_effect = None if self.ui_ready else RuntimeError(SECRET)
         page.wait_for_timeout.side_effect = None if self.hello_ready else probe.ProbeError('fixture_pending_read_failed')
         page.evaluate.side_effect = lambda script, *args: self.evaluate(context, script, *args)
@@ -393,6 +399,33 @@ class BrowserTest(unittest.TestCase):
             for context in fixture.contexts: context.close.assert_called_once()
         fixture = BrowserFixture(); fixture.blank = True
         with self.assertRaisesRegex(probe.ProbeError, 'hermes_dashboard_not_rendered'): self.check(fixture)
+
+    def test_native_profile_query_after_login_still_requires_authenticated_rendered_sessions(self):
+        for suffix in ('', '?profile=default', '?profile=team%20one&tab=recent'):
+            with self.subTest(suffix=suffix):
+                fixture = BrowserFixture()
+                fixture.hermes_redirect = 'https://' + TARGET + ':8443/sessions' + suffix
+                apps, fixture = self.check(fixture)
+                self.assertEqual(apps['hermes']['authentication'], 'basic_session')
+                self.assertTrue(apps['hermes']['rendered'])
+                self.assertEqual(fixture.contexts[1].page.url, fixture.hermes_redirect)
+                fixture.contexts[1].page.get_by_role.assert_called_once_with('heading', name='Sessions', exact=True)
+
+    def test_profile_redirect_cannot_accept_another_origin_path_fragment_or_plaintext(self):
+        origin = 'https://' + TARGET + ':8443'
+        urls = ('http://' + TARGET + ':8443/sessions', 'https://' + TARGET + '/sessions',
+                'https://outside.invalid/sessions', origin + '/sessions/other',
+                origin + '/%73essions', origin + '/sessions#other',
+                origin + '/sessions?profile=default#other',
+                'https://outside.invalid/?next=' + origin + '/sessions')
+        for url in urls:
+            with self.subTest(url=url):
+                fixture = BrowserFixture(); fixture.hermes_redirect = url
+                diagnostic = {}
+                with self.assertRaises(RuntimeError):
+                    probe.browser_check(request(), peer(), fixture, diagnostic=diagnostic)
+                self.assertEqual(diagnostic, {'phase': 'hermes_session_redirect'})
+                fixture.browser.close.assert_called_once()
 
     def test_failure_phase_identifies_actual_failed_browser_step(self):
         for attr, phase in (('ui_ready', 'openclaw_session'),

@@ -357,7 +357,7 @@ def browser_check(request, peer, playwright, now=time.time, diagnostic=None):
                 diagnostic['phase'] = 'hermes_login_submit'
                 form.locator('button[type="submit"]').click()
                 diagnostic['phase'] = 'hermes_session_redirect'
-                page.wait_for_url(guard.origin + "/sessions", timeout=30000)
+                page.wait_for_url(re.compile(r"^" + re.escape(guard.origin) + r"/sessions(?:\?[^#]*)?\Z"), timeout=30000)
                 diagnostic['phase'] = 'hermes_dashboard_render'
                 page.get_by_role("heading", name="Sessions", exact=True).wait_for(state="visible")
                 need(page.locator('#root a[href="/sessions"]').first.is_visible()
