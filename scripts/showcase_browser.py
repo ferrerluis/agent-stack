@@ -35,7 +35,7 @@ READ_RPC = frozenset({"health", "status", "config.get", "config.schema", "agents
 # These cannot generate output or change app settings, and are not read proof.
 UI_ACTIVITY_RPC = frozenset({"sessions.subscribe", "presence.activity",
     "sessions.observer.visibility", "sessions.messages.subscribe",
-    "controlUi.sessionPullRequests.subscribe", "sessions.viewers.set"})
+    "controlUi.sessionPullRequests.subscribe", "sessions.viewers.set", "plugin.surface.refresh"})
 EMPTY_PARAMS_RPC = frozenset({"sessions.subscribe", "presence.activity", "users.self", "update.status",
     "exec.approval.list", "plugin.approval.list", "openclaw.approval.list", "question.list", "talk.catalog",
     "plugins.controlUi.list", "projects.list", "sessions.groups.list", "sessions.groups.defaults", "system.info"})
@@ -171,11 +171,20 @@ class NetworkGuard:
         self.failed, self.login_count = False, 0
         self.hello, self.read_rpc = False, False
         self.failure_reason = None
+        self.failure_request = None
+        self.canvas_url, self.canvas_refresh_count = None, 0
 
-    def deny(self, reason):
+    def deny(self, reason, request=None):
         # Keep the first fixed clue; URLs, credentials and message bodies stay private.
         if not self.failed:
             self.failure_reason = reason
+            if reason == "browser_write_denied" and isinstance(request, dict):
+                method, params = request.get("method"), request.get("params")
+                if isinstance(method, str) and len(method) <= 128:
+                    keys = sorted(params) if isinstance(params, dict) and len(params) <= 64 else None
+                    self.failure_request = {
+                        "method_sha256": hashlib.sha256(method.encode()).hexdigest(),
+                        "parameter_keys_sha256": hashlib.sha256(json.dumps(keys, separators=(",", ":")).encode()).hexdigest()}
         self.failed = True
 
     def http(self, route):
@@ -213,6 +222,7 @@ class NetworkGuard:
         pending = {}
 
         def send(message):
+            data = None
             try:
                 if self.failed:
                     return
@@ -224,7 +234,14 @@ class NetworkGuard:
                     need(params == {})  # In particular, no update refreshCheckout flag.
                 if method in UI_ACTIVITY_RPC:
                     need(self.hello and isinstance(params, dict))
-                    if method == "sessions.observer.visibility":
+                    if method == "plugin.surface.refresh":
+                        # Renew only this connection's server-issued canvas capability.
+                        # The pinned handler updates a lease, never config or model output.
+                        need(set(params) == {"surface", "observedUrl"} and params["surface"] == "canvas"
+                             and self.canvas_url is not None and params["observedUrl"] == self.canvas_url
+                             and self.canvas_refresh_count < 8)
+                        self.canvas_refresh_count += 1
+                    elif method == "sessions.observer.visibility":
                         need(set(params) == {"visible"} and type(params["visible"]) is bool)
                     elif method == "sessions.messages.subscribe":
                         need({"key", "subscriptionId"} <= set(params) <= {"key", "subscriptionId", "includeApprovals"}
@@ -263,7 +280,7 @@ class NetworkGuard:
                 pending[data["id"]] = data["method"]
                 server.send(message)  # Forward unchanged to the real gateway; never synthesize a reply.
             except (ProbeError, TypeError):
-                self.deny("browser_write_denied")
+                self.deny("browser_write_denied", data)
                 ws.close(code=1008, reason="probe_write_denied")
                 server.close(code=1008, reason="probe_write_denied")
         ws.on_message(send)
@@ -281,6 +298,16 @@ class NetworkGuard:
                              and isinstance(auth.get("scopes"), list) and
                              any(scope in auth["scopes"] for scope in ("operator.read", "operator.admin")))
                         self.hello = True
+                        urls = payload.get("pluginSurfaceUrls")
+                        canvas = urls.get("canvas") if isinstance(urls, dict) else None
+                        if isinstance(canvas, str) and 0 < len(canvas.strip()) <= 8192:
+                            self.canvas_url = canvas.strip()
+                    elif method == "plugin.surface.refresh" and self.hello and data.get("ok") is True:
+                        payload = data.get("payload")
+                        urls = payload.get("pluginSurfaceUrls") if isinstance(payload, dict) and payload.get("surface") == "canvas" else None
+                        canvas = urls.get("canvas") if isinstance(urls, dict) else None
+                        if isinstance(canvas, str) and 0 < len(canvas.strip()) <= 8192:
+                            self.canvas_url = canvas.strip()
                     elif method in READ_RPC and self.hello and data.get("ok") is True:
                         self.read_rpc = True
                 ws.send(message)  # Preserve actual responses and events; do not return raw data.
@@ -376,6 +403,8 @@ def browser_check(request, peer, playwright, now=time.time, diagnostic=None):
         return results
     except (Exception, KeyboardInterrupt):
         if guard is not None and guard.failed:
+            if guard.failure_request is not None:
+                diagnostic['request_fingerprint'] = guard.failure_request
             raise ProbeError(guard.failure_reason) from None
         raise
     finally:

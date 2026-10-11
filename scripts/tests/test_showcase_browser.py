@@ -246,10 +246,78 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(len(ws.server.sent), 2); self.assertEqual(len(ws.sent), 2)
         self.assertEqual(json.loads(ws.server.sent[1])['method'], 'agents.list')
 
-    def connect(self, ws):
+    def connect(self, ws, canvas=None):
         ws.emit({"type": "req", "id": "connect1", "method": "connect", "params": {"role": "operator"}})
         ws.server.emit({"type": "res", "id": "connect1", "ok": True, "payload": {"type": "hello-ok",
-            "auth": {"role": "operator", "scopes": ["operator.read"]}}})
+            "auth": {"role": "operator", "scopes": ["operator.read"]},
+            "pluginSurfaceUrls": {"canvas": canvas} if canvas else {}}})
+
+    def test_canvas_refresh_renews_only_authenticated_connection_lease_and_is_not_read_proof(self):
+        canvas = 'https://' + TARGET + '/canvas?capability=' + SECRET
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+        guard.websocket(ws); self.connect(ws, canvas)
+        data = {'type': 'req', 'id': 'lease1', 'method': 'plugin.surface.refresh',
+                'params': {'surface': 'canvas', 'observedUrl': canvas}}
+        ws.emit(data)
+        self.assertEqual(json.loads(ws.server.sent[-1]), data)
+        self.assertFalse(guard.failed or guard.read_rpc)
+        renewed = canvas + '-renewed'
+        ws.server.emit({'type': 'res', 'id': 'lease1', 'ok': True, 'payload': {
+            'surface': 'canvas', 'pluginSurfaceUrls': {'canvas': renewed}, 'expiresAtMs': 200000}})
+        self.assertFalse(guard.read_rpc)
+        ws.emit({**data, 'id': 'lease2', 'params': {'surface': 'canvas', 'observedUrl': renewed}})
+        self.assertFalse(guard.failed)
+        ws.emit({**data, 'id': 'stale-lease'})
+        self.assertTrue(guard.failed)
+
+    def test_canvas_refresh_cannot_choose_other_surface_url_or_fields(self):
+        canvas = 'https://' + TARGET + '/canvas?capability=' + SECRET
+        for changes in ({'surface': 'terminal'}, {'observedUrl': 'https://outside.invalid/canvas'},
+                        {'observedUrl': canvas + 'other'}, {'force': True}, {'observedUrl': None}):
+            guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+            guard.websocket(ws); self.connect(ws, canvas)
+            ws.emit({'type': 'req', 'id': 'lease', 'method': 'plugin.surface.refresh',
+                     'params': {'surface': 'canvas', 'observedUrl': canvas} | changes})
+            self.assertTrue(guard.failed); self.assertEqual(len(ws.server.sent), 1)
+        for authenticated, advertised in ((False, canvas), (True, None)):
+            guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+            guard.websocket(ws)
+            if authenticated: self.connect(ws, advertised)
+            ws.emit({'type': 'req', 'id': 'lease', 'method': 'plugin.surface.refresh',
+                     'params': {'surface': 'canvas', 'observedUrl': canvas}})
+            self.assertTrue(guard.failed)
+
+    def test_canvas_refresh_is_bounded_and_does_not_allow_other_mutations(self):
+        canvas = 'https://' + TARGET + '/canvas?capability=' + SECRET
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+        guard.websocket(ws); self.connect(ws, canvas)
+        for n in range(8):
+            ws.emit({'type': 'req', 'id': 'lease' + str(n), 'method': 'plugin.surface.refresh',
+                     'params': {'surface': 'canvas', 'observedUrl': canvas}})
+            self.assertFalse(guard.failed)
+        ws.emit({'type': 'req', 'id': 'overflow', 'method': 'plugin.surface.refresh',
+                 'params': {'surface': 'canvas', 'observedUrl': canvas}})
+        self.assertTrue(guard.failed); self.assertEqual(len(ws.server.sent), 9)
+        for method in ('node.pluginSurface.refresh', 'node.pluginTools.update', 'config.patch', 'chat.send'):
+            guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+            guard.websocket(ws); self.connect(ws, canvas)
+            ws.emit({'type': 'req', 'id': 'bad', 'method': method, 'params': {}})
+            self.assertTrue(guard.failed)
+
+    def test_denied_request_records_hashes_without_values_or_raw_method(self):
+        import hashlib
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+        guard.websocket(ws); self.connect(ws)
+        ws.emit({'type': 'req', 'id': 'bad', 'method': 'config.patch',
+                 'params': {'token': SECRET, 'gateway': {'url': SECRET}}})
+        self.assertEqual(guard.failure_request, {
+            'method_sha256': hashlib.sha256(b'config.patch').hexdigest(),
+            'parameter_keys_sha256': hashlib.sha256(b'["gateway","token"]').hexdigest()})
+        self.assertNotIn(SECRET, json.dumps(guard.failure_request))
+        self.assertNotIn('config.patch', json.dumps(guard.failure_request))
+        first = dict(guard.failure_request)
+        guard.deny('browser_write_denied', {'method': 'other', 'params': {}})
+        self.assertEqual(guard.failure_request, first)
 
     def test_pinned_ui_startup_reads_and_subscriptions_retain_real_connection(self):
         guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)

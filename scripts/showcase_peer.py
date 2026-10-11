@@ -252,9 +252,14 @@ def failure_details(raw):
         need(isinstance(value, dict) and set(value) == {'schema', 'status', 'diagnostic'}
              and type(value['schema']) is int and value['schema'] == 1 and value['status'] == 'fail')
         row = value['diagnostic']
-        need(isinstance(row, dict) and set(row) == {'phase', 'reason', 'exit_code'}
+        need(isinstance(row, dict) and {'phase', 'reason', 'exit_code'} <= set(row) <= {'phase', 'reason', 'exit_code', 'request_fingerprint'}
              and row['phase'] in FAILURE_PHASES and row['reason'] in FAILURE_REASONS
              and (row['exit_code'] is None or type(row['exit_code']) is int and -255 <= row['exit_code'] <= 255))
+        if 'request_fingerprint' in row:
+            fingerprint = row['request_fingerprint']
+            need(row['reason'] == 'browser_write_denied' and row['phase'] in browser.BROWSER_PHASES
+                 and isinstance(fingerprint, dict) and set(fingerprint) == {'method_sha256', 'parameter_keys_sha256'}
+                 and all(isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) for value in fingerprint.values()))
         return dict(row)
     except (ProbeError, TypeError, KeyError):
         return None
@@ -366,8 +371,12 @@ def main():
         reason = str(error) if isinstance(error, ProbeError) and str(error) in FAILURE_REASONS else 'unexpected_error'
         code = getattr(error, 'returncode', None)
         if type(code) is not int or not -255 <= code <= 255: code = None
-        print(json.dumps({'schema': 1, 'status': 'fail', 'diagnostic': {
-            'phase': diagnostic['phase'], 'reason': reason, 'exit_code': code}}))
+        report = {'schema': 1, 'status': 'fail', 'diagnostic': {
+            'phase': diagnostic['phase'], 'reason': reason, 'exit_code': code}}
+        if 'request_fingerprint' in diagnostic:
+            report['diagnostic']['request_fingerprint'] = diagnostic['request_fingerprint']
+        need(failure_details(json.dumps(report)) is not None, 'failure_diagnostic_invalid')
+        print(json.dumps(report))
         return 1
     finally:
         signal.alarm(0)

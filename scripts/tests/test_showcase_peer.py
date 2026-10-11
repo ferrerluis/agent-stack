@@ -352,6 +352,31 @@ class PeerTest(unittest.TestCase):
                 'phase': phase, 'reason': reason, 'exit_code': None})
             self.assertNotIn(SECRET, printed.getvalue()); self.assertNotIn(PRIVATE, printed.getvalue())
 
+    def test_browser_denied_request_hashes_survive_sanitized_failure_report(self):
+        fingerprint = {'method_sha256': 'a' * 64, 'parameter_keys_sha256': 'b' * 64}
+        printed = io.StringIO()
+        def fail(value, diagnostic):
+            diagnostic.update(phase='openclaw_session', request_fingerprint=fingerprint)
+            raise peer.ProbeError('browser_write_denied')
+        with (patch.object(peer, 'run_probe', side_effect=fail),
+              patch.object(sys, 'stdin', Mock(buffer=io.BytesIO(json.dumps(payload()).encode()))),
+              patch.object(signal, 'signal'), patch.object(signal, 'alarm'), contextlib.redirect_stdout(printed)):
+            self.assertEqual(peer.main(), 1)
+        self.assertEqual(peer.failure_details(printed.getvalue()), {
+            'phase': 'openclaw_session', 'reason': 'browser_write_denied', 'exit_code': None,
+            'request_fingerprint': fingerprint})
+        self.assertNotIn(SECRET, printed.getvalue()); self.assertNotIn(PRIVATE, printed.getvalue())
+
+    def test_failure_hash_extension_rejects_raw_details_wrong_types_and_unrelated_failures(self):
+        row = {'phase': 'openclaw_session', 'reason': 'browser_write_denied', 'exit_code': None,
+               'request_fingerprint': {'method_sha256': 'a' * 64, 'parameter_keys_sha256': 'b' * 64}}
+        for changes in ({'reason': 'unexpected_error'}, {'phase': 'workspace_ssh'},
+                        {'request_fingerprint': {'method': SECRET}},
+                        {'request_fingerprint': row['request_fingerprint'] | {'extra': PRIVATE}},
+                        {'request_fingerprint': row['request_fingerprint'] | {'method_sha256': True}},
+                        {'request_fingerprint': row['request_fingerprint'] | {'parameter_keys_sha256': SECRET}}):
+            self.assertIsNone(peer.failure_details(json.dumps({'schema': 1, 'status': 'fail', 'diagnostic': row | changes})))
+
 
 if __name__ == '__main__':
     unittest.main()

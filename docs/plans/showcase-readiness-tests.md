@@ -8,7 +8,9 @@
 - Keep normal deployment defaults unchanged. Builds remain on the owned paid VMs; no separate build/cache pipeline is part of this change.
 - A commit identifies proof provenance. Each named check carries only when its normalized per-cloud inputs, actual image/host/Hermes repair contents, verifier fingerprint, intact evidence and prerequisite proofs match. Generated trial names, keys and deadlines alone do not invalidate a proof. Every new attempt needs fresh native cleanup.
 
-The latest fully qualified source, `f183bf5`, passed 1,045 Python tests and 79 Terraform checks with zero skips. DO28 passed ten named preliminary checks, including the real container suite, resolved installed contents, workspace confinement, both native runtime doctors and independent doctor evidence. Both direct Tailscale HTTPS app documents returned 200 with normal certificate verification, but authenticated browser verification failed before paid tasks and reboot. Final cloud acceptance remains **0/9** on the current candidate: six DigitalOcean groups and one light pass on each other provider.
+The latest fully qualified source, `78a7e47`, passed 1,047 Python tests and 79 Terraform checks with zero skips. DO29 passed ten preliminary checks, including the actual container suite, resolved installed contents, workspace confinement, both native runtime doctors and independent doctor evidence. Authenticated browser verification failed before API-key tasks and reboot. Final acceptance remains **0/9**: six DigitalOcean cases and one light case on each other provider.
+
+A free reproduction with the actual pinned OpenClaw gateway and both pinned frontends identified a blocked `plugin.surface.refresh` request during normal browser startup. Its audited native handler renews only the connection's canvas capability. The repair permits only that exact server-issued canvas URL, only after authenticated hello, and at most eight renewals; generation and settings changes remain refused. Failure diagnostics retain only hashes of the denied method and parameter names. All 58 focused browser/peer tests pass, and the repaired production guard passed the actual-gateway free reproduction with no denied requests. Fixture credentials, local transport settings and simulated Hermes backend make this diagnostic evidence, not cloud acceptance. Fresh full source qualification and paid native verification are next.
 
 Candidate `99a84aa` adds private fixed-field browser failure steps. Its rerun passed 1,038 Python tests and 79 Terraform checks, but failed the final working-tree-unchanged gate because diagnostic helpers created two bytecode files; it is not a qualified result. Only those two task-created files were removed, and subsequent Python helpers suppress bytecode.
 
@@ -18,7 +20,27 @@ The full-catalog candidate `60c10f5` then reached the local runner's 900-second 
 
 A second free reproduction used the actual pinned Hermes frontend and a 1,500 ms browser scheduling delay. The frontend rendered Sessions at `/sessions?profile=default` with healthy request guards, but the exact-URL wait timed out in `hermes_session_redirect`. The repaired production matcher accepts query strings only on the exact HTTPS origin and `/sessions` path; it still rejects plaintext, alternate ports/origins, other paths and fragments. Thirty-two browser tests and 20 peer tests pass. The actual production repair, without in-memory overrides, passed the same pinned frontend timing replay. Fresh complete local qualification is still required before paid launch; fixture backends and dummy credentials are diagnostic evidence, not native acceptance.
 
-All 50 paid trials have independently verified cleanup. The conservative cloud/model bound is **$26.02/$35**, leaving **$8.98**; DO28 closed at $0.11 with zero paid requests. Fourteen historical provider request records use already-counted prepaid credits. There is no active paid trial, and the current free browser peer replaced the prior peer after exact verified cleanup. No credible completion ETA is available; the unsupported earlier 2–4 hour estimate was withdrawn. TODO #7 and the goal remain active.
+All 51 paid trials have independently verified cleanup. The conservative cloud/model bound is **$26.13/$35**, leaving **$8.87**; DO29 closed at $0.11 with zero new paid requests. Fourteen historical provider request records use already-counted prepaid credits. There is no active paid trial, and the current free browser peer replaced the prior peer after exact verified cleanup. No credible completion ETA is available; the unsupported earlier 2–4 hour estimate was withdrawn. TODO #7 and the goal remain active.
+
+## Recaps every 15 minutes
+
+Report nine acceptance cases using the fixed subchecks below. These 44 reporting subchecks explain progress within the existing named stages; they do not add acceptance requirements or replace stage fingerprints and dependency evidence.
+
+| Acceptance case | Reporting subchecks |
+|---|---|
+| DigitalOcean doctors (4) | OpenClaw native doctor; Hermes native doctor; independent OpenClaw evidence; independent Hermes evidence |
+| DigitalOcean coding tasks (4) | Workspace-user confinement; independently correlated Codex file task; independently correlated Claude file task; original model channel safely closed |
+| DigitalOcean private app URLs (4) | OpenClaw authenticated browser before reboot; Hermes authenticated browser before reboot; OpenClaw authenticated browser after reboot; Hermes authenticated browser after reboot |
+| DigitalOcean persistence (4) | New boot independently observed; disk and workspace files retained; both post-reboot doctors independently verified; post-reboot resolved contents and model-channel closure verified |
+| DigitalOcean documentation (3) | README matches native evidence; implementation plan saved and linked; test plan saved and linked |
+| DigitalOcean cleanup (4) | Owned cloud resources absent; owned tailnet node absent; Terraform state empty; owned controller/watchdog stopped |
+| Hetzner light pass (7) | VM provisioned; OpenClaw running; Hermes running; workspace running; all three stable without restart/replacement for at least 120 seconds; resolved contents verified; native cleanup verified |
+| AWS light pass (7) | VM provisioned; OpenClaw running; Hermes running; workspace running; all three stable without restart/replacement for at least 120 seconds; resolved contents verified; native cleanup verified |
+| GCP light pass (7) | VM provisioned; OpenClaw running; Hermes running; workspace running; all three stable without restart/replacement for at least 120 seconds; resolved contents verified; native cleanup verified |
+
+Each recap shows a progress bar and current passed/required subchecks for every row, plus the state of each subcheck. Use `✓` for a verified current pass, `↻` for an earlier pass awaiting revalidation or re-proof, `✕` for a failed check, `▶` for a running check, and `—` for a check not yet run. Only current verified passes fill the bar; earlier passes remain visible beside it. Every new deployment requires fresh cleanup even when old cleanup records are retained.
+
+State final cases passed out of nine separately from subcheck totals and local diagnostic tests. Include the change since the previous recap, current blocker or next action, active paid resources and the conservative bound against $35. A local mock, skipped check or unrevalidated earlier pass cannot count as final acceptance. Do not infer a completion time from subcheck percentages.
 
 ## Historical checkpoints — superseded scope and intermediate results
 
