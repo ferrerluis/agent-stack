@@ -95,12 +95,12 @@ def route_valid(route):
     return int(match[1])
 
 
-def hermes_pool_valid(actual, route, base):
+def hermes_pool_valid(actual, route, base, *, allow_rehydration=False):
     """The pinned resolver seeds one reference-only pool from our named config."""
     pool = actual.get("credential_pool")
     if pool is None:
         need(actual.get("source") == "custom_provider:as7-budget")
-        return
+        return True
     need(actual.get("source") == "pool:custom:as7-budget" and pool.provider == "custom:as7-budget")
     entries = pool.entries(); need(isinstance(entries, list) and len(entries) == 1)
     entry, current = entries[0], pool.current()
@@ -112,7 +112,16 @@ def hermes_pool_valid(actual, route, base):
          and entry.base_url == base and entry.runtime_base_url == base
          and not any(getattr(entry, k, None) for k in ("refresh_token", "agent_key", "inference_base_url")))
     fingerprint = "sha256:" + hashlib.sha256(route["credential"].encode()).hexdigest()[:16]
-    need(entry.extra in ({}, {"secret_fingerprint": fingerprint}))
+    if entry.extra in ({}, {"secret_fingerprint": fingerprint}):
+        return True
+    # The pinned pool replaces a borrowed key and writes its new fingerprint
+    # to disk, but retains the old fingerprint in the returned in-memory row.
+    # Permit one native re-read only after every actual key/route check above.
+    need(allow_rehydration and isinstance(entry.extra, dict)
+         and set(entry.extra) == {"secret_fingerprint"}
+         and isinstance(entry.extra["secret_fingerprint"], str)
+         and re.fullmatch(r"sha256:[a-f0-9]{16}", entry.extra["secret_fingerprint"]))
+    return False
 
 
 def native_hermes(config, route, resolver):
@@ -127,14 +136,22 @@ def native_hermes(config, route, resolver):
          "transport": "openai_chat" if route["provider"] == "openai" else "anthropic_messages",
          "discover_models": False, "models": [route["model"]]}} and config.get("fallback_providers") == []
          and not any(config.get(k) for k in ("custom_providers", "auxiliary", "model_routes", "model_aliases", "secrets")))
-    actual = resolver(requested="as7-budget", target_model=route["model"],
-                      explicit_api_key=route["credential"], explicit_base_url=base)
-    need(isinstance(actual, dict) and actual.get("provider") == "custom" and actual.get("model") == route["model"]
-         and actual.get("requested_provider") == "as7-budget"
-         and actual.get("api_mode") == mode and actual.get("base_url") == base
-         and actual.get("api_key") == route["credential"]
-         and not any(actual.get(k) for k in ("extra_headers", "request_overrides", "fallback")))
-    hermes_pool_valid(actual, route, base)
+    rehydrated_id = None
+    for attempt in range(2):
+        actual = resolver(requested="as7-budget", target_model=route["model"],
+                          explicit_api_key=route["credential"], explicit_base_url=base)
+        need(isinstance(actual, dict) and actual.get("provider") == "custom" and actual.get("model") == route["model"]
+             and actual.get("requested_provider") == "as7-budget"
+             and actual.get("api_mode") == mode and actual.get("base_url") == base
+             and actual.get("api_key") == route["credential"]
+             and not any(actual.get(k) for k in ("extra_headers", "request_overrides", "fallback")))
+        current = hermes_pool_valid(actual, route, base, allow_rehydration=attempt == 0)
+        if rehydrated_id is not None:
+            need(actual.get("credential_pool") is not None
+                 and actual["credential_pool"].current().id == rehydrated_id)
+        if current:
+            break
+        rehydrated_id = actual["credential_pool"].current().id
     return {"kind": "hermes_native_resolver", "provider": "custom", "requested_provider": "as7-budget",
             "model": route["model"], "api_mode": mode, "base_url_sha256": hashlib.sha256(base.encode()).hexdigest()}
 

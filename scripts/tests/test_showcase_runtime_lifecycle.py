@@ -195,6 +195,34 @@ def native(route):
 
 
 class NativeProbeTest(unittest.TestCase):
+    def test_rotated_borrowed_key_requires_one_native_rehydration_of_same_pool(self):
+        for provider in ("openai", "anthropic"):
+            route = route_fixtures.route("hermes", provider)
+            stale = pooled_resolver_result(route)
+            stale["credential_pool"].entries()[0].extra = {"secret_fingerprint": "sha256:" + "0" * 16}
+            resolver = Mock(side_effect=[stale, pooled_resolver_result(route)])
+            report = probe.native_hermes(routes.compile_config({}, route), route, resolver)
+            self.assertEqual(report, native(route))
+            self.assertEqual(resolver.call_count, 2)
+
+    def test_pool_rehydration_cannot_hide_wrong_first_route_or_change_identity(self):
+        route = route_fixtures.route("hermes")
+        for change in ("first_key", "first_url", "extra", "second_key", "second_id", "second_missing_pool", "still_stale"):
+            stale = pooled_resolver_result(route)
+            stale["credential_pool"].entries()[0].extra = {"secret_fingerprint": "sha256:" + "0" * 16}
+            fresh = pooled_resolver_result(route)
+            if change == "first_key": stale["api_key"] = "foreign"
+            elif change == "first_url": stale["base_url"] = "https://foreign.invalid"
+            elif change == "extra": stale["credential_pool"].entries()[0].extra["headers"] = {}
+            elif change == "second_key": fresh["api_key"] = "foreign"
+            elif change == "second_id": fresh["credential_pool"].entries()[0].id = "replacement"
+            elif change == "second_missing_pool": fresh = resolver_result(route)
+            else: fresh = stale
+            resolver = Mock(side_effect=[stale, fresh])
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                probe.native_hermes(routes.compile_config({}, route), route, resolver)
+            self.assertEqual(resolver.call_count, 1 if change in ("first_key", "first_url", "extra") else 2)
+
     def test_pinned_hermes_config_seeded_sole_pool_verifies_both_wire_modes(self):
         # The immutable resolver seeds config:as7-budget before explicit-key
         # resolution, even on a fresh home. Its disk row is reference-only.
