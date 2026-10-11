@@ -8,6 +8,15 @@
 
 ## Compatibility
 
+### AI agent runtimes
+
+| Runtime | What AgentStack deploys | Service name |
+|---------|------------------------|--------------|
+| [OpenClaw](https://docs.openclaw.ai/) | OpenClaw gateway and Control UI | `openclaw` |
+| [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) | Hermes agent and web dashboard | `hermes` |
+
+Both runtimes are supported on all four cloud providers below. Enable either or both with `enabled_services`.
+
 ### Cloud providers
 
 | Provider | Deployment target | `cloud_provider` |
