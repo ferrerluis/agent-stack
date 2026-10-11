@@ -139,6 +139,38 @@ class RuntimeDisarmRegressionTest(unittest.TestCase):
                                      'command': {'program': 'systemctl', 'operation': 'stop'}})
         self.assertNotIn('fixture-private-secret', json.dumps(vm.failure))
 
+    def test_native_gateway_failure_keeps_only_fixed_labels_and_hashes(self):
+        secret = b'fixture-private-gateway-token-and-config'
+        stdout = b'{"private":"' + secret + b'"}'
+        stderr = b'Gateway call failed: gateway closed (1008): unauthorized: token mismatch ' + secret
+        vm = object.__new__(lifecycle.RuntimeLifecycle)
+        vm.phase, vm.failure = 'native_route', None
+        vm.raw_execute = Mock(side_effect=lifecycle.agents.ProbeCommandFailed(1, stdout, stderr))
+        with self.assertRaises(lifecycle.agents.ProbeCommandFailed):
+            vm.command(['/usr/bin/docker', 'exec', 'private-container-id'])
+        detail = vm.failure['native_gateway']
+        self.assertEqual(detail['exit_code'], 1)
+        self.assertEqual(detail['stdout_sha256'], hashlib.sha256(stdout).hexdigest())
+        self.assertEqual(detail['stderr_sha256'], hashlib.sha256(stderr).hexdigest())
+        self.assertTrue(detail['fixed_clues']['unauthorized'])
+        self.assertTrue(detail['fixed_clues']['gateway_closed'])
+        self.assertEqual(set(detail), {'exit_code', 'stdout_sha256', 'stderr_sha256', 'fixed_clues'})
+        serialized = json.dumps(vm.failure)
+        self.assertNotIn(secret.decode(), serialized)
+        self.assertNotIn('private-container-id', serialized)
+        self.assertEqual(vm.failure['reason'], 'probe_command_failed')
+        vm.phase = 'runtime_stop'
+        vm.remember_failure(RuntimeError(secret.decode()))
+        self.assertEqual(vm.failure['native_gateway'], detail)
+
+    def test_unknown_native_gateway_failure_is_hashed_without_guessed_reason(self):
+        secret = b'fixture-private-unrecognized-failure'
+        error = lifecycle.agents.ProbeCommandFailed(-9, secret, b'')
+        detail = lifecycle.native_gateway_failure_summary(error)
+        self.assertEqual(detail['exit_code'], -9)
+        self.assertFalse(any(detail['fixed_clues'].values()))
+        self.assertNotIn(secret.decode(), json.dumps(detail))
+
     def test_unknown_exception_and_command_arguments_are_redacted(self):
         vm = object.__new__(lifecycle.RuntimeLifecycle)
         vm.phase, vm.failure = 'native_route', None

@@ -39,6 +39,24 @@ def need(value):
     if not value: raise ValueError("runtime_lifecycle_unverified")
 
 
+def native_gateway_failure_summary(error):
+    """Keep fixed CLI failure clues and hashes, never auth/config output."""
+    raw = (error.stdout + error.stderr).lower()
+    markers = {
+        "unauthorized": (b"unauthorized", b"token mismatch"),
+        "pairing_required": (b"pairing required",),
+        "connection_refused": (b"econnrefused",),
+        "gateway_closed": (b"gateway closed",),
+        "timeout": (b"timed out", b"timeout",),
+        "secret_resolution": (b"secretrefresolutionerror", b"failed to resolve secret"),
+        "invalid_configuration": (b"invalid config",),
+        "unknown_option": (b"unknown option",),
+    }
+    return {"exit_code": error.returncode, "stdout_sha256": routes.sha(error.stdout),
+            "stderr_sha256": routes.sha(error.stderr),
+            "fixed_clues": {name: any(value in raw for value in values) for name, values in markers.items()}}
+
+
 def container_failure_summary(error):
     result = {"exit_code": error.returncode, "output_sha256": routes.sha(error.stdout), "report": "unparsed"}
     try:
@@ -200,6 +218,9 @@ class RuntimeLifecycle:
         if isinstance(error, RuntimeStartError) and str(error) in START_ERRORS:
             reason = str(error)
         self.failure = {"phase": self.phase, "reason": reason}
+        if (self.phase == "native_route" and isinstance(error, agents.ProbeCommandFailed)
+                and isinstance(args, list) and args[:2] == ["/usr/bin/docker", "exec"]):
+            self.failure["native_gateway"] = native_gateway_failure_summary(error)
         if self.phase == "openclaw_doctor_command" and isinstance(error, agents.ProbeCommandFailed):
             self.failure["doctor"] = doctor_failure_summary(error)
         if self.phase == "hermes_doctor_command" and isinstance(error, agents.ProbeCommandFailed):
