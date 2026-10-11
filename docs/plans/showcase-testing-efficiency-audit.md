@@ -91,3 +91,33 @@ The counting evidence supports the repetition diagnosis. It cannot prove an exac
 - Last closed DigitalOcean cost/cleanup: `as7-do-1011-iter29-closed-cost.json` in the same budget directory. Bound **$26.13/$35**, remaining **$8.87**, no paid trial active. This is a conservative bound, not an invoice.
 
 The raw session and private runtime records stay outside the committed report. No credentials, tokens, raw tool arguments or response bodies are copied here.
+
+## Refreshed measurement and adopted limits
+
+The subsequent snapshot at 2026-10-11 08:52 UTC contains **6,404 goal-scope assistant calls**, 638 more than the baseline, and **35,141,271 returned text characters**. **3,399 calls (53.1%) include status or polling work**, overlapping the categories below. This is a dated snapshot, not a current lifetime total or exact allocation of billed tokens to tests.
+
+| Work associated with | Calls | Added since baseline |
+|---|---:|---:|
+| Local qualification and unit checks | 1,404 | 100 |
+| Memory and documentation | 1,037 | 65 |
+| Browser and peer investigation | 990 | 144 |
+| Pure polling and coordination | 794 | 165 |
+| Containers, bootstrap and workspace | 456 | 26 |
+| Cloud launch, preflight and prices | 421 | 26 |
+| Runtime doctors and activation | 379 | 26 |
+| Cleanup and cost ledger | 360 | 44 |
+| Source inspection and editing | 253 | 23 |
+| Coding tasks and model verification | 190 | 6 |
+| Fingerprint review | 57 | 10 |
+| Other setup and coordination | 56 | 2 |
+| Reboot and persistence | 7 | 1 |
+
+The successful native light-trial windows contain 25 calls for Hetzner (20 with status/polling), 17 for AWS (13) and 22 for GCP (19). These exact window counts include requested recaps and concurrent work, exclude preparation and post-trial work, and cannot establish exact per-check attribution or compliance with the six-routine-call target. Supervision remained excessive after the initial repairs. The target is not demonstrated.
+
+The implementation now limits browser-only verifier changes to the two browser stages, retains genuine dependency checks, and reuses intact local qualification for identical execution/test/tool inputs across documentation commits. The controller runs builds, doctors, tasks, access and reboot itself; those stages require no additional routine assistant calls on a clean trial. The adopted budget is one call each for launch, binding, terminal review, independent cleanup/cost closure, fingerprint/acceptance review and concise recording/reporting. Count requested recaps, diagnosis, safety actions and documentation separately and include them in an all-in total; never conceal underlying operations inside a batch.
+
+Observe healthy trials at the requested 15-minute recaps or an actionable change. Keep raw evidence on disk and summaries below 4,000 characters. Bound unproductive diagnosis to 20 new assistant calls before reporting the unresolved issue and changing strategy. Run focused regressions for a reproduced bug and complete qualification once per changed frozen execution candidate. Update durable memory for decisions, completed cases and final outcomes.
+
+After this snapshot, the original full DigitalOcean trial at `4f9e534` passed its native runtime and cleanup checks, with independent evidence and fingerprint review. Three light-provider cases also pass. The remaining documentation review brings the operational result to 8/9 cases and 43/44 subchecks until that review is recorded. The cumulative conservative cloud/model bound is **$29.05/$35**, with no paid trial active; this is not an invoiced charge. The frozen execution candidate qualified with **1,074 Python tests and 79 Terraform checks, zero skips**.
+
+Refreshed aggregate classifications are retained privately under `.tmp/agent-stack-tests/testing-efficiency-audit-20261011/refresh-audit/`. The active goal already includes these measurable outcomes and limits; it was retained rather than reset. Goal completion still requires all nine cases, all 44 subchecks and the saved linked plans.

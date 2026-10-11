@@ -179,6 +179,15 @@ Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --
 
 TODO #7 requires the full six acceptance groups on DigitalOcean and light VM/container passes on AWS, GCP and Hetzner, with independently verified cleanup on every cloud. Each proof records its tested source, actual contents, relevant input and verifier fingerprints; matching proofs can carry across commits. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation plan](docs/plans/showcase-readiness-implementation.md), [current test plan](docs/plans/showcase-readiness-tests-v2.md) and [testing audit](docs/plans/showcase-testing-efficiency-audit.md). Private native receipts establish the current result; historical checkpoints do not establish current acceptance.
 
+Native testing on 2026-10-11 verified this coverage for the pinned showcase configuration:
+
+| Provider | Verified coverage |
+|---|---|
+| DigitalOcean | Both native doctors with independently matched evidence; Codex and Claude API-key file tasks as workspace UID 1000 with provider-response correlation; authenticated direct Tailscale browser access to both apps before and after reboot; disk/file persistence and post-reboot runtime checks; independently verified cleanup |
+| Hetzner, AWS and GCP | VM creation; OpenClaw, Hermes and workspace containers running without replacement or restart for at least 120 seconds; resolved installed contents and workspace confinement; independently verified cleanup |
+
+DigitalOcean runtime evidence was produced at `4f9e534`; the three light-provider results were produced at `63ede3e` and verified against the later candidate's relevant inputs and verifiers. These results cover the tested pins and configuration. Doctor, coding-task, browser and reboot acceptance was exercised on DigitalOcean only; arbitrary configurations and future mutable image contents require their own checks. Native evidence remains private and excludes credentials from these public results.
+
 The full trial verifies browser access before running paid Codex and Claude tasks. A failed browser check stops those tasks and proceeds to cleanup; both tasks and fresh browser checks after reboot remain required for a passing trial.
 
 ---
