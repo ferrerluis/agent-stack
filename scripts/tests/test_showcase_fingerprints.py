@@ -106,6 +106,54 @@ class FingerprintTest(unittest.TestCase):
             p = root / "scripts/showcase_light.py"; p.write_text(p.read_text() + "\n# verifier fixed\n")
             self.assertEqual(self.evaluate(root=root)["checks"]["light"]["reason"], "fingerprint_verifier_changed")
 
+    def copied_verifiers(self, stages):
+        temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        for name in set().union(*(set(fp.verifier_files(ROOT, stage)) for stage in stages)):
+            path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT / name).read_bytes())
+        return root
+
+    def test_browser_dependencies_are_limited_to_browser_stages(self):
+        stages = {name for name in fp.SPECS if 'scripts/showcase_browser.py' in fp.verifier_files(ROOT, name)}
+        self.assertEqual(stages, set(fp.BROWSER_STAGES))
+
+    def test_browser_fix_preserves_unrelated_verifiers_but_changes_both_browser_checks(self):
+        stages = ('apply', 'light', 'doctors', 'before_reboot', 'after_reboot')
+        root = self.copied_verifiers(stages)
+        before = {stage:fp.verifier(root, stage) for stage in stages}
+        browser = root / 'scripts/showcase_browser.py'
+        browser.write_text(browser.read_text() + '\n# stricter browser verification\n')
+        for stage in stages:
+            with self.subTest(stage=stage):
+                self.assertEqual(fp.verifier(root, stage) == before[stage], stage not in fp.BROWSER_STAGES)
+
+    def test_new_peer_import_outside_deferred_callback_is_rejected(self):
+        root = self.copied_verifiers(('light', 'before_reboot'))
+        peer = root / 'scripts/showcase_local_peer.py'
+        peer.write_text(peer.read_text() + '\ndef unexpected():\n    import showcase_peer\n')
+        with self.assertRaisesRegex(PolicyError, '^fingerprint_browser_dependency_outside_stage$'):
+            fp.verifier_files(root, 'light')
+
+    def test_changed_deferred_import_symbols_require_explicit_dependency_review(self):
+        root = self.copied_verifiers(('light',))
+        peer = root / 'scripts/showcase_local_peer.py'
+        text = peer.read_text(); self.assertIn('from showcase_peer import LOADER, payload_valid', text)
+        peer.write_text(text.replace('from showcase_peer import LOADER, payload_valid',
+                                     'from showcase_peer import LOADER, payload_valid, new_callback'))
+        with self.assertRaisesRegex(PolicyError, '^fingerprint_deferred_dependency_changed$'):
+            fp.verifier_files(root, 'light')
+
+    def test_added_local_dependency_is_hashed_and_missing_dependency_is_rejected(self):
+        root = self.copied_verifiers(('light',))
+        light = root / 'scripts/showcase_light.py'
+        light.write_text(light.read_text() + '\nimport showcase_new_verifier\n')
+        with self.assertRaisesRegex(PolicyError, '^fingerprint_source_missing$'):
+            fp.verifier_files(root, 'light')
+        dependency = root / 'scripts/showcase_new_verifier.py'; dependency.write_text('RULE = 1\n')
+        before = fp.verifier(root, 'light'); dependency.write_text('RULE = 2\n')
+        self.assertNotEqual(fp.verifier(root, 'light'), before)
+
     def test_earlier_false_pass_or_missing_dependency_never_carried(self):
         for mutate in (lambda b: b["checks"].pop("apply"), lambda b: b["checks"]["apply"].update(status="unverified"),
                        lambda b: b["checks"]["light"]["evidence"].update(status="fail")):

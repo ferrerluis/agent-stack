@@ -28,6 +28,8 @@ class LaunchTest(unittest.TestCase):
             config={'attempt_seconds':10800})
 
     def local_attempt(self):
+        environment = patch.object(launch, 'local_test_environment', return_value={'fixture': 'tools-v1'})
+        self.environment = environment.start(); self.addCleanup(environment.stop)
         self.a.run = self.run / 'batch/attempts/as7-fixture01'
         self.a.run.mkdir(parents=True)
         self.a.run.parent.parent.chmod(0o700)
@@ -37,6 +39,82 @@ class LaunchTest(unittest.TestCase):
         prepared = {'source_revision': 'a'*40,
                     'source_files': {'fixture.py': launch.hashlib.sha256(source.read_bytes()).hexdigest()}}
         return prepared
+
+    def test_docs_only_revision_reuses_suite_but_retains_original_qualification(self):
+        prepared = self.local_attempt()
+        result = SimpleNamespace(returncode=0, stdout=b'all phases passed\n', stderr=b'')
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', return_value=result) as run:
+            first = launch.local_checks(self.a)
+            (self.run / 'README.md').write_text('[source](fixture.py)\n')
+            prepared['source_revision'] = 'b'*40
+            prepared['source_files']['README.md'] = launch.hashlib.sha256((self.run / 'README.md').read_bytes()).hexdigest()
+            reused = launch.local_checks(self.a)
+            run.assert_called_once()
+            self.assertEqual(reused['source_revision'], 'b'*40)
+            self.assertEqual(reused['qualified_source_revision'], first['source_revision'])
+            self.assertNotEqual(reused['source_files_sha256'], first['source_files_sha256'])
+            self.assertEqual(reused['execution_input_fingerprint'], first['execution_input_fingerprint'])
+            self.assertEqual(reused['receipt_sha256'], launch.proof_hash({k:v for k,v in reused.items() if k!='receipt_sha256'}))
+            (self.run / 'README.md').write_text('[broken](missing.py)\n')
+            prepared['source_files']['README.md'] = launch.hashlib.sha256((self.run / 'README.md').read_bytes()).hexdigest()
+            with self.assertRaisesRegex(PolicyError, '^local_documentation_link_missing$'):
+                launch.local_checks(self.a)
+            run.assert_called_once()
+
+    def test_execution_inputs_permissions_and_environment_force_requalification(self):
+        prepared = self.local_attempt()
+        result = SimpleNamespace(returncode=0, stdout=b'all phases passed\n', stderr=b'')
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', return_value=result) as run:
+            launch.local_checks(self.a)
+            # A skill is executable guidance even though its extension is Markdown.
+            skill = self.run / 'skills/fixture/SKILL.md'; skill.parent.mkdir(parents=True)
+            skill.write_text('runtime instruction')
+            prepared['source_files']['skills/fixture/SKILL.md'] = launch.hashlib.sha256(skill.read_bytes()).hexdigest()
+            launch.local_checks(self.a); self.assertEqual(run.call_count, 2)
+            code = self.run / 'fixture.py'; code.chmod(0o700)
+            launch.local_checks(self.a); self.assertEqual(run.call_count, 3)
+            self.environment.return_value = {'fixture':'tools-v2'}
+            launch.local_checks(self.a); self.assertEqual(run.call_count, 4)
+            code.write_text('new executable source\n')
+            prepared['source_files']['fixture.py'] = launch.hashlib.sha256(code.read_bytes()).hexdigest()
+            launch.local_checks(self.a); self.assertEqual(run.call_count, 5)
+
+    def test_tampered_or_legacy_receipt_cannot_reuse_a_pass(self):
+        prepared = self.local_attempt()
+        result = SimpleNamespace(returncode=0, stdout=b'all phases passed\n', stderr=b'')
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', return_value=result) as run:
+            receipt = launch.local_checks(self.a)
+            receipt['qualified_source_revision'] = 'f'*40
+            private_write(self.run / 'batch/local-checks.json', receipt)
+            launch.local_checks(self.a); self.assertEqual(run.call_count, 2)
+            receipt = json.loads((self.run / 'batch/local-checks.json').read_text())
+            receipt['schema'] = 1
+            receipt['receipt_sha256'] = launch.proof_hash({k:v for k,v in receipt.items() if k!='receipt_sha256'})
+            private_write(self.run / 'batch/local-checks.json', receipt)
+            launch.local_checks(self.a); self.assertEqual(run.call_count, 3)
+
+    def test_changed_environment_during_suite_cannot_issue_a_pass(self):
+        prepared = self.local_attempt()
+        self.environment.side_effect = [{'fixture':'tools-v1'}, {'fixture':'tools-v2'}]
+        with patch.object(launch, 'ROOT', self.run), patch.object(launch, 'verify_prepared', return_value=prepared), \
+             patch.object(launch.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'pass', stderr=b'')):
+            with self.assertRaisesRegex(PolicyError, '^local_test_source_changed$'):
+                launch.local_checks(self.a)
+        self.assertFalse((self.run / 'batch/local-checks.json').exists())
+
+    def test_environment_binds_actual_selected_tool_bytes(self):
+        executable = self.run / 'tool'; executable.write_bytes(b'version one'); executable.chmod(0o700)
+        with patch.object(launch.shutil, 'which', return_value=str(executable)), \
+             patch.object(launch.importlib.metadata, 'distributions', return_value=[]):
+            before = launch.local_test_environment(str(executable))
+            executable.write_bytes(b'version two')
+            self.assertNotEqual(before['tools'], launch.local_test_environment(str(executable))['tools'])
+            executable.unlink()
+            with self.assertRaisesRegex(PolicyError, '^local_test_tool_missing$'):
+                launch.local_test_environment(str(executable))
 
     def test_local_timeout_retains_output_without_issuing_a_pass(self):
         prepared = self.local_attempt()

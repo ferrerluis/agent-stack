@@ -5,6 +5,7 @@ proofs carry forward. Launch gates and independent cleanup are never cached.
 """
 import argparse
 import ast
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
@@ -17,8 +18,9 @@ SCHEMA = 1
 HEX = r"[a-f0-9]{64}"
 COMMON = ("scripts/showcase_fingerprints.py", "scripts/showcase_contents.py", "scripts/showcase_controller.py",
           "scripts/showcase_policy.py", "scripts/showcase_cleanup.py", "scripts/showcase_attempt.py")
-# (input components, prerequisite checks, verifier entry points). Imports from
-# these files are hashed recursively; external implementations are represented
+# (input components, prerequisite checks, verifier entry points). Used imports
+# are hashed recursively; deferred peer callbacks belong to browser stages only.
+# External implementations are represented
 # by observed installed bytes/versions and the committed provider lock file.
 SPECS = {
     "apply": (("deployment", "runtime"), (), ("showcase_terraform",)),
@@ -62,6 +64,35 @@ GROUPS = {
     "verified_cleanup": ("verified_cleanup",),
 }
 
+BROWSER_STAGES = frozenset({"before_reboot", "after_reboot"})
+# These callbacks are not executed by local_peer.checked/lifetime, which are
+# the only peer operations used outside browser verification. The whole peer
+# module is still hashed: changing its dispatch/identity rules invalidates it.
+DEFERRED_PEER_IMPORTS = {
+    ("execute_probe", "showcase_peer"): frozenset({"LOADER", "payload_valid"}),
+    ("start", "showcase_peer"): frozenset({"memory_file"}),
+}
+
+
+@lru_cache(maxsize=128)
+def local_imports(source):
+    """Preserve lexical function scope, including imports inside conditionals."""
+    rows = []
+    class Visitor(ast.NodeVisitor):
+        scope = ()
+        def visit_FunctionDef(self, node):
+            previous = self.scope; self.scope += (node.name,)
+            self.generic_visit(node); self.scope = previous
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+        def visit_Import(self, node):
+            rows.extend((".".join(self.scope), alias.name, None) for alias in node.names)
+        def visit_ImportFrom(self, node):
+            if node.module:
+                rows.append((".".join(self.scope), node.module, frozenset(alias.name for alias in node.names)))
+    Visitor().visit(ast.parse(source))
+    return tuple(rows)
+
 
 def hashed(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
@@ -91,13 +122,20 @@ def verifier_files(root, name):
         paths.add(path)
         source = Path(root) / path
         require(source.is_file() and not source.is_symlink(), "fingerprint_source_missing")
-        for node in ast.walk(ast.parse(source.read_bytes())):
-            names = [n.name for n in node.names] if isinstance(node, ast.Import) else [node.module] if isinstance(node, ast.ImportFrom) else []
-            for module in names:
-                if not module: continue
-                for candidate in ("scripts/" + module.replace(".", "/") + ".py", str(Path(path).parent / (module + ".py"))):
-                    if (Path(root) / candidate).is_file() and candidate not in paths:
-                        pending.append(candidate)
+        for function, module, symbols in local_imports(source.read_bytes()):
+            deferred = DEFERRED_PEER_IMPORTS.get((function, module)) if path == "scripts/showcase_local_peer.py" else None
+            if deferred is not None:
+                require(symbols == deferred, "fingerprint_deferred_dependency_changed")
+                if name not in BROWSER_STAGES:
+                    continue
+            candidates = ("scripts/" + module.replace(".", "/") + ".py", str(Path(path).parent / (module + ".py")))
+            found = [candidate for candidate in candidates if (Path(root) / candidate).is_file()]
+            require(found or not module.startswith("showcase_"), "fingerprint_source_missing")
+            for candidate in found:
+                if candidate not in paths:
+                    pending.append(candidate)
+    require(name in BROWSER_STAGES or not {"scripts/showcase_peer.py", "scripts/showcase_browser.py"} & paths,
+            "fingerprint_browser_dependency_outside_stage")
     return tuple(sorted(paths))
 
 

@@ -7,10 +7,16 @@ There is no externally supplied readiness or price override.
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING
 import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
+import platform
+import re
+import shutil
+import stat
 import subprocess
+import sys
 import time
 
 from showcase_attempt import ROOT, verify_prepared
@@ -39,18 +45,92 @@ def trial(attempt):
     return deadline
 
 
+def local_test_environment(terraform):
+    """Bind the selected local executables and installed dependency versions."""
+    tools = {}
+    for name in ("terraform", "python3", "bash", "git", "ssh", "ssh-keygen", "sshd"):
+        effective_path = str(Path(terraform).absolute().parent) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")
+        selected = terraform if name == "terraform" else shutil.which(name, path=effective_path)
+        if name == "sshd" and selected is None and Path("/usr/sbin/sshd").is_file():
+            selected = "/usr/sbin/sshd"
+        require(selected is not None and Path(selected).is_file(), "local_test_tool_missing")
+        path = Path(selected).absolute(); digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1048576), b""):
+                digest.update(chunk)
+        tools[name] = {"path": str(path), "sha256": digest.hexdigest(), "mode": stat.S_IMODE(path.stat().st_mode)}
+    packages = sorted((distribution.metadata["Name"], distribution.version)
+                      for distribution in importlib.metadata.distributions())
+    return {"tools": tools, "python": sys.version, "prefix": sys.prefix,
+            "platform": [platform.system(), platform.machine()], "uid": os.geteuid(), "packages": packages}
+
+
+def prose_documentation(name):
+    # Skills and other Markdown may be shipped or consumed as runtime inputs.
+    # Only these known planning/prose locations are eligible for cheap reuse.
+    path = Path(name)
+    return name == "README.md" or path.suffix.lower() == ".md" and path.parts[:2] == ("docs", "plans")
+
+
+def local_execution_fingerprint(prepared, terraform):
+    # Known prose documentation has changed links checked separately on reuse.
+    # Everything else, including tests, fixtures, locks and examples, remains an
+    # input. Unknown new file types are included conservatively.
+    files = {}
+    for name, expected in prepared["source_files"].items():
+        path = ROOT / name
+        require(path.is_file() and not path.is_symlink()
+                and hashlib.sha256(path.read_bytes()).hexdigest() == expected, "local_test_source_changed")
+        if not prose_documentation(name):
+            files[name] = {"sha256": expected, "mode": stat.S_IMODE(path.stat().st_mode)}
+    require(files, "local_test_execution_inputs_missing")
+    return proof_hash({"schema": 2, "files": files, "environment": local_test_environment(terraform),
+                       "command": ["scripts/test-local.sh"], "mirror": hashlib.sha256(
+                           (ROOT / ".tmp/agent-stack-tests/terraform-mirror.tfrc").read_bytes()).hexdigest()
+                       if (ROOT / ".tmp/agent-stack-tests/terraform-mirror.tfrc").is_file() else None})
+
+
+def changed_documentation_links(prepared, previous):
+    current = {name: value for name, value in prepared["source_files"].items() if Path(name).suffix.lower() == ".md"}
+    for name, value in current.items():
+        if previous.get(name) == value:
+            continue
+        source = ROOT / name
+        for target in re.findall(r"\]\(([^)]+)\)", source.read_text()):
+            target = target.strip().strip("<>").split("#", 1)[0]
+            if not target or target.startswith("/") or re.match(r"[a-zA-Z][a-zA-Z0-9+.-]*:", target):
+                continue
+            # Titles in Markdown links are optional, and external workspace
+            # references are not repository files or execution inputs.
+            target = re.split(r'\s+[\"\']', target, maxsplit=1)[0]
+            path = (source.parent / target).resolve()
+            if path.is_relative_to(ROOT.resolve()):
+                require(path.exists(), "local_documentation_link_missing")
+    return current
+
+
 def local_checks(attempt):
-    """Run the actual local suite; cache only this exact immutable source tree."""
+    """Qualify execution inputs once; commits are provenance, not a cache key."""
     prepared = verify_prepared(attempt.run, attempt.config, attempt.provider)
     binding = proof_hash(prepared["source_files"])
+    execution = local_execution_fingerprint(prepared, attempt.terraform)
     receipt_path = attempt.run.parent.parent / "local-checks.json"
     if receipt_path.exists():
         old = private_read(receipt_path)
         log = attempt.run.parent.parent / "local-checks.log"
-        if (old.get("source_revision") == prepared["source_revision"] and old.get("source_files_sha256") == binding
+        if (old.get("schema") == 2 and old.get("execution_input_fingerprint") == execution
+                and old.get("receipt_sha256") == proof_hash({k: v for k, v in old.items() if k != "receipt_sha256"})
                 and old.get("status") == "pass" and log.is_file()
                 and hashlib.sha256(log.read_bytes()).hexdigest() == old.get("output_sha256")):
-            return old
+            documentation = changed_documentation_links(prepared, old.get("documentation_files", {}))
+            require(local_execution_fingerprint(prepared, attempt.terraform) == execution, "local_test_source_changed")
+            receipt = {**old, "source_revision": prepared["source_revision"], "source_files_sha256": binding,
+                       "documentation_files": documentation}
+            receipt["receipt_sha256"] = proof_hash({k: v for k, v in receipt.items() if k != "receipt_sha256"})
+            if receipt != old:
+                private_write(receipt_path, receipt)
+            return receipt
+    documentation = changed_documentation_links(prepared, {})
     # The wrapper tests a private copy and uses fixtures, never operator inputs.
     # Its own cleanup and process-group handling are retained.
     env = dict(os.environ)
@@ -75,8 +155,13 @@ def local_checks(attempt):
     # Refuse any mismatch between the tested checkout and committed attempt.
     require(all((ROOT / name).is_file() and hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == sha
                 for name, sha in prepared["source_files"].items()), "local_test_source_changed")
-    receipt = {"status":"pass", "source_revision":prepared["source_revision"],
-               "source_files_sha256":binding, "output_sha256":hashlib.sha256(output).hexdigest()}
+    require(local_execution_fingerprint(prepared, attempt.terraform) == execution, "local_test_source_changed")
+    receipt = {"schema":2, "status":"pass", "source_revision":prepared["source_revision"],
+               "qualified_source_revision":prepared["source_revision"], "qualified_source_files_sha256":binding,
+               "source_files_sha256":binding, "execution_input_fingerprint":execution,
+               "documentation_files":documentation,
+               "output_sha256":hashlib.sha256(output).hexdigest()}
+    receipt["receipt_sha256"] = proof_hash(receipt)
     private_write(receipt_path, receipt)
     return receipt
 
