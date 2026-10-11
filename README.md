@@ -6,6 +6,30 @@
 
 ---
 
+## Compatibility
+
+### Cloud providers
+
+| Provider | Deployment target | `cloud_provider` |
+|----------|-------------------|------------------|
+| AWS | EC2 | `aws` |
+| DigitalOcean | Droplets | `digitalocean` |
+| Hetzner Cloud | Cloud servers | `hetzner` |
+| Google Cloud | Compute Engine | `gcp` |
+
+### AI model providers
+
+OpenClaw and Hermes support these providers on all four clouds:
+
+| Provider | Model reference | API-key variable |
+|----------|-----------------|------------------|
+| OpenAI | `openai/<model>` | `openai_api_key` |
+| Anthropic | `anthropic/<model>` | `anthropic_api_key` |
+| Google Gemini | `google/<model>` | `gemini_api_key` |
+| Groq | `groq/<model>` | `groq_api_key` |
+
+Select providers with `model_providers_enabled` and choose models with `default_model`, `fallback_models`, and optional `hermes_model`. OpenClaw also supports imported ChatGPT subscription auth through `openai_auth_mode = "codex"`; the workspace coding tools use OpenAI for Codex and Anthropic for Claude Code.
+
 ## What gets deployed
 
 | Component | AWS | DigitalOcean | Hetzner Cloud | Google Cloud |
