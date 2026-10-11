@@ -285,14 +285,26 @@ print(json.dumps({"type": "turn.completed", "usage": usage} if cli == "codex" el
             if path == home:
                 items = list(value); items[4] = 1000; return os.stat_result(items)
             return value
+        original_invoke = task.invoke
+        fixture_errors = []
+        def invoke(*args, **kwargs):
+            code, output, errors = original_invoke(*args, **kwargs)
+            if code:
+                # This child is a fake CLI with fixture keys. Keep its traceback
+                # useful on other test hosts without printing role credentials.
+                for secret in (PRIVATE, *self.gateway.tokens.values()):
+                    errors = errors.replace(secret, "[fixture credential]")
+                fixture_errors.append(errors[-3000:])
+            return code, output, errors
         with patch.dict(os.environ, {"HOME": str(home), "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                      "OPENAI_API_KEY": PRIVATE, "ANTHROPIC_API_KEY": PRIVATE, "https_proxy": PRIVATE}), \
-             patch.object(task.os, "geteuid", return_value=1000), patch.object(Path, "stat", stat):
+             patch.object(task.os, "geteuid", return_value=1000), patch.object(Path, "stat", stat), \
+             patch.object(task, "invoke", side_effect=invoke):
             for cli in ("codex", "claude"):
                 bundle = self.gateway.client(cli)
                 challenge = {"lhs": 17, "rhs": 26, "nonce": ("a1" if cli == "codex" else "b2") * 16}
                 result = task.run_task(cli, self.config["models"][cli], json.dumps(bundle), 10, model_gateway=True, challenge=challenge)
-                self.assertEqual(result["status"], "pass", result)
+                self.assertEqual(result["status"], "pass", (result, fixture_errors))
                 self.assertTrue(result["verified"])
                 directory = home / result["fixture"]
                 self.assertEqual({p.name for p in directory.iterdir()}, {"input.json", "result.json"})

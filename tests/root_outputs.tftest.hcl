@@ -89,6 +89,36 @@ variables {
   openai_codex_auth_json_base64                  = ""
 }
 
+run "hermes_inherits_legacy_openai_model" {
+  command = plan
+  variables {
+    cloud_provider                = "digitalocean"
+    model_providers_enabled       = ["openai"]
+    default_model                 = "openai-codex/gpt-5.3-codex"
+    hermes_model                  = ""
+    openai_codex_auth_json_base64 = base64encode("{\"tokens\":{\"access_token\":\"fixture\"}}")
+  }
+  assert {
+    condition     = jsondecode(local.runtime_hermes_seed).model_ref == "openai/gpt-5.3-codex"
+    error_message = "Hermes must inherit legacy OpenAI references through its supported openai route."
+  }
+}
+
+run "hermes_explicit_model_override" {
+  command = plan
+  variables {
+    cloud_provider                = "digitalocean"
+    model_providers_enabled       = ["openai"]
+    default_model                 = "openai-codex/gpt-5.3-codex"
+    hermes_model                  = "anthropic/claude-test"
+    openai_codex_auth_json_base64 = base64encode("{\"tokens\":{\"access_token\":\"fixture\"}}")
+  }
+  assert {
+    condition     = jsondecode(local.runtime_hermes_seed).model_ref == "anthropic/claude-test"
+    error_message = "An explicit Hermes model must take precedence over the legacy default."
+  }
+}
+
 run "tailscale_private_outputs" {
   command   = plan
   state_key = "tailscale-private-outputs"
