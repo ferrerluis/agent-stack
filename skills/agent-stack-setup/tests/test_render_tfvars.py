@@ -102,6 +102,7 @@ class RenderTfvarsTest(unittest.TestCase):
         self.assertIn('repo_ssh_host_alias = "agent-stack"', rendered)
         self.assertIn('repo_ssh_private_key_path = ".ssh/id_ed25519_agent_stack"', rendered)
         self.assertIn('aws_ami_id = ""', rendered)
+        self.assertIn("showcase_trial_limits = null", rendered)
         self.assertIn("openclaw_swap_size_mb = 0", rendered)
         self.assertIn("openclaw_health_start_period_seconds = 120", rendered)
         self.assertIn("openclaw_health_retries = 8", rendered)
@@ -207,6 +208,20 @@ class RenderTfvarsTest(unittest.TestCase):
         self.assertIn('do_token = "do-real-token"', rendered)
         self.assertIn("tailscale_enabled = false", rendered)
         self.assertIn('openai_auth_mode = "api_key"', rendered)
+
+    def test_workspace_hash_render_and_conflicting_or_plaintext_inputs(self) -> None:
+        hashed = "$6$fixturesalt12345$" + "a" * 86
+        inputs = {"cloud_provider": "digitalocean", "do_token": "do-test-token", "openai_api_key": "test-openai-key",
+                  "model_providers_enabled": ["openai"], "default_model": "openai/test-model", "fallback_models": [],
+                  "tailscale_enabled": False, "enabled_services": ["workspace"], "workspace_password_hash": hashed}
+        _, rendered = run_render(inputs)
+        self.assertIn('workspace_password_hash = "' + hashed + '"', rendered)
+        self.assertIn('workspace_password = ""', rendered)
+        result, _ = run_render({**inputs, "workspace_password": "test-password"}, expect_success=False)
+        self.assertIn("Supply only one", result.stderr)
+        result, _ = run_render({**inputs, "workspace_password_hash": "test-plaintext-value"}, expect_success=False)
+        self.assertIn("salted SHA-512", result.stderr)
+        self.assertNotIn("test-plaintext-value", result.stderr)
 
     def test_renders_openai_codex_auth_mode_with_canonical_models(self) -> None:
         _, rendered = run_render(

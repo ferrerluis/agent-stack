@@ -1,3 +1,5 @@
+mock_provider "google" {}
+
 override_module {
   target = module.aws
   outputs = {
@@ -26,6 +28,16 @@ override_module {
     server_id          = 31337
     volume_id          = "31338"
     ssh_command        = "ssh admin@203.0.113.30"
+  }
+}
+
+override_module {
+  target = module.gcp
+  outputs = {
+    instance_public_ip = "203.0.113.40"
+    instance_id        = "projects/agent-stack-tests/zones/us-east1-b/instances/agent-stack"
+    volume_id          = "projects/agent-stack-tests/zones/us-east1-b/disks/agent-stack-data"
+    device_name        = "agent-stack-data"
   }
 }
 
@@ -70,6 +82,43 @@ variables {
   openai_codex_auth_json_base64                  = ""
 }
 
+run "workspace_confinement_preserves_ordinary_defaults" {
+  command = plan
+  assert {
+    condition     = jsondecode(nonsensitive(local.runtime_openclaw_seed)).trusted_loopback_proxies_enabled == false
+    error_message = "Ordinary deployments must not acquire proxy trust without the host-network opt-in."
+  }
+  assert {
+    condition     = !var.workspace_codex_sandbox_enabled && !strcontains(local.runtime_docker_compose, "workspace-seccomp.json") && !strcontains(local.runtime_agent_stack_service, "workspace-sandbox.py")
+    error_message = "Scoped Codex confinement must remain an explicit opt-in."
+  }
+}
+
+run "workspace_confinement_loads_before_start_and_after_reboot" {
+  command = plan
+  variables {
+    enabled_services                = ["openclaw", "hermes", "workspace"]
+    workspace_password              = "workspace-plan-fixture-password"
+    workspace_codex_sandbox_enabled = true
+  }
+  assert {
+    condition     = strcontains(local.runtime_agent_stack_service, "ExecStartPre=/usr/bin/python3 -B /opt/agent-stack/workspace-sandbox.py") && strcontains(local.runtime_docker_compose, "seccomp=/opt/agent-stack/workspace-seccomp.json") && strcontains(local.runtime_docker_compose, "apparmor=agent-stack-workspace-codex") && strcontains(local.runtime_docker_compose, "no-new-privileges:true")
+    error_message = "Workspace startup must load the scoped policy before Docker creates its confined containers."
+  }
+  assert {
+    condition     = !strcontains(local.runtime_docker_compose, "SYS_ADMIN") && !strcontains(local.runtime_docker_compose, "unconfined") && !strcontains(local.runtime_docker_compose, "privileged: true")
+    error_message = "The Codex policy must not grant host administration or disable container confinement."
+  }
+}
+
+run "workspace_confinement_requires_workspace" {
+  command = plan
+  variables {
+    workspace_codex_sandbox_enabled = true
+  }
+  expect_failures = [var.workspace_codex_sandbox_enabled]
+}
+
 run "rejects_unknown_cloud_provider" {
   command = plan
 
@@ -80,6 +129,86 @@ run "rejects_unknown_cloud_provider" {
   expect_failures = [
     var.cloud_provider,
   ]
+}
+
+run "rejects_hermes_dependency_patch_for_unrecognized_image" {
+  command = plan
+  variables {
+    hermes_npm_security_patch_enabled = true
+    hermes_image                      = "nousresearch/hermes-agent:latest"
+  }
+  expect_failures = [var.hermes_npm_security_patch_enabled]
+}
+
+run "accepts_pinned_hermes_dependency_patch" {
+  command = plan
+  variables {
+    hermes_npm_security_patch_enabled = true
+    hermes_image                      = "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db"
+  }
+  assert {
+    condition     = strcontains(local.runtime_docker_compose, "agent-stack-hermes-npm-patch.py") && strcontains(local.runtime_docker_compose, "agent-stack-hermes-npm-patch.json:ro")
+    error_message = "The pinned Hermes repair must run before the original entrypoint and use its declared read-only bundle."
+  }
+}
+
+run "hermes_dependency_patch_keeps_ordinary_startup_default" {
+  command = plan
+  assert {
+    condition     = var.hermes_npm_security_patch_enabled == false && !strcontains(local.runtime_docker_compose, "agent-stack-hermes-npm-patch.py") && strcontains(local.runtime_docker_compose, "start_period: 120s")
+    error_message = "Ordinary Hermes startup must retain its original entrypoint and readiness defaults."
+  }
+}
+
+run "rejects_hermes_dependency_patch_when_hermes_is_disabled" {
+  command = plan
+  variables {
+    enabled_services                  = ["openclaw"]
+    hermes_npm_security_patch_enabled = true
+    hermes_image                      = "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db"
+  }
+  expect_failures = [var.hermes_npm_security_patch_enabled]
+}
+
+run "rejects_openclaw_host_network_without_native_tailnet" {
+  command = plan
+  variables {
+    openclaw_host_network_enabled = true
+    tailscale_enabled             = false
+  }
+  expect_failures = [var.openclaw_host_network_enabled]
+}
+
+run "rejects_openclaw_host_network_with_sidecar_tailnet" {
+  command = plan
+  variables {
+    openclaw_host_network_enabled = true
+    tailscale_enabled             = true
+    tailscale_mode                = "sidecar"
+    tailscale_auth_key            = "tskey-auth-agent-stack-tests"
+  }
+  expect_failures = [var.openclaw_host_network_enabled]
+}
+
+run "accepts_openclaw_host_network_with_loopback_native_tailnet" {
+  command = plan
+  variables {
+    openclaw_host_network_enabled = true
+    tailscale_enabled             = true
+    tailscale_mode                = "host"
+    tailscale_auth_key            = "tskey-auth-agent-stack-tests"
+    public_domain_enabled         = false
+    hermes_dashboard_password     = "hermes-password-agent-stack-tests"
+    hermes_dashboard_secret       = "hermes-session-secret-agent-stack-tests"
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=loopback") && strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "network_mode: \"host\"") && !strcontains(split("\n  hermes:", local.runtime_docker_compose)[0], "ports:")
+    error_message = "Opt-in OpenClaw host networking must bind loopback without Docker port publication."
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(local.runtime_openclaw_seed)).trusted_loopback_proxies_enabled == true
+    error_message = "Opt-in host networking must seed trust for the loopback Tailscale proxy."
+  }
 }
 
 run "rejects_root_admin_user" {
@@ -379,6 +508,42 @@ run "rejects_workspace_private_key_path_in_public_keys" {
   ]
 }
 
+run "accepts_workspace_password_hash_without_plaintext" {
+  command = plan
+
+  variables {
+    enabled_services        = ["openclaw", "workspace"]
+    workspace_password      = ""
+    workspace_password_hash = "$6$fixturesalt12345$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+
+  assert {
+    condition     = strcontains(local.runtime_workspace_env, "WORKSPACE_PASSWORD_HASH='$6$fixturesalt12345$") && strcontains(local.runtime_workspace_env, "WORKSPACE_PASSWORD=\n")
+    error_message = "The hash must retain literal dollar signs and the plaintext workspace password must be empty."
+  }
+}
+
+run "rejects_workspace_password_and_hash_together" {
+  command = plan
+
+  variables {
+    workspace_password      = "tests-only-password"
+    workspace_password_hash = "$6$fixturesalt12345$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+
+  expect_failures = [var.workspace_password]
+}
+
+run "rejects_plaintext_in_workspace_password_hash" {
+  command = plan
+
+  variables {
+    workspace_password_hash = "tests-only-plaintext"
+  }
+
+  expect_failures = [var.workspace_password_hash]
+}
+
 run "rejects_workspace_codex_auto_update_without_workspace_service" {
   command = plan
 
@@ -501,4 +666,45 @@ run "rejects_invalid_tailscale_mode" {
   expect_failures = [
     var.tailscale_mode,
   ]
+}
+
+run "rejects_missing_gcp_project" {
+  command = plan
+  variables { cloud_provider = "gcp" }
+  expect_failures = [var.gcp_project_id]
+}
+run "rejects_wrong_gcp_zone" {
+  command = plan
+  variables {
+    cloud_provider = "gcp"
+    gcp_project_id = "agent-stack-tests"
+    gcp_zone       = "us-west1-a"
+  }
+  expect_failures = [var.gcp_zone]
+}
+run "rejects_pinned_nonstandard_gcp_image" {
+  command = plan
+  variables {
+    gcp_pin_boot_image = true
+    gcp_image          = "foreign-project/image"
+  }
+  expect_failures = [var.gcp_pin_boot_image]
+}
+run "rejects_pinned_nonstandard_hetzner_image" {
+  command = plan
+  variables {
+    hcloud_pin_boot_image = true
+    hcloud_image          = "debian-12"
+  }
+  expect_failures = [var.hcloud_pin_boot_image]
+}
+run "rejects_unpinned_claude" {
+  command = plan
+  variables {
+    enabled_services         = ["workspace"]
+    workspace_password       = "tests-only-long-password"
+    workspace_claude_enabled = true
+    workspace_claude_release = "latest"
+  }
+  expect_failures = [var.workspace_claude_release]
 }

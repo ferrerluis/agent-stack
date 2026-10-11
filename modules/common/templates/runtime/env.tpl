@@ -13,21 +13,22 @@ N8N_ENABLED=${n8n_enabled}
 LOCAL_POSTGRES_ENABLED=${local_postgres_enabled}
 CADDY_ENABLED=${caddy_enabled}
 NODE_OPTIONS=${openclaw_node_options}
+OPENCLAW_GATEWAY_BIND=${openclaw_gateway_bind}
 %{ if tailscale_enabled }
-OPENCLAW_GATEWAY_BIND=loopback
 TAILSCALE_AUTH_KEY=${tailscale_auth_key}
 TAILSCALE_HOSTNAME=${project_name}
 TAILSCALE_MODE=${tailscale_mode}
-%{ else }
-OPENCLAW_GATEWAY_BIND=lan
 %{ endif }
 HERMES_DASHBOARD=${hermes_dashboard_enabled ? "1" : "0"}
 HERMES_DASHBOARD_HOST=0.0.0.0
 HERMES_DASHBOARD_PORT=9119
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${hermes_dashboard_username}
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${hermes_dashboard_password}
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=${hermes_dashboard_secret}
 API_SERVER_ENABLED=${hermes_api_server_enabled}
 API_SERVER_HOST=0.0.0.0
 API_SERVER_KEY=${hermes_api_server_key}
-API_SERVER_CORS_ORIGINS=*
+API_SERVER_CORS_ORIGINS=
 N8N_ENCRYPTION_KEY=${n8n_encryption_key}
 GENERIC_TIMEZONE=${n8n_generic_timezone}
 DB_TYPE=postgresdb

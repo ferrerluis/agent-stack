@@ -1,12 +1,16 @@
 services:
 %{ if openclaw_enabled }
   openclaw:
-    image: ghcr.io/openclaw/openclaw:${openclaw_version}
+    image: ${openclaw_image}
     restart: unless-stopped
     env_file: .env
+%{ if openclaw_host_network_enabled }
+    network_mode: "host"
+%{ else }
     ports:
       - "127.0.0.1:18789:18789"
       - "127.0.0.1:18793:18793"
+%{ endif }
     volumes:
       - /opt/agent-stack/data/openclaw:/home/node/.openclaw
 %{ if openclaw_version == "2026.6.8" || openclaw_version == "2026.6.9-beta.1" }
@@ -26,6 +30,9 @@ services:
 
   hermes:
     image: ${hermes_image}
+%{ if hermes_npm_security_patch_enabled }
+    entrypoint: ["/opt/hermes/.venv/bin/python", "-B", "/usr/local/libexec/agent-stack-hermes-npm-patch.py"]
+%{ endif }
     restart: unless-stopped
     command: gateway run
     env_file: .env
@@ -34,6 +41,19 @@ services:
       - "127.0.0.1:9119:9119"
     volumes:
       - /opt/agent-stack/data/hermes:/opt/data
+      - /opt/agent-stack/hermes_health.py:/usr/local/libexec/agent-stack-hermes-health.py:ro
+%{ if hermes_npm_security_patch_enabled }
+      - /opt/agent-stack/hermes_npm_patch.py:/usr/local/libexec/agent-stack-hermes-npm-patch.py:ro
+      - /opt/agent-stack/hermes_npm_patch.json:/usr/local/libexec/agent-stack-hermes-npm-patch.json:ro
+%{ endif }
+%{ if hermes_api_server_enabled }
+    healthcheck:
+      test: ["CMD", "/opt/hermes/.venv/bin/python", "/usr/local/libexec/agent-stack-hermes-health.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: ${hermes_npm_security_patch_enabled ? 480 : 120}s
+%{ endif }
     environment:
       HERMES_DASHBOARD: "${hermes_dashboard_enabled ? "1" : "0"}"
       HERMES_DASHBOARD_HOST: "0.0.0.0"
@@ -41,7 +61,7 @@ services:
       API_SERVER_ENABLED: "${hermes_api_server_enabled ? "true" : "false"}"
       API_SERVER_HOST: "0.0.0.0"
       API_SERVER_KEY: "${hermes_api_server_key}"
-      API_SERVER_CORS_ORIGINS: "*"
+      API_SERVER_CORS_ORIGINS: ""
 %{ endif }
 %{ if local_postgres_enabled }
 
@@ -82,6 +102,12 @@ services:
 
   workspace:
     image: agent-stack-workspace:local
+%{ if workspace_codex_sandbox_enabled }
+    security_opt:
+      - "no-new-privileges:true"
+      - "seccomp=/opt/agent-stack/workspace-seccomp.json"
+      - "apparmor=agent-stack-workspace-codex"
+%{ endif }
     restart: unless-stopped
     stop_grace_period: 2m
     env_file: workspace.env

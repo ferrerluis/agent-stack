@@ -10,7 +10,7 @@ Use this skill for first-time setup, reconfiguration, or guided redeploys.
 Core rules:
 - Treat `variables.tf` as the schema and true-default source of truth.
 - Treat `terraform.tfvars.example` as a suggestion source only for required values that have no Terraform default and for human-friendly examples.
-- The target file is `terraform.tfvars` in the repo root. In this workspace it is `/Users/ferrerluis/Documents/GitHub/agent-stack/terraform.tfvars`.
+- The target file is `terraform.tfvars` in the active repo root. Showcase acceptance uses a fresh isolated checkout/state and the named example instead of existing operator inputs.
 - Never silently accept placeholder secrets such as `YOUR_AWS_ACCESS_KEY_ID`, `sk-...`, or `tskey-auth-...`.
 - Prefer a default-first setup flow. Do not ask one question per Terraform variable when the repo already has a sensible default.
 - Keep the normal setup interview to 8 prompts or fewer. Only ask follow-up questions when the user rejects a default, a required value is missing, or the repo has a known limitation.
@@ -71,3 +71,7 @@ Core rules:
 - `references/placeholders.md` for placeholder rejection and example-suggestion handling.
 - `references/auth-and-schema-gaps.md` for current Anthropic and OpenAI auth guidance, Codex login import steps, and remaining implementation gaps.
 - `references/verification.md` for post-apply verification, bootstrap recovery, and handoff commands.
+
+## Showcase and GCP
+
+Use `examples/showcase/README.md` for TODO #7 acceptance. GCP authenticates through ADC/workload identity and requires an approved project with billing, Compute API, quota and compatible SSH/project policy. Preserve ordinary defaults; require explicit pins and use strict doctor plus real API-key tasks and second-peer authenticated browser checks before claiming success.

@@ -6,6 +6,15 @@ terraform {
   }
 }
 
+data "hcloud_image" "boot" {
+  count              = var.hcloud_pin_boot_image ? 1 : 0
+  name               = "ubuntu-22.04"
+  with_architecture  = "x86"
+  with_status        = ["available"]
+  most_recent        = false
+  include_deprecated = true
+}
+
 locals {
   hcloud_volume_id = (
     var.hcloud_existing_volume_id != ""
@@ -15,7 +24,9 @@ locals {
 
   cloud_init_vars = {
     provider_type                        = "hetzner"
+    gcp_device_name                      = ""
     project_name                         = var.project_name
+    showcase_trial_limits                = var.showcase_trial_limits
     admin_username                       = var.admin_username
     admin_ssh_public_key                 = var.ssh_public_key
     ebs_volume_id                        = ""
@@ -137,7 +148,7 @@ resource "hcloud_firewall" "this" {
 
 resource "hcloud_server" "this" {
   name        = var.project_name
-  image       = var.hcloud_image
+  image       = var.hcloud_pin_boot_image ? tostring(one(data.hcloud_image.boot[*].id)) : var.hcloud_image
   server_type = var.hcloud_server_type
   location    = var.hcloud_location
   ssh_keys    = [hcloud_ssh_key.this.id]

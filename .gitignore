@@ -52,3 +52,7 @@ id_ed25519
 
 # Claude Code working directory
 .claude/
+
+# Private showcase input, reservation, state and recovery records
+/.showcase-runs/
+/showcase-inputs.json

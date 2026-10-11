@@ -2,6 +2,11 @@ variable "project_name" { type = string }
 variable "admin_username" { type = string }
 variable "aws_region" { type = string }
 variable "aws_instance_type" { type = string }
+variable "aws_showcase_cost_controls" {
+  type     = bool
+  default  = false
+  nullable = false
+}
 variable "aws_ami_id" { type = string }
 variable "aws_disk_size_gb" { type = number }
 
@@ -130,4 +135,13 @@ variable "ui_auth_username" { type = string }
 variable "ui_auth_password" {
   type      = string
   sensitive = true
+}
+
+variable "showcase_trial_limits" {
+  description = "Temporary showcase guest deadline and per-boot outbound quota; null preserves ordinary deployments."
+  type = object({
+    deadline_utc     = string
+    egress_cap_bytes = number
+  })
+  default = null
 }

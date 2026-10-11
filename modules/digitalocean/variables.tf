@@ -1,6 +1,10 @@
 variable "project_name" { type = string }
 variable "admin_username" { type = string }
 variable "do_region" { type = string }
+variable "do_project_id" {
+  type    = string
+  default = ""
+}
 variable "do_droplet_size" { type = string }
 variable "do_disk_size_gb" { type = number }
 
@@ -134,4 +138,13 @@ variable "ui_auth_username" { type = string }
 variable "ui_auth_password" {
   type      = string
   sensitive = true
+}
+
+variable "showcase_trial_limits" {
+  description = "Temporary showcase guest deadline and per-boot outbound quota; null preserves ordinary deployments."
+  type = object({
+    deadline_utc     = string
+    egress_cap_bytes = number
+  })
+  default = null
 }

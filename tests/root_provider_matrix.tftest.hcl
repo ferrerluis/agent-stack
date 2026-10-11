@@ -1,3 +1,5 @@
+mock_provider "google" {}
+
 override_module {
   target = module.aws
   outputs = {
@@ -29,6 +31,16 @@ override_module {
   }
 }
 
+override_module {
+  target = module.gcp
+  outputs = {
+    instance_public_ip = "203.0.113.40"
+    instance_id        = "projects/agent-stack-tests/zones/us-east1-b/instances/agent-stack"
+    volume_id          = "projects/agent-stack-tests/zones/us-east1-b/disks/agent-stack-data"
+    device_name        = "agent-stack-data"
+  }
+}
+
 variables {
   project_name                                   = "agent-stack"
   admin_ssh_host_override                        = ""
@@ -48,6 +60,8 @@ variables {
   gemini_api_key                                 = "gemini-agent-stack-tests"
   gateway_token                                  = "gateway-token-agent-stack-tests"
   hermes_api_server_key                          = "hermes-key-agent-stack-tests"
+  hermes_dashboard_password                      = "hermes-password-agent-stack-tests"
+  hermes_dashboard_secret                        = "hermes-session-secret-agent-stack-tests"
   n8n_encryption_key                             = "n8n-key-agent-stack-tests"
   postgres_password                              = "postgres-password-agent-stack-tests"
   ui_auth_password                               = "ui-password-agent-stack-tests"
@@ -154,5 +168,123 @@ run "hetzner_provider_matrix" {
   assert {
     condition     = terraform_data.runtime_apply.triggers_replace.volume_id == "31338"
     error_message = "Runtime replacement triggers should include the selected Hetzner volume ID."
+  }
+}
+
+run "gcp_provider_matrix" {
+  command   = plan
+  state_key = "gcp-provider-matrix"
+  variables {
+    cloud_provider           = "gcp"
+    gcp_project_id           = "agent-stack-tests"
+    enabled_services         = ["openclaw", "hermes", "workspace"]
+    workspace_password       = "tests-only-long-password"
+    workspace_claude_enabled = true
+    workspace_claude_release = "2.1.211"
+  }
+  assert {
+    condition     = output.instance_public_ip == "203.0.113.40" && output.provider_used == "gcp"
+    error_message = "GCP selection must use the Google endpoint."
+  }
+  assert {
+    condition     = terraform_data.runtime_apply.triggers_replace.instance_id == "projects/agent-stack-tests/zones/us-east1-b/instances/agent-stack"
+    error_message = "Runtime deployment must track the Google instance."
+  }
+  assert {
+    condition     = strcontains(local.runtime_mount_volume, "/dev/disk/by-id/google-agent-stack-data")
+    error_message = "GCP runtime must mount the attached data disk by stable device name."
+  }
+  assert {
+    condition     = strcontains(local.runtime_workspace_dockerfile, "ARG CLAUDE_RELEASE=2.1.211") && strcontains(local.runtime_workspace_dockerfile, "/usr/local/bin/claude")
+    error_message = "The combined workspace must render a pinned, user-accessible Claude installation."
+  }
+}
+
+run "host_tailscale_gateway_reachable_through_private_publish" {
+  command   = plan
+  state_key = "host-tailscale-bind"
+  variables {
+    cloud_provider = "aws"
+    tailscale_mode = "host"
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=lan") && strcontains(local.runtime_docker_compose, "127.0.0.1:18789:18789")
+    error_message = "Host Tailscale must reach the container while Docker keeps the gateway published only on host loopback."
+  }
+  assert {
+    condition     = jsondecode(nonsensitive(local.runtime_openclaw_seed)).gateway_bind == "lan"
+    error_message = "Fresh gateway configuration must agree with the host-mode listener."
+  }
+}
+
+run "sidecar_gateway_keeps_shared_namespace_loopback" {
+  command   = plan
+  state_key = "sidecar-tailscale-bind"
+  variables {
+    cloud_provider = "aws"
+    tailscale_mode = "sidecar"
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "OPENCLAW_GATEWAY_BIND=loopback") && jsondecode(nonsensitive(local.runtime_openclaw_seed)).gateway_bind == "loopback"
+    error_message = "A sidecar sharing the OpenClaw namespace must use loopback in both environment and first-start configuration."
+  }
+}
+
+run "normalized_inputs_baseline" {
+  command = plan
+  variables { cloud_provider = "digitalocean" }
+  assert {
+    condition     = length(output.deployment_input_fingerprints.runtime) == 64 && length(output.deployment_input_fingerprints.deployment) == 64
+    error_message = "Recipe fingerprints must be known before apply, including when resource IDs are unknown."
+  }
+}
+run "normalized_inputs_trial_identity" {
+  command = plan
+  variables {
+    cloud_provider            = "digitalocean"
+    project_name              = "another-owned-trial"
+    ssh_public_key            = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDifferentTrialKeyFixture agent-stack-test"
+    workspace_ssh_public_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDifferentTrialKeyFixture agent-stack-test"]
+    gateway_token             = "another-generated-trial-secret"
+    hermes_dashboard_password = "different-trial-password"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints == run.normalized_inputs_baseline.deployment_input_fingerprints
+    error_message = "Trial names, generated credentials and public keys must not invalidate unchanged deployment inputs."
+  }
+}
+run "normalized_inputs_other_provider" {
+  command = plan
+  variables {
+    cloud_provider     = "digitalocean"
+    aws_instance_type  = "m7a.medium"
+    gcp_machine_type   = "e2-medium"
+    hcloud_server_type = "cx23"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints == run.normalized_inputs_baseline.deployment_input_fingerprints
+    error_message = "Another provider's settings must not invalidate DigitalOcean."
+  }
+}
+run "normalized_inputs_machine" {
+  command = plan
+  variables {
+    cloud_provider  = "digitalocean"
+    do_droplet_size = "s-2vcpu-4gb-amd"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints.deployment != run.normalized_inputs_baseline.deployment_input_fingerprints.deployment && output.deployment_input_fingerprints.runtime == run.normalized_inputs_baseline.deployment_input_fingerprints.runtime
+    error_message = "A machine change must affect this cloud's deployment inputs."
+  }
+}
+run "normalized_inputs_runtime" {
+  command = plan
+  variables {
+    cloud_provider          = "digitalocean"
+    workspace_codex_release = "0.146.0"
+  }
+  assert {
+    condition     = output.deployment_input_fingerprints.runtime != run.normalized_inputs_baseline.deployment_input_fingerprints.runtime && output.deployment_input_fingerprints.deployment == run.normalized_inputs_baseline.deployment_input_fingerprints.deployment
+    error_message = "A CLI recipe change must affect runtime inputs."
   }
 }

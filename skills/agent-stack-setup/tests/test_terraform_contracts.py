@@ -173,7 +173,7 @@ class TerraformContractTest(unittest.TestCase):
             self.main_tf,
             r"workspace_codex_auto_recover_interrupted_turns\s+=\s+var\.workspace_codex_auto_recover_interrupted_turns",
         )
-        self.assertIn("workspace_password must be set when enabled_services includes workspace.", workspace_password)
+        self.assertIn("workspace_password or workspace_password_hash must be set when enabled_services includes workspace.", workspace_password)
         self.assertIn("sensitive   = true", workspace_password)
         self.assertIn("must be OpenSSH public key strings", workspace_ssh_public_keys)
         self.assertNotIn("sensitive   = true", workspace_ssh_public_keys)

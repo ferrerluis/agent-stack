@@ -3,13 +3,13 @@
 # ─────────────────────────────────────────────────────────
 
 variable "cloud_provider" {
-  description = "Which cloud provider to deploy on. Valid values: \"aws\", \"digitalocean\", or \"hetzner\"."
+  description = "Which cloud provider to deploy on: aws, digitalocean, hetzner, or gcp."
   type        = string
   default     = "aws"
 
   validation {
-    condition     = contains(["aws", "digitalocean", "hetzner"], var.cloud_provider)
-    error_message = "cloud_provider must be \"aws\", \"digitalocean\", or \"hetzner\"."
+    condition     = contains(["aws", "digitalocean", "hetzner", "gcp"], var.cloud_provider)
+    error_message = "cloud_provider must be aws, digitalocean, hetzner, or gcp."
   }
 }
 
@@ -17,6 +17,10 @@ variable "project_name" {
   description = "Short name used to tag/name all created resources."
   type        = string
   default     = "agent-stack"
+  validation {
+    condition     = var.cloud_provider != "gcp" || can(regex("^[a-z]([a-z0-9-]{0,37}[a-z0-9])?$", var.project_name))
+    error_message = "For GCP, project_name must use lowercase letters, digits and hyphens, start with a letter, end with a letter/digit, and be at most 39 characters (leaving room for resource suffixes)."
+  }
 }
 
 variable "admin_username" {
@@ -136,6 +140,13 @@ variable "aws_ami_id" {
   default     = ""
 }
 
+variable "aws_showcase_cost_controls" {
+  description = "For showcase tests, explicitly select Unlimited burstable CPU mode and the included gp3 disk performance so they can be priced before launch."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
 variable "aws_disk_size_gb" {
   description = "Size in GB for the EBS data volume (separate from the 20 GB OS root disk)."
   type        = number
@@ -163,6 +174,17 @@ variable "do_region" {
   description = "DigitalOcean region slug (e.g. \"nyc3\", \"sfo3\", \"fra1\")."
   type        = string
   default     = "nyc3"
+}
+
+variable "do_project_id" {
+  description = "Optional existing DigitalOcean project ID for the newly created Droplet and data volume. Blank preserves the default-project behavior."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.do_project_id == "" || can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.do_project_id))
+    error_message = "do_project_id must be blank or a DigitalOcean project UUID."
+  }
 }
 
 variable "do_droplet_size" {
@@ -224,6 +246,17 @@ variable "hcloud_image" {
   description = "Hetzner Cloud image slug."
   type        = string
   default     = "ubuntu-22.04"
+}
+
+variable "hcloud_pin_boot_image" {
+  description = "Resolve the standard x86 Ubuntu image during planning so the saved showcase plan uses that exact image ID."
+  type        = bool
+  default     = false
+  nullable    = false
+  validation {
+    condition     = !var.hcloud_pin_boot_image || var.hcloud_image == "ubuntu-22.04"
+    error_message = "hcloud_pin_boot_image requires the standard ubuntu-22.04 image."
+  }
 }
 
 variable "hcloud_disk_size_gb" {
@@ -359,14 +392,25 @@ variable "openclaw_config_mode" {
   }
 }
 
+variable "openclaw_host_network_enabled" {
+  description = "Run OpenClaw on the Linux host network, bound to loopback behind native host Tailscale. Ordinary Docker bridge networking remains the default."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.openclaw_host_network_enabled || (var.tailscale_enabled && var.tailscale_mode == "host" && !var.public_domain_enabled)
+    error_message = "OpenClaw host networking requires native host Tailscale and public domains disabled."
+  }
+}
+
 variable "agent_channel" {
-  description = "Primary channel plugin to bootstrap. Valid values: \"telegram\" or \"whatsapp\"."
+  description = "Primary channel plugin to bootstrap: telegram, whatsapp or none for dashboard/API-only operation."
   type        = string
   default     = "telegram"
 
   validation {
-    condition     = contains(["telegram", "whatsapp"], var.agent_channel)
-    error_message = "agent_channel must be \"telegram\" or \"whatsapp\"."
+    condition     = contains(["telegram", "whatsapp", "none"], var.agent_channel)
+    error_message = "agent_channel must be telegram, whatsapp or none."
   }
 }
 
@@ -404,6 +448,16 @@ variable "openclaw_version" {
   description = "OpenClaw Docker image tag (e.g. \"latest\" or a pinned version)."
   type        = string
   default     = "latest"
+}
+
+variable "openclaw_image_digest" {
+  description = "Optional immutable sha256 image digest for OpenClaw; blank preserves tag selection. Set openclaw_version to the corresponding release for version-specific compatibility patches."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.openclaw_image_digest == "" || can(regex("^sha256:[a-f0-9]{64}$", var.openclaw_image_digest))
+    error_message = "openclaw_image_digest must be blank or sha256 followed by 64 lowercase hex digits."
+  }
 }
 
 variable "openclaw_node_options" {
@@ -474,6 +528,26 @@ variable "enabled_services" {
   }
 }
 
+variable "workspace_claude_enabled" {
+  description = "Install Claude Code alongside Codex in the workspace. Requires an explicit workspace_claude_release."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.workspace_claude_enabled || contains(var.enabled_services, "workspace")
+    error_message = "workspace_claude_enabled requires the workspace service."
+  }
+}
+
+variable "workspace_claude_release" {
+  description = "Exact native Claude Code release; required when workspace_claude_enabled is true."
+  type        = string
+  default     = ""
+  validation {
+    condition     = !var.workspace_claude_enabled || can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.workspace_claude_release))
+    error_message = "workspace_claude_release must be an exact x.y.z version when Claude Code is enabled."
+  }
+}
+
 variable "workspace_codex_release" {
   description = "Pinned Codex CLI release baked into the optional workspace image. Use an explicit stable, alpha, or beta release version."
   type        = string
@@ -482,6 +556,17 @@ variable "workspace_codex_release" {
   validation {
     condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+(-(alpha|beta)(\\.[0-9]+)?)?$", trimspace(var.workspace_codex_release)))
     error_message = "workspace_codex_release must be an explicit Codex version such as 0.145.0, 0.145.0-alpha.18, or 0.145.0-beta.1."
+  }
+}
+
+variable "workspace_codex_sandbox_enabled" {
+  description = "Opt in to scoped Docker seccomp and AppArmor profiles that let Codex use its confined workspace sandbox inside the workspace container. Adds no host capabilities and requires the workspace service and host AppArmor."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.workspace_codex_sandbox_enabled || contains(var.enabled_services, "workspace")
+    error_message = "workspace_codex_sandbox_enabled requires enabled_services to include workspace."
   }
 }
 
@@ -552,7 +637,7 @@ variable "workspace_username" {
 }
 
 variable "workspace_password" {
-  description = "Password for SSH access to the optional workspace container. Required when enabled_services includes workspace."
+  description = "Password for SSH access to the optional workspace container. Required with workspace unless workspace_password_hash is supplied. Prefer the hash for automated runs."
   type        = string
   default     = ""
   sensitive   = true
@@ -560,9 +645,27 @@ variable "workspace_password" {
   validation {
     condition = (
       !contains(var.enabled_services, "workspace") ||
-      trimspace(var.workspace_password) != ""
+      trimspace(var.workspace_password) != "" ||
+      var.workspace_password_hash != ""
     )
-    error_message = "workspace_password must be set when enabled_services includes workspace."
+    error_message = "workspace_password or workspace_password_hash must be set when enabled_services includes workspace."
+  }
+
+  validation {
+    condition     = var.workspace_password == "" || var.workspace_password_hash == ""
+    error_message = "Supply only one of workspace_password and workspace_password_hash."
+  }
+}
+
+variable "workspace_password_hash" {
+  description = "Optional salted SHA-512 crypt password hash for workspace SSH. The plaintext password is never needed by Terraform when this is set. The hash remains sensitive and is saved in private state/runtime files."
+  type        = string
+  default     = ""
+  sensitive   = true
+
+  validation {
+    condition     = var.workspace_password_hash == "" || can(regex("^\\$6\\$(rounds=[1-9][0-9]{3,8}\\$)?[./A-Za-z0-9]{8,16}\\$[./A-Za-z0-9]{86}$", var.workspace_password_hash))
+    error_message = "workspace_password_hash must be blank or a salted SHA-512 crypt hash."
   }
 }
 
@@ -745,10 +848,65 @@ variable "vpn_healthcheck_url" {
   default     = "https://api.ipify.org"
 }
 
+variable "hermes_model" {
+  description = "Optional Hermes model reference; blank inherits default_model."
+  type        = string
+  default     = ""
+  validation {
+    condition = !contains(var.enabled_services, "hermes") || var.hermes_config_mode == "preserve" || can(
+      regex("^(anthropic|openai|google|groq)/.+$", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)
+    )
+    error_message = "When Hermes config may be seeded or managed, use an anthropic/, openai/, google/ or groq/ reference with a non-empty model name. If default_model uses legacy openai-codex/, supply a supported hermes_model override or preserve an existing Hermes config."
+  }
+}
+
+variable "hermes_config_mode" {
+  description = "Hermes model bootstrap: auto seeds fresh configs, preserve skips changes, manage replaces the model in AgentStack JSON configs (operator-written YAML fails safely)."
+  type        = string
+  default     = "auto"
+  validation {
+    condition     = contains(["auto", "manage", "preserve"], var.hermes_config_mode)
+    error_message = "hermes_config_mode must be auto, manage or preserve."
+  }
+}
+
+variable "hermes_dashboard_username" {
+  description = "Username for the private Hermes dashboard's native login."
+  type        = string
+  default     = "admin"
+}
+
+variable "hermes_dashboard_password" {
+  description = "Native Hermes dashboard password; blank generates a stable Terraform-managed value."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "hermes_dashboard_secret" {
+  description = "Hermes dashboard session signing secret; blank generates a stable value."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "hermes_image" {
   description = "Hermes Agent Docker image."
   type        = string
   default     = "nousresearch/hermes-agent:latest"
+}
+
+variable "hermes_npm_security_patch_enabled" {
+  description = "Apply the pinned npm dependency and interface-build repair for the supported immutable Hermes showcase image before startup."
+  type        = bool
+  default     = false
+  validation {
+    condition = !var.hermes_npm_security_patch_enabled || (
+      contains(var.enabled_services, "hermes") &&
+      var.hermes_image == "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db"
+    )
+    error_message = "hermes_npm_security_patch_enabled requires Hermes and its exact supported immutable showcase image."
+  }
 }
 
 variable "hermes_dashboard_enabled" {
@@ -962,4 +1120,83 @@ variable "tailscale_auth_key" {
     )
     error_message = "tailscale_auth_key must be set when tailscale_enabled is true."
   }
+}
+
+# Google Cloud
+# Credentials use Google's normal application-default/workload identity chain.
+# Project/billing creation is a separate, explicit execution prerequisite.
+variable "gcp_project_id" {
+  description = "Existing Google Cloud project ID with Compute Engine API enabled. Required only for gcp."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.cloud_provider != "gcp" || can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.gcp_project_id))
+    error_message = "gcp_project_id must be a valid Google project ID when cloud_provider is gcp."
+  }
+}
+variable "gcp_region" {
+  description = "Google Cloud region."
+  type        = string
+  default     = "us-east1"
+}
+variable "gcp_zone" {
+  description = "Google Cloud zone in gcp_region."
+  type        = string
+  default     = "us-east1-b"
+  validation {
+    condition     = var.cloud_provider != "gcp" || startswith(var.gcp_zone, "${var.gcp_region}-")
+    error_message = "gcp_zone must belong to gcp_region."
+  }
+}
+variable "gcp_machine_type" {
+  description = "Compute Engine machine type; e2-standard-2 provides 2 vCPU and 8 GiB for the showcase."
+  type        = string
+  default     = "e2-standard-2"
+}
+variable "gcp_image" {
+  description = "Ubuntu image family or immutable image reference for Compute Engine."
+  type        = string
+  default     = "ubuntu-os-cloud/ubuntu-2204-lts"
+}
+variable "gcp_pin_boot_image" {
+  description = "Resolve the standard Ubuntu family during planning so the saved showcase plan uses that exact image."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.gcp_pin_boot_image || var.gcp_image == "ubuntu-os-cloud/ubuntu-2204-lts"
+    error_message = "gcp_pin_boot_image requires the standard ubuntu-os-cloud/ubuntu-2204-lts family."
+  }
+}
+variable "gcp_showcase_cost_controls" {
+  description = "For showcase tests, explicitly select standard scheduling, no GPUs/reservations/confidential compute, and Premium IPv4 networking so the saved plan can be priced."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+variable "gcp_disk_size_gb" {
+  description = "Size of the separate persistent data disk."
+  type        = number
+  default     = 50
+  validation {
+    condition     = var.gcp_disk_size_gb >= 10 && floor(var.gcp_disk_size_gb) == var.gcp_disk_size_gb
+    error_message = "gcp_disk_size_gb must be an integer of at least 10."
+  }
+}
+variable "gcp_boot_disk_size_gb" {
+  description = "Boot disk size; leave room for the runtime images and workspace build."
+  type        = number
+  default     = 40
+  validation {
+    condition     = var.gcp_boot_disk_size_gb >= 20 && floor(var.gcp_boot_disk_size_gb) == var.gcp_boot_disk_size_gb
+    error_message = "gcp_boot_disk_size_gb must be an integer of at least 20."
+  }
+}
+
+variable "showcase_trial_limits" {
+  description = "Temporary showcase guest deadline and per-boot outbound quota; null preserves ordinary deployments."
+  type = object({
+    deadline_utc     = string
+    egress_cap_bytes = number
+  })
+  default = null
 }

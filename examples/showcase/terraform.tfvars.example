@@ -1,0 +1,28 @@
+# Shared showcase settings. Use only a fresh isolated test checkout/state.
+# Provider, project, region, runner SSH CIDR, immutable image digests, CLI pins,
+# selected model and secrets are supplied after live preflight; see README.md.
+# No secret, provider credential, or guessed account/model/version belongs here.
+enabled_services                    = ["openclaw", "hermes", "workspace"]
+agent_channel                       = "none"
+model_providers_enabled             = ["openai", "anthropic"]
+fallback_models                     = []
+openai_auth_mode                    = "api_key"
+openclaw_config_mode                = "manage"
+openclaw_host_network_enabled       = true
+hermes_config_mode                  = "auto"
+hermes_npm_security_patch_enabled   = true
+hermes_dashboard_enabled            = true
+hermes_api_server_enabled           = true
+workspace_claude_enabled            = true
+workspace_codex_sandbox_enabled      = true
+workspace_codex_auto_update_enabled = false
+tailscale_enabled                   = true
+tailscale_mode                      = "host"
+public_domain_enabled               = false
+vpn_enabled                         = false
+host_codex_cli_enabled              = false
+generate_repo_ssh_config            = true
+gcp_pin_boot_image                 = true
+gcp_showcase_cost_controls         = true
+aws_showcase_cost_controls         = true
+hcloud_pin_boot_image              = true

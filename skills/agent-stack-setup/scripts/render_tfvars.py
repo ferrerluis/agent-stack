@@ -58,6 +58,8 @@ def is_section_heading(line: str) -> bool:
 
 def parse_hcl_literal(raw: str) -> Any:
     value = raw.strip()
+    if value == "null":
+        return None
     if value == "[]":
         return []
     if value.startswith("["):
@@ -218,6 +220,8 @@ def load_schema(repo_root: Path) -> list[VariableSpec]:
 
 
 def value_to_hcl(value: Any) -> str:
+    if value is None:
+        return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -236,6 +240,8 @@ def value_to_hcl(value: Any) -> str:
 
 
 def validate_type(spec: VariableSpec, value: Any) -> None:
+    if value is None and spec.has_default and spec.default is None:
+        return
     if spec.type_name == "string":
         if not isinstance(value, str):
             fail(f"{spec.name} must be a string")
@@ -282,6 +288,11 @@ def validate_value(spec: VariableSpec, value: Any) -> None:
 
     if spec.name == "model_providers_enabled" and not value:
         fail("model_providers_enabled must include at least one provider")
+
+    if spec.name == "workspace_password_hash" and value and not re.fullmatch(
+        r"\$6\$(?:rounds=[1-9][0-9]{3,8}\$)?[./A-Za-z0-9]{8,16}\$[./A-Za-z0-9]{86}", value
+    ):
+        fail("workspace_password_hash must be blank or a salted SHA-512 crypt hash")
 
 
 def model_refs(values: dict[str, Any]) -> list[str]:
@@ -364,6 +375,13 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
         fail("workspace_codex_auto_recover_interrupted_turns requires workspace_codex_auto_update_enabled")
     if workspace_recovery and "workspace" not in workspace_services:
         fail("workspace_codex_auto_recover_interrupted_turns requires enabled_services to include workspace")
+
+    if resolved["workspace_password"] and resolved["workspace_password_hash"]:
+        fail("Supply only one of workspace_password and workspace_password_hash")
+    if "workspace" in workspace_services and not (
+        str(resolved["workspace_password"]).strip() or resolved["workspace_password_hash"]
+    ):
+        fail("workspace_password or workspace_password_hash is required when workspace is enabled")
 
     if resolved["vpn_enabled"]:
         if resolved["vpn_provider"] == "nordvpn_openvpn":

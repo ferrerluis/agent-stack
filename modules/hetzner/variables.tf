@@ -3,6 +3,15 @@ variable "admin_username" { type = string }
 variable "hcloud_location" { type = string }
 variable "hcloud_server_type" { type = string }
 variable "hcloud_image" { type = string }
+variable "hcloud_pin_boot_image" {
+  type     = bool
+  default  = false
+  nullable = false
+  validation {
+    condition     = !var.hcloud_pin_boot_image || var.hcloud_image == "ubuntu-22.04"
+    error_message = "hcloud_pin_boot_image requires the standard ubuntu-22.04 image."
+  }
+}
 variable "hcloud_disk_size_gb" { type = number }
 
 variable "hcloud_existing_volume_id" {
@@ -130,4 +139,13 @@ variable "ui_auth_username" { type = string }
 variable "ui_auth_password" {
   type      = string
   sensitive = true
+}
+
+variable "showcase_trial_limits" {
+  description = "Temporary showcase guest deadline and per-boot outbound quota; null preserves ordinary deployments."
+  type = object({
+    deadline_utc     = string
+    egress_cap_bytes = number
+  })
+  default = null
 }

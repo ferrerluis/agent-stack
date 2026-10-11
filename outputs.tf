@@ -6,26 +6,27 @@ locals {
     : (
       var.cloud_provider == "digitalocean"
       ? one(module.digitalocean[*].instance_public_ip)
-      : one(module.hetzner[*].instance_public_ip)
+      : (var.cloud_provider == "hetzner" ? one(module.hetzner[*].instance_public_ip) : one(module.gcp[*].instance_public_ip))
     )
   )
   admin_ssh_host     = trimspace(var.admin_ssh_host_override) != "" ? trimspace(var.admin_ssh_host_override) : local.instance_public_ip
-  workspace_ssh_host = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : var.project_name
+  tailscale_dns      = var.tailscale_enabled ? one(module.runtime_access[*].tailscale_dns) : ""
+  workspace_ssh_host = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : (local.tailscale_dns != "" ? local.tailscale_dns : var.project_name)
 
   openclaw_url = !local.openclaw_enabled ? "disabled" : (
     var.public_domain_enabled && local.resolved_openclaw_domain != ""
     ? "https://${local.resolved_openclaw_domain}"
     : (
       var.tailscale_enabled
-      ? "https://${var.project_name}  (via Tailscale Serve, mode=${var.tailscale_mode} — connect your device to the same tailnet first)"
+      ? (local.tailscale_dns != "" ? "https://${local.tailscale_dns}" : "Tailscale URL unavailable; check the node and run terraform refresh")
       : "http://localhost:18789  (after running the SSH tunnel shown in tailscale_note)"
     )
   )
 
-  hermes_url = !local.hermes_enabled ? "disabled" : (
+  hermes_url = !local.hermes_enabled || !var.hermes_dashboard_enabled ? "disabled" : (
     var.public_domain_enabled && local.resolved_hermes_domain != ""
     ? "https://${local.resolved_hermes_domain}"
-    : "http://localhost:9119  (after running: ssh -L 9119:127.0.0.1:9119 ${var.admin_username}@${local.admin_ssh_host})"
+    : (var.tailscale_enabled ? (local.tailscale_dns != "" ? "https://${local.tailscale_dns}:8443" : "Tailscale URL unavailable; check the node and run terraform refresh") : "http://localhost:9119  (after running: ssh -L 9119:127.0.0.1:9119 ${var.admin_username}@${local.admin_ssh_host})")
   )
 
   n8n_url = !local.n8n_enabled ? "disabled" : (
@@ -80,26 +81,27 @@ output "resolved_ssh_public_key_source" {
 output "tailscale_note" {
   description = "Tailscale access information."
   value = var.tailscale_enabled ? (
-    local.openclaw_enabled ? "Tailscale is enabled in ${var.tailscale_mode} mode. Once the instance boots (~2 min), device '${var.project_name}' should appear in your Tailscale admin console. OpenClaw is published with Tailscale Serve: https://${var.project_name} (or use dashboard_url_with_token_import for first-time auto-auth)." : "Tailscale is enabled in ${var.tailscale_mode} mode. OpenClaw is disabled, so no Tailscale Serve route is configured by default."
+    "Tailscale is enabled in ${var.tailscale_mode} mode. Connect your device to the same tailnet. OpenClaw: ${local.openclaw_url}. Hermes: ${local.hermes_url}. Use dashboard_url_with_token_import for OpenClaw login and hermes_dashboard_password for Hermes login."
     ) : (
     "Tailscale is DISABLED. Use an SSH tunnel to reach the dashboard: ssh -L 18789:127.0.0.1:18789 ${var.admin_username}@${local.admin_ssh_host}  then open http://localhost:18789"
   )
 }
 
 output "dashboard_url" {
-  description = "OpenClaw dashboard URL (accessible after bootstrap completes, ~2-3 min after apply)."
+  description = "OpenClaw dashboard URL from the observed full tailnet DNS name or configured public domain."
   value       = local.openclaw_url
 }
 
 output "dashboard_url_with_token_import" {
+  sensitive   = true
   description = "First-time login URL that auto-imports the gateway token into Control UI via #token fragment."
   value = !local.openclaw_enabled ? "disabled" : (
     var.public_domain_enabled && local.resolved_openclaw_domain != ""
-    ? nonsensitive("https://${local.resolved_openclaw_domain}/#token=${local.resolved_gateway_token}")
+    ? "https://${local.resolved_openclaw_domain}/#token=${local.resolved_gateway_token}"
     : (
       var.tailscale_enabled
-      ? nonsensitive("https://${var.project_name}/#token=${local.resolved_gateway_token}")
-      : nonsensitive("http://localhost:18789/#token=${local.resolved_gateway_token}  (after running the SSH tunnel shown in tailscale_note)")
+      ? (local.tailscale_dns != "" ? "https://${local.tailscale_dns}/#token=${local.resolved_gateway_token}" : "Tailscale URL unavailable")
+      : "http://localhost:18789/#token=${local.resolved_gateway_token}  (after running the SSH tunnel shown in tailscale_note)"
     )
   )
 }
@@ -131,18 +133,21 @@ output "vpn_note" {
 }
 
 output "gateway_token" {
+  sensitive   = true
   description = "Gateway token used by OpenClaw Control UI and WebSocket auth."
-  value       = nonsensitive(local.resolved_gateway_token)
+  value       = local.resolved_gateway_token
 }
 
 output "pair_latest_command" {
+  sensitive   = true
   description = "Run after opening dashboard_url_with_token_import to approve the latest pending paired-device request."
-  value       = local.openclaw_enabled ? "ssh ${var.admin_username}@${local.admin_ssh_host} 'docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token ${nonsensitive(local.resolved_gateway_token)} --url ws://127.0.0.1:18789'" : "disabled"
+  value       = local.openclaw_enabled ? "ssh ${var.admin_username}@${local.admin_ssh_host} 'docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token ${local.resolved_gateway_token} --url ws://127.0.0.1:18789'" : "disabled"
 }
 
 output "repo_pair_latest_command" {
+  sensitive   = true
   description = "Repo-local wrapper command to approve the latest pending paired-device request."
-  value       = local.openclaw_enabled ? "./bin/agent-stack-ssh -- docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token ${nonsensitive(local.resolved_gateway_token)} --url ws://127.0.0.1:18789" : "disabled"
+  value       = local.openclaw_enabled ? "./bin/agent-stack-ssh -- docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token ${local.resolved_gateway_token} --url ws://127.0.0.1:18789" : "disabled"
 }
 
 output "whatsapp_login_command" {
@@ -170,6 +175,22 @@ output "hermes_url" {
   value       = local.hermes_url
 }
 
+output "tailscale_dns_name" {
+  description = "Observed full tailnet DNS name; empty if the node is unavailable."
+  value       = local.tailscale_dns
+}
+
+output "hermes_dashboard_username" {
+  description = "Hermes bundled dashboard authentication username."
+  value       = var.hermes_dashboard_username
+}
+
+output "hermes_dashboard_password" {
+  description = "Hermes dashboard password; retrieve privately with terraform output -raw."
+  sensitive   = true
+  value       = local.runtime_template_vars.hermes_dashboard_password
+}
+
 output "n8n_url" {
   description = "n8n UI URL or access hint."
   value       = local.n8n_url
@@ -189,4 +210,9 @@ output "ui_auth_password" {
   description = "Password for the public-domain reverse-proxy login."
   value       = var.public_domain_enabled ? local.resolved_ui_auth_password : "disabled"
   sensitive   = true
+}
+
+output "deployment_input_fingerprints" {
+  description = "Normalized recipe hashes for the selected cloud; acceptance also requires observed image/repair contents and verifier hashes."
+  value       = local.deployment_input_fingerprints
 }

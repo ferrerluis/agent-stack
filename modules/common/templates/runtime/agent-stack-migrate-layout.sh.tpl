@@ -88,6 +88,10 @@ ensure_legacy_symlinks() {
     ln -s openclaw/openclaw.json "$DATA_ROOT/openclaw.json" 2>/dev/null || true
   fi
   if [ ! -e "$DATA_ROOT/workspace" ]; then
+    # The workspace container is installed before OpenClaw seeds its files.
+    # A fresh volume therefore needs the compatibility link's target now.
+    # Create it after legacy migration so old workspace files still move.
+    install -d -m 0755 "$DATA_ROOT/openclaw/workspace"
     ln -s openclaw/workspace "$DATA_ROOT/workspace" 2>/dev/null || true
   fi
 

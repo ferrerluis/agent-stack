@@ -44,17 +44,30 @@ RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/install-codex.sh \
   && CODEX_NON_INTERACTIVE=1 CODEX_RELEASE="$CODEX_RELEASE" CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME=/opt/codex sh /tmp/install-codex.sh \
   && rm -f /tmp/install-codex.sh
 
+%{ if workspace_claude_enabled }
+# Copy the resolved binary out of root's private installation tree so UID 1000
+# can execute it. Auth is supplied at runtime, never during this image build.
+ARG CLAUDE_RELEASE=${workspace_claude_release}
+ENV DISABLE_AUTOUPDATER=1
+RUN curl -fsSL https://claude.ai/install.sh -o /tmp/install-claude.sh \
+  && bash /tmp/install-claude.sh "$CLAUDE_RELEASE" \
+  && install -m 0755 "$(readlink -f /root/.local/bin/claude)" /usr/local/bin/claude \
+  && rm -rf /tmp/install-claude.sh /root/.local/bin/claude /root/.local/share/claude
+%{ endif }
+
 RUN install -d -m 0755 /usr/local/libexec
 
 COPY workspace-entrypoint.sh /usr/local/bin/workspace-entrypoint
 COPY para-memory-drive/SKILL.md /usr/local/share/agent-stack/skills/para-memory-drive/SKILL.md
 COPY workspace-codex-update.sh /usr/local/libexec/agent-stack-workspace-codex-update
 COPY workspace-codex-control.py /usr/local/libexec/agent-stack-workspace-codex-control
+COPY workspace-cli-task.py /usr/local/libexec/agent-stack-workspace-cli-task
 
 RUN chmod 0755 /usr/local/bin/workspace-entrypoint \
   && chmod 0644 /usr/local/share/agent-stack/skills/para-memory-drive/SKILL.md \
   && chmod 0755 /usr/local/libexec/agent-stack-workspace-codex-update \
   && chmod 0755 /usr/local/libexec/agent-stack-workspace-codex-control \
+  && chmod 0755 /usr/local/libexec/agent-stack-workspace-cli-task \
   && mkdir -p /run/sshd
 
 EXPOSE 22

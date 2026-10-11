@@ -60,10 +60,15 @@ fi
 
 tailscale --socket="$SOCK" serve reset || true
 if [ "$${OPENCLAW_ENABLED:-false}" = "true" ]; then
-  tailscale --socket="$SOCK" serve --bg 127.0.0.1:18789
+  tailscale --socket="$SOCK" serve --bg --yes --https=443 127.0.0.1:18789
   tailscale --socket="$SOCK" serve status || true
 else
   echo "OpenClaw is disabled; Tailscale Serve route was not configured."
 fi
+
+%{ if hermes_enabled && hermes_dashboard_enabled }
+tailscale --socket="$SOCK" serve --bg --yes --https=8443 127.0.0.1:9119
+tailscale --socket="$SOCK" serve status
+%{ endif }
 
 wait

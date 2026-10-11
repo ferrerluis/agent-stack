@@ -1,20 +1,44 @@
 # AgentStack
 
 > Terraform repo for a secure, self-hosted agent + automation stack.
-> Deploy OpenClaw, Hermes, n8n, and local Postgres to **AWS (EC2)**, **DigitalOcean (Droplet)**, or **Hetzner Cloud** by changing a single variable.
-> After `terraform apply`, the server boots with the selected services installed, configured, and running — no manual steps.
+> Deploy OpenClaw, Hermes, n8n, and local Postgres to **AWS (EC2)**, **DigitalOcean (Droplet)**, **Hetzner Cloud**, or **Google Cloud (Compute Engine)** through the shared runtime installer.
+> After `terraform apply`, the shared installer configures the selected services. Cloud permissions, model access, tailnet enrollment and any interactive account login must be prepared separately.
 
 ---
 
+## Compatibility
+
+### Cloud providers
+
+| Provider | Deployment target | `cloud_provider` |
+|----------|-------------------|------------------|
+| AWS | EC2 | `aws` |
+| DigitalOcean | Droplets | `digitalocean` |
+| Hetzner Cloud | Cloud servers | `hetzner` |
+| Google Cloud | Compute Engine | `gcp` |
+
+### AI model providers
+
+OpenClaw and Hermes support these providers on all four clouds:
+
+| Provider | Model reference | API-key variable |
+|----------|-----------------|------------------|
+| OpenAI | `openai/<model>` | `openai_api_key` |
+| Anthropic | `anthropic/<model>` | `anthropic_api_key` |
+| Google Gemini | `google/<model>` | `gemini_api_key` |
+| Groq | `groq/<model>` | `groq_api_key` |
+
+Select providers with `model_providers_enabled` and choose models with `default_model`, `fallback_models`, and optional `hermes_model`. OpenClaw also supports imported ChatGPT subscription auth through `openai_auth_mode = "codex"`; the workspace coding tools use OpenAI for Codex and Anthropic for Claude Code.
+
 ## What gets deployed
 
-| Component | AWS | DigitalOcean | Hetzner Cloud |
-|-----------|-----|--------------|---------------|
-| Compute | EC2 t3.small (1 vCPU / 2 GB) | Droplet s-2vcpu-2gb (2 vCPU / 2 GB / 60 GB root disk) | cpx21 (default, sized for full stack) |
-| Persistent storage | 50 GB gp3 EBS volume | 20 GB Block Storage volume | 50 GB Cloud volume |
-| Networking | VPC, subnet, IGW, route table | VPC | Public server network |
-| Firewall | Security Group: SSH + Tailscale UDP, optional 80/443 | Firewall: SSH + Tailscale UDP, optional 80/443 | Firewall: SSH + Tailscale UDP, optional 80/443 |
-| Private access | Tailscale (optional but strongly recommended) | same | same |
+| Component | AWS | DigitalOcean | Hetzner Cloud | Google Cloud |
+|-----------|-----|--------------|---------------|--------------|
+| Compute default | EC2 t3.small (2 vCPU / 2 GiB) | s-2vcpu-2gb | cpx21 | e2-standard-2 (2 vCPU / 8 GiB) |
+| Data disk default | 50 GB gp3 EBS | 20 GB Block Storage | 50 GB Cloud volume | 50 GB pd-balanced |
+| Networking | New VPC, subnet, IGW, route table | VPC | Public server network | New VPC/subnet, bootstrap external IP |
+| Firewall | Restricted SSH + Tailscale UDP; optional 80/443 | same | same | same |
+| Private access | Tailscale | same | same | same |
 
 All sizes are defaults and are adjustable through variables.
 
@@ -22,18 +46,18 @@ All sizes are defaults and are adjustable through variables.
 
 Bootstrap is intentionally split into two provider-neutral phases:
 
-1. `cloud-init` runs a small first-boot loader on AWS, DigitalOcean, and Hetzner. It creates the `admin` user, installs the SSH key, waits for and mounts the persistent data volume at `/opt/agent-stack/data`, and writes `/opt/agent-stack/.loader-ready.json`.
+1. `cloud-init` runs a small first-boot loader on AWS, DigitalOcean, Hetzner and GCP. It creates the `admin` user, installs the SSH key, waits for and mounts the persistent data volume at `/opt/agent-stack/data`, and writes `/opt/agent-stack/.loader-ready.json`.
 2. Terraform waits for `cloud-init status --wait`, connects over SSH as `admin`, uploads the rendered runtime bundle into a private `/opt/agent-stack/.staging-*` directory, and runs the shared installer with `sudo`.
 3. The installer writes `/opt/agent-stack/docker-compose.yml` and `/opt/agent-stack/.env`, installs Docker when needed, installs the host Codex CLI when `host_codex_cli_enabled = true`, validates the Compose config, and creates the `agent-stack` systemd service. `openclaw.service` remains as a compatibility wrapper.
 4. If `vpn_enabled = true`, installs the selected NordVPN OpenVPN or NordLynx backend, starts `agent-stack-vpn.service`, and requires a confirmed tunnel before starting the Docker stack so OpenClaw, Hermes, n8n, and the optional workspace egress through it.
-5. If enabled, configures Tailscale in `sidecar` mode by default, or directly on the host when `tailscale_mode = "host"`, and runs `tailscale serve` for OpenClaw over HTTPS on your tailnet.
+5. If enabled, configures Tailscale in `sidecar` mode by default, or directly on the host when `tailscale_mode = "host"`, and publishes OpenClaw on HTTPS 443 and the enabled Hermes dashboard on HTTPS 8443, using the full observed tailnet DNS name.
 6. Seeds a stable gateway token and allowed browser origins (`gateway.controlUi.allowedOrigins`) so first login works without manual token copy/paste.
 7. Applies `openclaw_config_mode`:
    - `auto` (default): preserve an existing `openclaw.json`, manage fresh installs
    - `manage`: always apply starter channel/model bootstrap changes
    - `preserve`: skip optional channel/model bootstrap changes
 8. After OpenClaw first-run initialization, seeds starter workspace files (create-if-missing) in `/home/node/.openclaw/workspace`: `SOUL.md`, `AGENTS.md`, `TOOLS.md`, `USER.md`
-9. Installs/enables only the selected `agent_channel` plugin (`telegram` or `whatsapp`)
+9. Installs/enables only the selected `agent_channel` plugin (`telegram` or `whatsapp`); `none` leaves messaging channel bootstrap disabled
 10. If `agent_channel = "telegram"` and `telegram_bot_token` is set, preconfigures `channels.telegram.botToken`, enables Telegram channel config, and sets `channels.telegram.streaming = "off"` for clean final-message delivery
    - If `telegram_allow_from` is non-empty, writes `channels.telegram.allowFrom` with those pre-approved user IDs
 11. Registers `ANTHROPIC_AUTH_KEY` only when the `anthropic` provider is selected
@@ -51,9 +75,9 @@ OpenClaw, Hermes, n8n, Postgres, and the optional workspace run as Docker contai
 
 | Requirement | Notes |
 |-------------|-------|
-| Terraform ≥ 1.5 | [Install](https://developer.hashicorp.com/terraform/install) |
+| Terraform ≥ 1.9 | [Install](https://developer.hashicorp.com/terraform/install) |
 | SSH key pair | Optional; if omitted, Terraform auto-creates a repo-local keypair in `./.ssh` |
-| Cloud credentials | AWS access key + secret, DigitalOcean API token, **or** Hetzner Cloud API token |
+| Cloud credentials | AWS access key + secret, DigitalOcean API token, Hetzner Cloud API token, or an authorized Google Cloud identity |
 | LLM credentials | At least one model provider credential: Anthropic/OpenAI/Groq/Gemini API key, or imported Codex auth for subscription-backed OpenAI |
 | Tailscale account (recommended) | [Sign up free](https://tailscale.com/) — generate an auth key |
 | VPN credentials (optional) | Required only when `vpn_enabled = true`; use manual service credentials for OpenVPN or a non-expiring Nord access token for NordLynx, never the normal account password |
@@ -86,7 +110,7 @@ terraform apply
 # - else it uses/creates ./.ssh/id_ed25519_agent_stack(.pub)
 # Terraform also writes ./.ssh/config (disable with generate_repo_ssh_config = false)
 
-# 6. Watch bootstrap/provisioning (takes ~2-3 min)
+# 6. Watch bootstrap/provisioning (downloads and container builds vary)
 # Terraform waits for cloud-init and then runs the runtime installer over SSH.
 # The SSH command and log tail command are shown in the outputs.
 ```
@@ -102,16 +126,16 @@ host_codex_login_command = "ssh admin@1.2.3.4 'codex login --device-auth'"
 resolved_ssh_public_key_source = "existing_public_key"
 tailscale_note         = "Tailscale is enabled in sidecar mode. Device 'agent-stack' will appear in your admin console..."
 vpn_note               = "disabled"
-dashboard_url          = "https://agent-stack  (via Tailscale Serve, mode=sidecar)"
-dashboard_url_with_token_import = "https://openclaw/#token=<gateway-token>"
-openclaw_url           = "https://agent-stack  (via Tailscale Serve, mode=sidecar)"
-hermes_url             = "http://localhost:9119  (after SSH tunnel)"
+dashboard_url          = "https://agent-stack.example-tailnet.ts.net"
+dashboard_url_with_token_import = <sensitive>
+openclaw_url           = "https://agent-stack.example-tailnet.ts.net"
+hermes_url             = "https://agent-stack.example-tailnet.ts.net:8443"
 n8n_url                = "http://localhost:5678  (after SSH tunnel)"
 n8n_webhook_url        = "http://localhost:5678/webhook  (after SSH tunnel)"
 workspace_ssh_command  = "disabled"
 workspace_codex_login_command = "disabled"
-pair_latest_command    = "ssh admin@1.2.3.4 'docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token <gateway-token> --url ws://127.0.0.1:18789'"
-repo_pair_latest_command = "./bin/agent-stack-ssh -- docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token <gateway-token> --url ws://127.0.0.1:18789"
+pair_latest_command    = <sensitive>
+repo_pair_latest_command = <sensitive>
 whatsapp_login_command = "ssh -t admin@1.2.3.4 'docker compose -f /opt/agent-stack/docker-compose.yml exec openclaw openclaw channels login --channel whatsapp --verbose'"
 bootstrap_log_command  = "ssh admin@1.2.3.4 'tail -f /var/log/openclaw-bootstrap.log'"
 repo_bootstrap_log_command = "./bin/agent-stack-ssh -- tail -f /var/log/openclaw-bootstrap.log"
@@ -141,7 +165,7 @@ fallback_models                   = ["openai/gpt-5.4-mini"]
 openai_codex_auth_json_base64     = "..."
 ```
 
-Legacy `openai-codex/*` refs are still accepted for older configs, but new deployments should prefer `openai/*` plus `openai_auth_mode = "codex"`.
+Legacy `openai-codex/*` refs are still accepted for older configs, but new deployments should prefer `openai/*` plus `openai_auth_mode = "codex"`. When seeding or managing Hermes with a legacy default, set `hermes_model` to a supported `openai/*`, `anthropic/*`, `google/*` or `groq/*` reference with a non-empty model name; Terraform rejects an incompatible route before provisioning. `hermes_config_mode = "preserve"` leaves an existing Hermes configuration independent of the OpenClaw default.
 
 ## Repo-local SSH workflow
 
@@ -165,14 +189,41 @@ bin/agent-stack-ssh-clean
 
 ---
 
+## GCP and the TODO #7 showcase
+
+GCP uses `gcp_project_id`, `gcp_region`, `gcp_zone`, `gcp_machine_type`, `gcp_image`, `gcp_boot_disk_size_gb` and `gcp_disk_size_gb`. Authenticate Terraform through application-default credentials or workload identity; prepare billing, Compute Engine API, quota and project policy first. No service-account JSON is accepted as a Terraform input.
+
+The [showcase example](examples/showcase/README.md) runs both agents and both coding tools on one VM with host Tailscale, API-key auth, no public domains and no messaging channels. It requires explicit image digests and CLI pins; normal defaults remain unchanged. `workspace_claude_enabled = true` requires a numeric `workspace_claude_release`; Codex and Claude keys are supplied at invocation time rather than baked into the image.
+
+Hermes seeds the selected `hermes_model` (or `default_model`) on fresh installs. `hermes_config_mode = "auto"` preserves existing configuration; `manage` changes the model in AgentStack-generated JSON only and fails safely on operator-written YAML. Its private dashboard uses a generated or supplied password/session secret, and API readiness requires bearer authentication and all reported checks green.
+
+OpenClaw receives a minimal authenticated local gateway configuration before its first start. Existing configuration is preserved during seeding; host Tailscale uses the container's LAN listener behind Docker's loopback-only published port, while the shared sidecar namespace uses loopback.
+
+Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host` to enforce service/config/doctor/tool/route checks, including both native doctors. Human diagnostics collect evidence but do not establish a passing deployment; real model tasks and second-peer browser checks are separate acceptance requirements.
+
+TODO #7 requires the full six acceptance groups on DigitalOcean and light VM/container passes on AWS, GCP and Hetzner, with independently verified cleanup on every cloud. Each proof records its tested source, actual contents, relevant input and verifier fingerprints; matching proofs can carry across commits. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation plan](docs/plans/showcase-readiness-implementation.md), [current test plan](docs/plans/showcase-readiness-tests-v2.md) and [testing audit](docs/plans/showcase-testing-efficiency-audit.md). Private native receipts establish the current result; historical checkpoints do not establish current acceptance.
+
+Native testing on 2026-10-11 verified this coverage for the pinned showcase configuration:
+
+| Provider | Verified coverage |
+|---|---|
+| DigitalOcean | Both native doctors with independently matched evidence; Codex and Claude API-key file tasks as workspace UID 1000 with provider-response correlation; authenticated direct Tailscale browser access to both apps before and after reboot; disk/file persistence and post-reboot runtime checks; independently verified cleanup |
+| Hetzner, AWS and GCP | VM creation; OpenClaw, Hermes and workspace containers running without replacement or restart for at least 120 seconds; resolved installed contents and workspace confinement; independently verified cleanup |
+
+DigitalOcean runtime evidence was produced at `4f9e534`; the three light-provider results were produced at `63ede3e` and verified against the later candidate's relevant inputs and verifiers. These results cover the tested pins and configuration. Doctor, coding-task, browser and reboot acceptance was exercised on DigitalOcean only; arbitrary configurations and future mutable image contents require their own checks. Native evidence remains private and excludes credentials from these public results.
+
+The full trial verifies browser access before running paid Codex and Claude tasks. A failed browser check stops those tasks and proceeds to cleanup; both tasks and fresh browser checks after reboot remain required for a passing trial.
+
+---
+
 ## Accessing OpenClaw
 
 ### With Tailscale (recommended)
 
 1. Connect your laptop/desktop to the same Tailscale network (install the Tailscale client).
-2. Once the server finishes bootstrapping (~2-3 min), open `dashboard_url_with_token_import` from Terraform output for first-time login.
+2. After apply succeeds, retrieve `dashboard_url_with_token_import` privately with `terraform output -raw dashboard_url_with_token_import` and open it for first-time login.
 3. If prompted for pairing approval, run `pair_latest_command` once.
-4. Afterwards, you can use **https://openclaw** directly.
+4. Afterwards, use `openclaw_url` directly. The URL uses the actual full tailnet DNS name, including any hostname conflict suffix.
 5. Model routing is configured from your required `default_model` + `fallback_models` selection, limited to providers listed in `model_providers_enabled`.
 
 ### Without Tailscale (SSH tunnel)
@@ -375,7 +426,7 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `cloud_provider` | `"aws"` | `"aws"`, `"digitalocean"`, or `"hetzner"` |
+| `cloud_provider` | `"aws"` | `"aws"`, `"digitalocean"`, `"hetzner"`, or `"gcp"` |
 | `project_name` | `"agent-stack"` | Prefix for all resource names |
 | `admin_username` | `"admin"` | Standard SSH/admin username created on the VM |
 | `admin_password` | `""` | Optional sensitive host admin password; blank keeps managed password locked |
@@ -390,6 +441,7 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 | `aws_existing_volume_id` | `""` | Reuse existing EBS volume |
 | `do_token` | `""` | DigitalOcean API token |
 | `do_region` | `"nyc3"` | DO region slug |
+| `do_project_id` | `""` | Assign newly created Droplet/disk to this project; blank keeps default behavior |
 | `do_droplet_size` | `"s-2vcpu-2gb"` | Droplet size slug |
 | `do_disk_size_gb` | `20` | Extra block storage size (GB) |
 | `do_existing_volume_id` | `""` | Reuse existing DO volume (needs `do_existing_volume_name` too) |
@@ -416,7 +468,7 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 | `telegram_bot_token` | `""` | Optional Telegram BotFather token to preconfigure `channels.telegram.botToken` |
 | `telegram_allow_from` | `[]` | Optional list of pre-approved Telegram user IDs for `channels.telegram.allowFrom` |
 | `openclaw_config_mode` | `"auto"` | Bootstrap config behavior: auto (preserve existing/manage fresh), manage, or preserve |
-| `agent_channel` | `"telegram"` | Channel plugin bootstrap target (`telegram` or `whatsapp`) |
+| `agent_channel` | `"telegram"` | Channel plugin bootstrap target (`telegram` or `whatsapp`); `none` leaves messaging channel bootstrap disabled |
 | `model_providers_enabled` | **required** | Explicit provider allowlist for model bootstrap (`anthropic`, `openai`, `google`, `groq`) |
 | `default_model` | **required** | Default model reference set at bootstrap (for example `anthropic/claude-haiku-4-5`) |
 | `fallback_models` | **required** | Ordered fallback model references (can be `[]`) |
@@ -435,7 +487,8 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 | `workspace_codex_auto_update_time` | `"04:00"` | Daily local maintenance time in 24-hour `HH:MM` format |
 | `workspace_codex_auto_recover_interrupted_turns` | `false` | Enable only with a second approved apply after the desktop E2E probe; send one constrained new turn for proven interrupted work |
 | `workspace_username` | `"user"` | User created inside the optional workspace container |
-| `workspace_password` | `""` | Sensitive password for workspace SSH; required when `workspace` is enabled |
+| `workspace_password` | `""` | Sensitive password for workspace SSH; supply this or `workspace_password_hash` when `workspace` is enabled |
+| `workspace_password_hash` | `""` | Optional salted SHA-512 crypt hash instead of the plaintext password; keep state and runtime files private |
 | `workspace_ssh_host_port` | `2222` | Host port mapped to workspace SSH; do not open in provider firewalls |
 | `workspace_ssh_public_keys` | `[]` | OpenSSH public keys authorized for the workspace user |
 | `vpn_enabled` | `false` | Install and start host OpenVPN before the Docker stack |
@@ -494,11 +547,14 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 | `vpn_note` | Host VPN status and diagnostics hint |
 | `openclaw_url` | OpenClaw UI URL or access hint |
 | `hermes_url` | Hermes dashboard URL or access hint |
+| `hermes_dashboard_username` | Hermes bundled login username |
+| `hermes_dashboard_password` | Hermes bundled login password (sensitive) |
+| `tailscale_dns_name` | Observed full tailnet DNS name; empty when unavailable |
 | `n8n_url` | n8n UI URL or access hint |
 | `n8n_webhook_url` | n8n webhook base URL or access hint |
 | `ui_auth_username` | Public-domain login username |
 | `ui_auth_password` | Public-domain login password (sensitive) |
-| `gateway_token` | Gateway token value |
+| `gateway_token` | Gateway token value (sensitive) |
 | `pair_latest_command` | One-shot command to approve the latest pending device pairing |
 | `repo_pair_latest_command` | Same pairing approval using repo-local SSH wrapper |
 | `whatsapp_login_command` | Interactive QR login command for WhatsApp |

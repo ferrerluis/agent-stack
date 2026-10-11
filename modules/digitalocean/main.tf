@@ -27,7 +27,9 @@ locals {
 
   cloud_init = templatefile("${path.module}/../common/templates/cloud_init.yaml.tpl", {
     provider_type                        = "digitalocean"
+    gcp_device_name                      = ""
     project_name                         = var.project_name
+    showcase_trial_limits                = var.showcase_trial_limits
     admin_username                       = var.admin_username
     admin_ssh_public_key                 = var.ssh_public_key
     ebs_volume_id                        = ""
@@ -113,9 +115,11 @@ resource "digitalocean_ssh_key" "this" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "digitalocean_vpc" "this" {
-  name     = "${var.project_name}-vpc"
-  region   = var.do_region
-  ip_range = "10.1.0.0/16"
+  name   = "${var.project_name}-vpc"
+  region = var.do_region
+  # Keep the ordinary deployment default. Bounded showcase attempts use a
+  # separate /24, checked against account VPCs and subnets before apply.
+  ip_range = var.showcase_trial_limits == null ? "10.1.0.0/16" : "10.247.${parseint(substr(sha256(var.project_name), 0, 2), 16)}.0/24"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,6 +172,17 @@ resource "digitalocean_droplet" "this" {
 resource "digitalocean_volume_attachment" "this" {
   droplet_id = digitalocean_droplet.this.id
   volume_id  = local.do_volume_id
+}
+
+# Assign only resources created here. Reused disks retain their existing
+# project membership; a caller-supplied project is never created or deleted.
+resource "digitalocean_project_resources" "this" {
+  count   = var.do_project_id != "" ? 1 : 0
+  project = var.do_project_id
+  resources = concat(
+    [digitalocean_droplet.this.urn],
+    digitalocean_volume.this[*].urn,
+  )
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

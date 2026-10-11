@@ -5,9 +5,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SSH_WRAPPER="${ROOT_DIR}/bin/agent-stack-ssh"
 LOG_LINES=120
 
+# Keep the human collector compatible; strict mode has enforceable pass/fail.
+for argument in "$@"; do
+  if [[ "$argument" == "--strict" ]]; then
+    exec python3 "${ROOT_DIR}/skills/agent-stack-doctor/scripts/strict_health.py" "$@"
+  fi
+done
+
 usage() {
   cat <<'EOF'
 Usage: skills/agent-stack-doctor/scripts/check_remote_health.sh [--ssh-wrapper <path>] [--log-lines <count>]
+       skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host
 EOF
 }
 

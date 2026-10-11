@@ -3,6 +3,67 @@
 # Terraform over SSH after cloud-init reports ready.
 # Provider: ${provider_type}
 
+%{ if showcase_trial_limits != null }
+# Install limits before package downloads. Host and forwarded external traffic
+# share a quota per protocol and boot at the final routing hook. Each protocol
+# gets half the total allowance. Downloads delivered to a Docker bridge are
+# internal traffic and must not consume this allowance.
+bootcmd:
+  - |
+    set -eu
+    set -f
+    command -v iptables >/dev/null || { /sbin/shutdown -h now; exit 1; }
+    command -v ip6tables >/dev/null || { /sbin/shutdown -h now; exit 1; }
+    command -v ip >/dev/null || { /sbin/shutdown -h now; exit 1; }
+    interfaces=$(ip -4 route show default | awk '{ for (i=1; i<NF; i++) if ($i == "dev") print $(i+1) }' | sort -u)
+    set -- $interfaces
+    [ "$#" -eq 1 ] || { /sbin/shutdown -h now; exit 1; }
+    egress_interface="$1"
+    case "$egress_interface" in
+      ''|lo|*[!a-zA-Z0-9_.:-]*) /sbin/shutdown -h now; exit 1 ;;
+    esac
+    ip link show dev "$egress_interface" >/dev/null || { /sbin/shutdown -h now; exit 1; }
+    mkdir -p /var/lib/agent-stack-trial
+    count=$(cat /var/lib/agent-stack-trial/boots 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" > /var/lib/agent-stack-trial/boots
+    echo "$egress_interface" > /var/lib/agent-stack-trial/egress-interface
+    [ "$count" -le 2 ] || { /sbin/shutdown -h now; exit 1; }
+    protocol_quota=$(( ${showcase_trial_limits.egress_cap_bytes} / 2 ))
+    iptables -t mangle -N AS7_EGRESS
+    iptables -t mangle -A AS7_EGRESS -m quota --quota "$protocol_quota" -j ACCEPT
+    iptables -t mangle -A AS7_EGRESS -j DROP
+    iptables -t mangle -I POSTROUTING 1 -o "$egress_interface" -j AS7_EGRESS
+    # Meter IPv6 too: registry clients can use either address family. The two
+    # quotas together cannot exceed the total priced allowance, and Docker's
+    # filter ACCEPT rules cannot bypass these final routing hooks.
+    ip6tables -t mangle -N AS7_EGRESS
+    ip6tables -t mangle -A AS7_EGRESS -m quota --quota "$protocol_quota" -j ACCEPT
+    ip6tables -t mangle -A AS7_EGRESS -j DROP
+    ip6tables -t mangle -I POSTROUTING 1 -o "$egress_interface" -j AS7_EGRESS
+    cat > /etc/systemd/system/agent-stack-trial-deadline.service <<'AS7_SERVICE'
+    [Unit]
+    Description=Stop temporary AgentStack showcase VM
+    [Service]
+    Type=oneshot
+    ExecStart=/sbin/shutdown -h now
+    AS7_SERVICE
+    cat > /etc/systemd/system/agent-stack-trial-deadline.timer <<'AS7_TIMER'
+    [Unit]
+    Description=Fixed temporary AgentStack showcase deadline
+    [Timer]
+    OnCalendar=${showcase_trial_limits.deadline_utc}
+    Persistent=true
+    AccuracySec=1s
+    [Install]
+    WantedBy=timers.target
+    AS7_TIMER
+    systemctl daemon-reload
+    # cloud-init's network stage blocks normal boot targets. Queue the timer
+    # without waiting for those targets, so SSH and time sync can start.
+    systemctl enable --now --no-block agent-stack-trial-deadline.timer
+%{ endif }
+
 packages:
   - ca-certificates
   - curl
@@ -64,6 +125,15 @@ write_files:
         sleep 5
       done
       [ -e "$device" ] || { echo "[volume] ERROR: Hetzner volume $volume_id not found" >&2; exit 1; }
+%{ endif }
+%{ if provider_type == "gcp" }
+      device="/dev/disk/by-id/google-${gcp_device_name}"
+      echo "[volume] Waiting for Google persistent disk..."
+      for attempt in $(seq 1 30); do
+        [ -e "$device" ] && break
+        sleep 5
+      done
+      [ -e "$device" ] || { echo "[volume] ERROR: Google data disk not found" >&2; exit 1; }
 %{ endif }
 
       if ! blkid "$device" >/dev/null 2>&1; then

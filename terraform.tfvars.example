@@ -192,6 +192,8 @@ workspace_codex_auto_update_time     = "04:00"
 workspace_codex_auto_recover_interrupted_turns = false
 workspace_username                  = "user"
 workspace_password                  = ""
+# Automated runs may supply this instead of the plaintext password. Keep it private.
+workspace_password_hash             = ""
 workspace_ssh_host_port             = 2222
 workspace_ssh_public_keys = [
   # "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExamplePublicKeyOnly user@example.com",

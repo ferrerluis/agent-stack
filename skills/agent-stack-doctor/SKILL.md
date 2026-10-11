@@ -24,6 +24,7 @@ Core rules:
 2. If SSH works, gather remote health evidence.
    - Run `skills/agent-stack-doctor/scripts/check_remote_health.sh`.
    - Use the repo-local SSH wrapper unless you have a reason not to.
+   - For enforceable results, add `--strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host` for the showcase profile. Any missing or failed required check returns nonzero; CLI installation does not establish real model execution.
 
 3. Map the evidence to a diagnosis track.
    - Use `references/diagnostic-flow.md` for the ordered repair decision tree.
