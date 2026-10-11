@@ -72,6 +72,11 @@ DEFERRED_PEER_IMPORTS = {
     ("execute_probe", "showcase_peer"): frozenset({"LOADER", "payload_valid"}),
     ("start", "showcase_peer"): frozenset({"memory_file"}),
 }
+NON_MODEL_STAGES = frozenset({"apply", "bootstrap", "containers", "light", "resolved_contents",
+    "resolved_contents_after_reboot", "workspace_sandbox", "verified_cleanup", "documentation_and_linked_plans"})
+DEFERRED_MODEL_IMPORTS = {
+    ("RemoteChecks.attach_models", "showcase_model_session"): frozenset({"ModelSession"}),
+}
 
 
 @lru_cache(maxsize=128)
@@ -128,6 +133,11 @@ def verifier_files(root, name):
                 require(symbols == deferred, "fingerprint_deferred_dependency_changed")
                 if name not in BROWSER_STAGES:
                     continue
+            model_deferred = DEFERRED_MODEL_IMPORTS.get((function, module)) if path == "scripts/showcase_remote.py" else None
+            if model_deferred is not None:
+                require(symbols == model_deferred, "fingerprint_deferred_dependency_changed")
+                if name in NON_MODEL_STAGES:
+                    continue
             candidates = ("scripts/" + module.replace(".", "/") + ".py", str(Path(path).parent / (module + ".py")))
             found = [candidate for candidate in candidates if (Path(root) / candidate).is_file()]
             require(found or not module.startswith("showcase_"), "fingerprint_source_missing")
@@ -136,6 +146,8 @@ def verifier_files(root, name):
                     pending.append(candidate)
     require(name in BROWSER_STAGES or not {"scripts/showcase_peer.py", "scripts/showcase_browser.py"} & paths,
             "fingerprint_browser_dependency_outside_stage")
+    require(name not in NON_MODEL_STAGES or not {"scripts/showcase_model_session.py", "scripts/showcase_runtime_lifecycle.py"} & paths,
+            "fingerprint_model_dependency_outside_stage")
     return tuple(sorted(paths))
 
 

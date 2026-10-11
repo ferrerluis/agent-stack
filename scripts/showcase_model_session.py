@@ -245,7 +245,8 @@ class ModelSession:
         require(role in ("openclaw", "hermes"), "invalid_runtime")
         evidence = self.active(); require(role not in self.runtime_configs, "runtime_config_already_invoked")
         from showcase_attempt import remaining_timeout
-        require(remaining_timeout(self.checks.ensure()[1], 220, now=self.checks.now()) == 220, "runtime_reload_time_required")
+        reload_window = 350 if role == "openclaw" else 220
+        require(remaining_timeout(self.checks.ensure()[1], reload_window, now=self.checks.now()) == reload_window, "runtime_reload_time_required")
         target = self.checks.bind()
         baseline = evidence["baseline"] if self.stage == "before_reboot" else evidence["after_reboot"]
         require(self.checks.probe(target) == baseline, "model_session_boot_changed")
@@ -269,7 +270,7 @@ class ModelSession:
         private_write(self.checks.path, evidence)
         try:
             ready = self.runtime_lifecycle_command(target, {"action": "prepare", "binding": binding, "route": route,
-                "image_ref": image, "request_id": secrets.token_hex(16)}, 180)
+                "image_ref": image, "request_id": secrets.token_hex(16)}, 270 if role == "openclaw" else 180)
             fields = {"schema", "status", "binding", "role", "container_id", "image_ref", "image_id", "config_sha256", "native_route", "watchdog"}
             if role == "hermes": fields.add("environment_sha256")
             require(set(ready) == fields and type(ready["schema"]) is int and ready["schema"] == 1

@@ -118,6 +118,33 @@ class FingerprintTest(unittest.TestCase):
         stages = {name for name in fp.SPECS if 'scripts/showcase_browser.py' in fp.verifier_files(ROOT, name)}
         self.assertEqual(stages, set(fp.BROWSER_STAGES))
 
+    def test_full_runtime_adapter_is_not_a_light_or_bootstrap_dependency(self):
+        for stage in fp.NON_MODEL_STAGES:
+            paths = fp.verifier_files(ROOT, stage)
+            self.assertNotIn('scripts/showcase_model_session.py', paths)
+            self.assertNotIn('scripts/showcase_runtime_lifecycle.py', paths)
+        for stage in ('model_channel', 'openclaw_activation', 'doctors', 'model_channel_closed'):
+            self.assertIn('scripts/showcase_runtime_lifecycle.py', fp.verifier_files(ROOT, stage))
+
+    def test_runtime_fix_changes_full_verifiers_without_invalidating_light(self):
+        stages = ('light', 'resolved_contents', 'bootstrap', 'workspace_sandbox', 'openclaw_activation', 'doctors')
+        root = self.copied_verifiers(stages); before = {s: fp.verifier(root, s) for s in stages}
+        for name in ('showcase_runtime_lifecycle', 'showcase_model_session'):
+            path = root / 'scripts' / (name + '.py'); path.write_text(path.read_text() + '\n# changed runtime verifier\n')
+        for stage in stages:
+            with self.subTest(stage=stage):
+                self.assertEqual(fp.verifier(root, stage) == before[stage], stage in fp.NON_MODEL_STAGES)
+
+    def test_model_import_outside_adapter_or_changed_symbols_cannot_silently_carry(self):
+        for replacement in ('from showcase_model_session import ModelSession, unknown_symbol', None):
+            root = self.copied_verifiers(('light', 'model_channel', 'openclaw_activation'))
+            path = root / 'scripts/showcase_remote.py'; source = path.read_text()
+            if replacement: source = source.replace('from showcase_model_session import ModelSession', replacement)
+            else: source += '\nimport showcase_model_session\n'
+            path.write_text(source)
+            with self.assertRaisesRegex(PolicyError, '^fingerprint_(deferred_dependency_changed|model_dependency_outside_stage)$'):
+                fp.verifier_files(root, 'light')
+
     def test_browser_fix_preserves_unrelated_verifiers_but_changes_both_browser_checks(self):
         stages = ('apply', 'light', 'doctors', 'before_reboot', 'after_reboot')
         root = self.copied_verifiers(stages)

@@ -26,6 +26,14 @@ COMPOSE = ["/usr/bin/docker", "compose", "-f", "/opt/agent-stack/docker-compose.
 INSPECT = '{"id":{{json .Id}},"image_id":{{json .Image}},"image_ref":{{json .Config.Image}},"network_mode":{{json .HostConfig.NetworkMode}},"state":{{json .State}},"restarts":{{json .RestartCount}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}'
 SOURCES = ("showcase_runtime_routes", "showcase_agents", "showcase_runtime_environment", "showcase_hermes_health", "showcase_runtime_probe", "showcase_runtime_task", "showcase_strict_health", "showcase_runtime_lifecycle")
 
+START_ERRORS = frozenset({"runtime_start_timeout", "runtime_start_stopped", "runtime_start_restarting",
+                         "runtime_container_restarted"})
+
+
+class RuntimeStartError(ValueError):
+    """Fixed startup labels, without container logs or configuration."""
+
+
 
 def need(value):
     if not value: raise ValueError("runtime_lifecycle_unverified")
@@ -189,6 +197,8 @@ class RuntimeLifecycle:
         reason = str(error) if isinstance(error, agents.ProbeError) and str(error) in allowed else "runtime_lifecycle_unverified"
         if isinstance(error, probe.OpenClawNativeError) and str(error) in probe.OPENCLAW_NATIVE_ERRORS:
             reason = str(error)
+        if isinstance(error, RuntimeStartError) and str(error) in START_ERRORS:
+            reason = str(error)
         self.failure = {"phase": self.phase, "reason": reason}
         if self.phase == "openclaw_doctor_command" and isinstance(error, agents.ProbeCommandFailed):
             self.failure["doctor"] = doctor_failure_summary(error)
@@ -217,6 +227,8 @@ class RuntimeLifecycle:
         identifier = self.execute(COMPOSE + ["ps", "-a", "-q", role], timeout=10).decode().strip()
         need(re.fullmatch(r"[a-f0-9]{64}", identifier))
         row = agents.strict_json(self.execute(["/usr/bin/docker", "inspect", "--format", INSPECT, identifier], timeout=10))
+        if self.phase == "runtime_start" and isinstance(row, dict) and type(row.get("restarts")) is int and row["restarts"] > 0:
+            raise RuntimeStartError("runtime_container_restarted")
         need(isinstance(row, dict) and set(row) == {"id", "image_id", "image_ref", "network_mode", "state", "restarts", "labels", "mounts"}
              and row["id"] == identifier and row["image_ref"] == image
              and isinstance(row["network_mode"], str) and (role != "openclaw" or row["network_mode"] == "host")
@@ -276,13 +288,16 @@ class RuntimeLifecycle:
         self.phase = "runtime_start"
         row = self.known(context); need(not row["state"]["Running"] and not row["state"]["Restarting"])
         self.execute(["/usr/bin/docker", "start", context["container_id"]], timeout=10)
-        end = self.now() + 90
+        # The showcase's OpenClaw warm-up allowance is 120s. Leave two 30s
+        # healthcheck intervals beyond it; success still requires healthy.
+        end = self.now() + (180 if context["role"] == "openclaw" else 90)
         while self.now() < end:
             row = self.known(context)
             if self.healthy(row): return
-            need(row["state"]["Running"] and not row["state"]["Restarting"])
+            if not row["state"]["Running"]: raise RuntimeStartError("runtime_start_stopped")
+            if row["state"]["Restarting"]: raise RuntimeStartError("runtime_start_restarting")
             self.sleep(min(1, max(0, end - self.now())))
-        raise ValueError("runtime_lifecycle_unverified")
+        raise RuntimeStartError("runtime_start_timeout")
 
     def native(self, context, route):
         self.phase = "native_route"
@@ -508,7 +523,7 @@ class RuntimeLifecycle:
                 context["original_environment_sha256"] = routes.sha(self.environment.target.read_bytes())
             self.save(context, exclusive=True)
             try:
-                self.execute(["systemd-run", "--quiet", "--unit=" + context["unit"], "--on-active=180s",
+                self.execute(["systemd-run", "--quiet", "--unit=" + context["unit"], "--on-active=300s" if role == "openclaw" else "--on-active=180s",
                     "--timer-property=AccuracySec=1s", "--property=RuntimeMaxSec=30s", "/usr/bin/docker", "stop", "-t", "5", row["id"]], timeout=10)
                 need(self.execute(["systemctl", "is-active", context["unit"] + ".timer"], timeout=10).strip() == b"active")
                 source = self.original_configuration(context) if role == "hermes" else None

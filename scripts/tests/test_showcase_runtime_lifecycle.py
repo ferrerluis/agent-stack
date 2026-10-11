@@ -689,10 +689,45 @@ class LifecycleTest(unittest.TestCase):
             return result
         self.vm.execute = unhealthy
         with self.assertRaises(ValueError): self.prepare()
-        self.assertEqual(self.clock, 90); self.assertFalse(self.running); self.assertTrue(self.timer)
+        self.assertEqual(self.clock, 180); self.assertFalse(self.running); self.assertTrue(self.timer)
+        self.assertEqual(self.vm.failure['reason'], 'runtime_start_timeout')
         self.vm.restore(self.role)
         self.assertEqual(self.files.target().read_bytes(), self.files.before[self.role])
         self.assertFalse(self.running)
+
+    def test_openclaw_reload_allows_planned_warmup_but_requires_healthy_same_container(self):
+        self.make(); original = self.execute; sleep = self.sleep
+        def delayed(args, **kwargs):
+            result = original(args, **kwargs)
+            if args[:2] == ['/usr/bin/docker', 'start']: self.health = 'starting'
+            return result
+        def warmup(seconds):
+            sleep(seconds)
+            if self.clock >= 120: self.health = 'healthy'
+        self.vm.execute = delayed; self.vm.sleep = warmup
+        self.prepare()
+        self.assertEqual(self.clock, 120); self.assertTrue(self.running and self.timer)
+        self.assertTrue(any('--on-active=300s' in args for args, _, _ in self.calls))
+        self.assertEqual(self.restarts, 0)
+        self.vm.verify(self.route, 'f' * 64); self.assertFalse(self.timer)
+
+    def test_reload_failure_reports_fixed_startup_reason_and_contains_same_container(self):
+        for state, reason in [('stopped', 'runtime_start_stopped'), ('restart', 'runtime_container_restarted')]:
+            with self.subTest(state=state):
+                self.make(); original = self.execute
+                def changed(args, **kwargs):
+                    result = original(args, **kwargs)
+                    if args[:2] == ['/usr/bin/docker', 'start']:
+                        self.health = 'starting'
+                        if state == 'stopped': self.running = False
+                        else: self.restarts = 1
+                    return result
+                self.vm.execute = changed
+                with self.assertRaises(lifecycle.RuntimeStartError): self.prepare()
+                self.assertEqual(self.vm.failure['reason'], reason)
+                self.assertNotIn(CAPABILITY, json.dumps(self.vm.failure))
+                self.assertFalse(any(args[:2] == ['/usr/bin/docker', 'stop'] and args[-1] != CONTAINER
+                                     for args, _, _ in self.calls))
 
     def test_changed_original_or_context_binding_never_overwrites_unknown_configuration(self):
         self.make(); self.prepare(); self.vm.verify(self.route, "f" * 64)
@@ -956,7 +991,7 @@ class SessionReloadTest(unittest.TestCase):
                 "image_id": IMAGE_ID, "config_sha256": "b" * 64, "native_route": native(route), "watchdog": "armed"}
             if role == "hermes": value["environment_sha256"] = "e" * 64
             if packet["action"] == "prepare":
-                self.assertEqual(timeout, 180)
+                self.assertEqual(timeout, 270 if role == 'openclaw' else 180)
                 if fixture.prepare_mutation: fixture.prepare_mutation(value)
             elif packet["action"] == "doctor":
                 self.assertEqual(timeout, 180); self.assertIn(role, fixture.models.gateway.diagnostic_roles)
