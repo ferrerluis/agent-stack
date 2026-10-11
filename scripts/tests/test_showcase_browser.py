@@ -108,7 +108,7 @@ class BrowserFixture:
         page.goto.side_effect = lambda url, **kw: self.goto(context, index, url)
         page.wait_for_url.side_effect = lambda url, **kw: setattr(page, "url", url) if self.login_ok else (_ for _ in ()).throw(RuntimeError(SECRET))
         page.wait_for_function.side_effect = None if self.ui_ready else RuntimeError(SECRET)
-        page.wait_for_timeout.side_effect = probe.ProbeError('fixture_pending_read_failed')
+        page.wait_for_timeout.side_effect = None if self.hello_ready else probe.ProbeError('fixture_pending_read_failed')
         page.evaluate.side_effect = lambda script, *args: self.evaluate(context, script, *args)
         return context
 
@@ -275,10 +275,47 @@ class RouteTest(unittest.TestCase):
         guard.websocket(ws); self.connect(ws)
         for index, (method, params) in enumerate((('sessions.subscribe', {}), ('presence.activity', {}),
                 ('sessions.observer.visibility', {"visible": True}),
-                ('sessions.messages.subscribe', {"key": "agent:main:main", "subscriptionId": "fixture", "includeApprovals": True}))):
+                ('sessions.messages.subscribe', {"key": "agent:main:main", "subscriptionId": "fixture", "includeApprovals": True}),
+                ('controlUi.sessionPullRequests.subscribe', {"sessionKeys": ['agent:main:main']}),
+                ('sessions.viewers.set', {"sessionKeys": []}))):
             ws.emit({"type": "req", "id": str(index), "method": method, "params": params})
             ws.server.emit({"type": "res", "id": str(index), "ok": True, "payload": {}})
         self.assertTrue(guard.hello); self.assertFalse(guard.read_rpc or guard.failed)
+
+    def test_advertised_startup_catalog_reads_are_forwarded_without_changes(self):
+        guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+        guard.websocket(ws); self.connect(ws)
+        calls = [(method, {}) for method in ('plugins.controlUi.list', 'projects.list',
+                 'sessions.groups.list', 'sessions.groups.defaults', 'system.info')]
+        calls += [('board.get', {'agentId': 'main', 'sessionKey': 'agent:main:main'}),
+                  ('taskSuggestions.list', {'agentId': 'main'}),
+                  ('session.discussion.info', {'agentId': 'main', 'sessionKey': 'agent:main:main'}),
+                  ('sessions.catalog.list', {'agentId': 'main', 'allowPartialResults': True,
+                   'limitPerHost': 100, 'progressId': 'fixture-progress'})]
+        for index, (method, params) in enumerate(calls):
+            message = {'type': 'req', 'id': str(index), 'method': method, 'params': params}
+            ws.emit(message)
+            self.assertEqual(json.loads(ws.server.sent[-1]), message)
+        self.assertFalse(guard.failed)
+
+    def test_catalog_and_viewer_calls_reject_changes_refresh_and_unbounded_keys(self):
+        calls = [(method, {'refresh': True}) for method in ('plugins.controlUi.list', 'projects.list',
+                 'sessions.groups.list', 'sessions.groups.defaults', 'system.info', 'board.get',
+                 'taskSuggestions.list', 'session.discussion.info', 'sessions.catalog.list')]
+        calls += [('sessions.catalog.list', {'limitPerHost': v}) for v in (True, 0, 201, 1.5)]
+        calls += [('sessions.catalog.list', {'allowPartialResults': 1})]
+        for method in ('controlUi.sessionPullRequests.subscribe', 'sessions.viewers.set'):
+            calls += [(method, value) for value in ({'sessionKeys': [], 'refreshSessionKeys': []},
+                {'sessionKeys': [], 'create': True}, {'sessionKeys': 'main'}, {'sessionKeys': [1]},
+                {'sessionKeys': ['x' * 513]}, {'sessionKeys': ['a'] * 201},
+                {'sessionKeys': [' bad ']}, {'sessionKeys': ['bad\nkey']})]
+        for method, params in calls:
+            with self.subTest(method=method, params=params):
+                guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET)
+                guard.websocket(ws); self.connect(ws); before = len(ws.server.sent)
+                ws.emit({'type': 'req', 'id': 'bad', 'method': method, 'params': params})
+                self.assertTrue(guard.failed and ws.closed)
+                self.assertEqual(len(ws.server.sent), before)
 
     def test_startup_refresh_flags_and_malformed_activity_are_not_forwarded(self):
         calls = [('update.status', {"refreshCheckout": True}), ('users.self', {"extra": True}),
@@ -308,7 +345,8 @@ class RouteTest(unittest.TestCase):
             {"type": "req", "id": "1", "method": "config.patch"},
             *({"type": "req", "id": "1", "method": method, "params": {}} for method in
               ('update.run', 'models.probe', 'users.prefs.set', 'approval.resolve', 'talk.voice.complete',
-               'sessions.companion.ask', 'sessions.branches.switch', 'progressCard.refresh')),
+               'sessions.companion.ask', 'sessions.branches.switch', 'progressCard.refresh',
+               'plugins.controlUi.reload', 'board.put', 'projects.create', 'sessions.groups.update')),
             'not-json', '{"type":"req","type":"req"}'):
             guard = probe.NetworkGuard(TARGET, 'openclaw'); ws = FakeWS('wss://' + TARGET); guard.websocket(ws); ws.emit(message)
             self.assertTrue(guard.failed); self.assertEqual(ws.server.sent, []); self.assertTrue(ws.closed)
@@ -403,7 +441,22 @@ class BrowserTest(unittest.TestCase):
             return reply
         fixture.goto = delayed
         self.check(fixture)
-        fixture.contexts[0].page.wait_for_timeout.assert_called_once_with(100)
+        self.assertEqual([call.args for call in fixture.contexts[0].page.wait_for_timeout.call_args_list],
+                         [(100,), (5000,)])
+
+    def test_rendered_connection_that_drops_during_startup_cannot_pass(self):
+        fixture = BrowserFixture(); original = fixture.context
+        def dropping(**kwargs):
+            context = original(**kwargs)
+            if len(fixture.contexts) == 1:
+                context.page.wait_for_timeout.side_effect = lambda _ms: setattr(fixture, 'ui_ready', False)
+            return context
+        fixture.browser.new_context.side_effect = dropping
+        diagnostic = {}
+        with self.assertRaisesRegex(probe.ProbeError, '^openclaw_session_unverified$'):
+            probe.browser_check(request(), peer(), fixture, diagnostic=diagnostic)
+        self.assertEqual(diagnostic, {'phase': 'openclaw_settled_session'})
+        fixture.browser.close.assert_called_once()
 
     def test_public_status_and_wrong_or_expired_cookie_cannot_pass(self):
         for changes in ({'provider': 'oauth'}, {'user_id': 'other'}, {'status': 401}, {'expires_at': 999}, {'expires_at': float('inf')}):

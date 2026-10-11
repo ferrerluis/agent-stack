@@ -28,13 +28,17 @@ READ_RPC = frozenset({"health", "status", "config.get", "config.schema", "agents
     "users.self", "users.prefs.get", "update.status", "exec.approval.list", "plugin.approval.list",
     "openclaw.approval.list", "agent.identity.get", "models.authStatus", "sessions.describe",
     "question.list", "talk.catalog", "chat.startup", "chat.metadata", "progressCard.get",
-    "sessions.branches.list", "sessions.companion.state"})
+    "sessions.branches.list", "sessions.companion.state", "plugins.controlUi.list", "board.get",
+    "projects.list", "sessions.groups.list", "sessions.groups.defaults", "taskSuggestions.list",
+    "system.info", "session.discussion.info", "sessions.catalog.list"})
 # The pinned UI subscribes and reports its own visibility/activity on connect.
 # These cannot generate output or change app settings, and are not read proof.
 UI_ACTIVITY_RPC = frozenset({"sessions.subscribe", "presence.activity",
-    "sessions.observer.visibility", "sessions.messages.subscribe"})
+    "sessions.observer.visibility", "sessions.messages.subscribe",
+    "controlUi.sessionPullRequests.subscribe", "sessions.viewers.set"})
 EMPTY_PARAMS_RPC = frozenset({"sessions.subscribe", "presence.activity", "users.self", "update.status",
-    "exec.approval.list", "plugin.approval.list", "openclaw.approval.list", "question.list", "talk.catalog"})
+    "exec.approval.list", "plugin.approval.list", "openclaw.approval.list", "question.list", "talk.catalog",
+    "plugins.controlUi.list", "projects.list", "sessions.groups.list", "sessions.groups.defaults", "system.info"})
 OPENCLAW_READY = """() => {
   const app = document.querySelector('openclaw-app');
   const shell = document.querySelector('openclaw-app-shell');
@@ -56,7 +60,7 @@ HERMES_READ = """async path => {
     auth_providers:d.auth_providers, gateway_running:d.gateway_running, version:d.version};
 }"""
 BROWSER_PHASES = frozenset({"browser_launch", "openclaw_document", "openclaw_session",
-    "openclaw_authenticated_read", "openclaw_route", "hermes_login_document",
+    "openclaw_authenticated_read", "openclaw_settled_session", "openclaw_route", "hermes_login_document",
     "hermes_anonymous_session", "hermes_login_form", "hermes_login_submit",
     "hermes_session_redirect", "hermes_dashboard_render", "hermes_authenticated_session",
     "hermes_route"})
@@ -229,6 +233,27 @@ class NetworkGuard:
                                      for key, limit in (("key", 1024), ("subscriptionId", 256))))
                         if "includeApprovals" in params:
                             need(type(params["includeApprovals"]) is bool)
+                    elif method in ("controlUi.sessionPullRequests.subscribe", "sessions.viewers.set"):
+                        need(set(params) == {"sessionKeys"} and isinstance(params["sessionKeys"], list)
+                             and len(params["sessionKeys"]) <= 200
+                             and all(isinstance(key, str) and 0 < len(key) <= 512 and key == key.strip()
+                                     and not re.search(r"[\x00-\x1f\x7f]", key) for key in params["sessionKeys"]))
+                        # Notification/viewer state only; no force-refresh keys or app changes.
+                if method in ("board.get", "taskSuggestions.list", "session.discussion.info"):
+                    keys = {"agentId"} if method == "taskSuggestions.list" else {"agentId", "sessionKey"}
+                    need(isinstance(params, dict) and set(params) <= keys
+                         and all(isinstance(value, str) and 0 < len(value) <= (256 if key == "agentId" else 1024)
+                                 and not re.search(r"[\x00-\x1f\x7f]", value) for key, value in params.items()))
+                if method == "sessions.catalog.list":
+                    need(isinstance(params, dict) and set(params) <= {"agentId", "allowPartialResults", "limitPerHost", "progressId"})
+                    for key in ("agentId", "progressId"):
+                        if key in params:
+                            need(isinstance(params[key], str) and 0 < len(params[key]) <= 256
+                                 and not re.search(r"[\x00-\x1f\x7f]", params[key]))
+                    if "allowPartialResults" in params:
+                        need(type(params["allowPartialResults"]) is bool)
+                    if "limitPerHost" in params:
+                        need(type(params["limitPerHost"]) is int and 1 <= params["limitPerHost"] <= 200)
                 if method == "models.authStatus":
                     need(isinstance(params, dict) and set(params) <= {"agentId"}
                          and ("agentId" not in params or isinstance(params["agentId"], str)
@@ -313,6 +338,9 @@ def browser_check(request, peer, playwright, now=time.time, diagnostic=None):
                 while not guard.failed and not (guard.hello and guard.read_rpc) and time.monotonic() < deadline:
                     page.wait_for_timeout(100)  # Pump browser events while an actual read is pending.
                 need(guard.hello and guard.read_rpc, "openclaw_authenticated_read_unverified")
+                diagnostic['phase'] = 'openclaw_settled_session'
+                page.wait_for_timeout(5000)  # Catch startup calls scheduled after the first render/read.
+                need(page.evaluate(OPENCLAW_READY) is True and not guard.failed, "openclaw_session_unverified")
                 results[runtime] = {"authentication": "gateway_hello", "rendered": True, "read_rpc": True}
             else:
                 diagnostic['phase'] = 'hermes_login_document'
