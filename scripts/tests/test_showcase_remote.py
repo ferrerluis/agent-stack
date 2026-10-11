@@ -14,6 +14,7 @@ import showcase_remote as remote
 import showcase_controller as controller
 import showcase_terraform as terraform
 import showcase_cleanup as cleanup
+import showcase_fingerprints as fingerprints
 import test_showcase_attempt as preparation_fixtures
 import test_showcase_terraform as terraform_fixtures
 from test_showcase_policy import config, quote, NOW
@@ -154,8 +155,14 @@ class RemoteChecksTest(unittest.TestCase):
         self.fixture = preparation_fixtures.PreparationTest("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        for name in ("bin/agent-stack-ssh", remote.DOCTOR_PATH, remote.AGENT_PATH, remote.BROWSER_PATH, remote.PEER_PATH,
-                     *controller.SOURCES):
+        # Use complete committed verifier closures, as the real Git export does.
+        # Missing checker imports must stay errors rather than being hidden by
+        # an older hand-maintained list of copied fixture files.
+        verifier_sources = {name for stage in fingerprints.SPECS
+                            for name in fingerprints.verifier_files(ROOT, stage)}
+        sources = {"bin/agent-stack-ssh", remote.DOCTOR_PATH, remote.AGENT_PATH, remote.BROWSER_PATH, remote.PEER_PATH,
+                   *controller.SOURCES} | verifier_sources
+        for name in sorted(sources):
             target = self.fixture.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / name).read_bytes())

@@ -177,7 +177,7 @@ OpenClaw receives a minimal authenticated local gateway configuration before its
 
 Run `skills/agent-stack-doctor/scripts/check_remote_health.sh --strict --json --services openclaw,hermes,workspace --require-claude --check-tailscale --tailscale-mode host` to enforce service/config/doctor/tool/route checks, including both native doctors. Human diagnostics collect evidence but do not establish a passing deployment; real model tasks and second-peer browser checks are separate acceptance requirements.
 
-TODO #7 requires the full six acceptance groups on DigitalOcean and light VM/container passes on AWS, GCP and Hetzner, with independently verified cleanup on every cloud. Each proof records its tested source, actual contents, relevant input and verifier fingerprints; matching proofs can carry across commits. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation](docs/plans/showcase-readiness-implementation.md) and [test](docs/plans/showcase-readiness-tests.md) plans for the acceptance requirements and recorded results.
+TODO #7 requires the full six acceptance groups on DigitalOcean and light VM/container passes on AWS, GCP and Hetzner, with independently verified cleanup on every cloud. Each proof records its tested source, actual contents, relevant input and verifier fingerprints; matching proofs can carry across commits. Local mock tests do not prove cloud deployment, model execution, browser access, reboot persistence or cleanup. See the [implementation plan](docs/plans/showcase-readiness-implementation.md), [current test plan](docs/plans/showcase-readiness-tests-v2.md) and [testing audit](docs/plans/showcase-testing-efficiency-audit.md). Private native receipts establish the current result; historical checkpoints do not establish current acceptance.
 
 The full trial verifies browser access before running paid Codex and Claude tasks. A failed browser check stops those tasks and proceeds to cleanup; both tasks and fresh browser checks after reboot remain required for a passing trial.
 
@@ -393,7 +393,7 @@ A VPN changes egress IP and DNS path; it does not guarantee that Google, Indeed,
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `cloud_provider` | `"aws"` | `"aws"`, `"digitalocean"`, or `"hetzner"` |
+| `cloud_provider` | `"aws"` | `"aws"`, `"digitalocean"`, `"hetzner"`, or `"gcp"` |
 | `project_name` | `"agent-stack"` | Prefix for all resource names |
 | `admin_username` | `"admin"` | Standard SSH/admin username created on the VM |
 | `admin_password` | `""` | Optional sensitive host admin password; blank keeps managed password locked |

@@ -40,9 +40,14 @@ def proof_hash(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def controller_sources(root):
+    from showcase_fingerprints import SPECS, verifier_files
+    return tuple(sorted(set(SOURCES) | {name for stage in SPECS for name in verifier_files(root, stage)}))
+
+
 def checked_controller_source(attempt):
     root = Path(__file__).resolve().parents[1]
-    for name in SOURCES:
+    for name in controller_sources(root):
         path = attempt.checkout / name
         require(path.is_file() and not path.is_symlink() and path.read_bytes() == (root / name).read_bytes(), "controller_source_revision_changed")
 

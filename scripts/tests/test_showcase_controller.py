@@ -324,7 +324,7 @@ class FullRunTest(unittest.TestCase):
     def test_full_scope_keeps_doctors_cli_receipts_browser_and_reboot_without_runtime_turns(self):
         value = self.make("full")
         report = value.controller.run_attempt(value.readiness, quote())
-        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["status"], "pass", report.get("reason"))
         self.assertEqual(report["acceptance_mode"], "full")
         self.assertEqual(report["cells"], {name: "unverified" if name == "documentation_and_linked_plans" else "pass"
                                          for name in controller.FULL_GROUPS})
@@ -424,7 +424,7 @@ class FullRunTest(unittest.TestCase):
         value = self.light_fixture()
         with patch.object(remote_fixtures.remote.time, "monotonic", side_effect=lambda: value.clock):
             report = value.controller.run_attempt(value.readiness, quote())
-        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["status"], "pass", report.get("reason"))
         self.assertEqual(report["acceptance_mode"], "light")
         self.assertEqual(report["cells"], {"vm_and_containers": "pass"})
         self.assertEqual(report["cleanup"], "verified")
@@ -716,7 +716,7 @@ class FullRunTest(unittest.TestCase):
     def test_loaded_controller_revision_drift_refuses_before_reservation(self):
         value = self.make()
         root = value.fixture.root / "other-controller-version"
-        for name in controller.SOURCES:
+        for name in controller.controller_sources(Path(controller.__file__).parents[1]):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((Path(controller.__file__).parents[1] / name).read_bytes())
@@ -726,6 +726,23 @@ class FullRunTest(unittest.TestCase):
             value.controller.run_attempt(value.readiness, quote())
         self.assertEqual(value.tf_commands, [])
         self.assertFalse(value.controller.path.exists())
+
+    def test_transitive_checker_revision_drift_refuses_before_reservation(self):
+        for checker in ('showcase_local_peer.py', 'showcase_hetzner_identity.py'):
+            with self.subTest(checker=checker):
+                value = self.make()
+                root = value.fixture.root / 'other-checker-version'
+                for name in controller.controller_sources(Path(controller.__file__).parents[1]):
+                    target = root / name; target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes((Path(controller.__file__).parents[1] / name).read_bytes())
+                target = root / 'scripts' / checker
+                target.write_text(target.read_text() + '\n# changed loaded checker\n')
+                with patch.object(controller, '__file__', str(root / 'scripts/showcase_controller.py')), \
+                     self.assertRaisesRegex(terraform.PolicyError, '^controller_source_revision_changed$'):
+                    value.controller.run_attempt(value.readiness, quote())
+                self.assertEqual(value.tf_commands, [])
+                self.assertFalse(value.controller.path.exists())
+                self.assertFalse((value.fixture.batch / 'reservations.json').exists())
 
     def test_public_cleanup_recovers_verified_acceptance_without_model_replay(self):
         import contextlib
