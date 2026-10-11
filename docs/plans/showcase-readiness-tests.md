@@ -1,5 +1,7 @@
 # AgentStack showcase readiness: agent-first test plan
 
+Current execution strategy: [revised test plan](showcase-readiness-tests-v2.md), based on the [tool-call bottleneck audit](showcase-testing-efficiency-audit.md). The approved acceptance scope and reporting subchecks below remain required.
+
 ## Current approved scope — 2026-10-10
 
 - The total cloud/model cap is **$35**. Necessary test and bug-fix attempts are authorized within that cap; run one owned deployment at a time and preserve every original cost and cleanup record.
