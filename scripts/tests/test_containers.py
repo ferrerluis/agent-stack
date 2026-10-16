@@ -115,6 +115,32 @@ class ProcessAndInputTest(unittest.TestCase):
                 self.assertTrue((context / "workspace-cli-task.py").is_file())
 
 
+class MuseTemplateCompatibilityTest(unittest.TestCase):
+    def test_isolated_environment_excludes_both_meta_key_names(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "META_API_KEY": "fixture-muse-key", "MODEL_API_KEY": "fixture-model-key"}):
+            environment = checks.isolated_env(Path(directory))
+        self.assertNotIn("META_API_KEY", environment)
+        self.assertNotIn("MODEL_API_KEY", environment)
+
+    @unittest.skipUnless(shutil.which("terraform"), "Terraform binary unavailable")
+    def test_real_templates_keep_muse_optional_and_accept_a_pinned_selection(self):
+        for muse in (None, "1.4.10-R6427.1"):
+            with self.subTest(muse=muse), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                context = checks.render_workspace(root, checks.isolated_env(root), "0.145.0", None, muse_release=muse)
+                dockerfile = (context / "Dockerfile").read_text()
+                entrypoint = (context / "workspace-entrypoint.sh").read_text()
+                self.assertIn("ARG CODEX_RELEASE=0.145.0", dockerfile)
+                self.assertEqual("ARG MUSE_RELEASE=" in dockerfile, muse is not None)
+                self.assertEqual("MUSE_WORKSPACE_GROUP=" in entrypoint, muse is not None)
+                self.assertNotIn("%{", entrypoint)
+                if muse:
+                    self.assertIn("sha256sum -c -", dockerfile)
+                    self.assertIn('if [ -z "${META_API_KEY:-}" ]', dockerfile)
+                self.assertFalse(list(root.glob("**/terraform.tfstate")))
+
+
 class ProfileRestartTest(unittest.TestCase):
     def test_current_ssh_binding_rejects_public_or_invalid_ports(self):
         checker = checks.ContainerChecks({}, "fixture-owner")
