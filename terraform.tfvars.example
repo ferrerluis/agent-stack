@@ -280,3 +280,13 @@ ui_auth_password = "" # blank = Terraform auto-generates
 tailscale_enabled  = true
 tailscale_mode     = "sidecar" # sidecar | host
 tailscale_auth_key = "tskey-auth-..."
+
+# Optional Meta chief-of-staff models (standard API access).
+# model_providers_enabled = ["meta"]
+# meta_api_key = "YOUR_META_API_KEY"
+# default_model = "meta/muse-spark-1.3"
+# fallback_models = ["meta/muse-wonder-1.0"]
+# Workspace choices: Codex is required and remains the default.
+# workspace_harnesses = ["codex", "claude_code", "muse_code"]
+# workspace_claude_release = "2.1.301"
+# workspace_muse_release = "1.4.10-R6427.1"

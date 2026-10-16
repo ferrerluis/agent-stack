@@ -786,7 +786,7 @@ has_env_key() {
   local key="$1"
   local value
   value="$(env_value "$key")"
-  [ -n "$value" ]
+  [ -n "$value" ] && [ "$value" != "''" ] && [ "$value" != '""' ]
 }
 
 seed_file_if_missing() {
@@ -875,6 +875,9 @@ model_route_has_credentials() {
       ;;
     groq)
       has_env_key GROQ_API_KEY
+      ;;
+    meta)
+      has_env_key MODEL_API_KEY
       ;;
     *)
       return 1
@@ -1013,6 +1016,21 @@ ensure_plugin_enabled() {
   return 1
 }
 
+configure_meta_provider() {
+  provider_selected "meta" || return 0
+  has_env_key MODEL_API_KEY || fail "Meta provider selected but MODEL_API_KEY is missing"
+  wait_openclaw_healthy || fail "OpenClaw is not ready for the Meta provider"
+  local log="$app/.meta-provider-install.log"
+  touch "$log"
+  chmod 0600 "$log"
+  if ! run_openclaw_cli plugins install "@openclaw/meta-provider@2026.10.4" >"$log" 2>&1; then
+    grep -qi 'already installed' "$log" || fail "Could not install the Meta provider; check OpenClaw version compatibility"
+  fi
+  run_openclaw_cli plugins enable meta >"$log" 2>&1 || fail "Could not enable the Meta provider; check OpenClaw plugin policy"
+  rm -f "$log"
+  mark_openclaw_restart_needed
+}
+
 configure_telegram_channel() {
   if ! wait_for_openclaw_config; then
     echo "[telegram] WARNING: $OPENCLAW_CONFIG not found; skipped Telegram setup."
@@ -1095,6 +1113,7 @@ configure_openclaw_channels_and_models() {
     echo "[anthropic] Provider not selected; skipping Anthropic auth bootstrap."
   fi
 
+  configure_meta_provider
   echo "[models] Configuring user-selected model defaults and fallbacks..."
   if wait_openclaw_healthy; then
     MODEL_CATALOG="$(run_openclaw_cli models list --all --plain 2>/dev/null || true)"
@@ -1114,18 +1133,35 @@ configure_openclaw_channels_and_models() {
             if run_openclaw_cli models fallbacks add "$fallback_model" >/tmp/openclaw-models-fallback-add.log 2>&1; then
               echo "[models] Added fallback: $fallback_model"
             else
+              if [ "$${fallback_model%%/*}" = "meta" ]; then
+                fail "Failed to configure selected Meta fallback model"
+              fi
               echo "[models] WARNING: Failed to add fallback: $fallback_model"
               tail -n 5 /tmp/openclaw-models-fallback-add.log || true
+            fi
+          else
+            if [ "$${fallback_model%%/*}" = "meta" ]; then
+              fail "Selected Meta fallback model is unavailable"
             fi
           fi
         done < <(printf '%s' "$FALLBACK_MODELS_JSON" | jq -r '.[]')
         configure_openai_codex_runtime_routes || true
       else
+        if [ "$${DEFAULT_MODEL_REF%%/*}" = "meta" ]; then
+          fail "Failed to set selected Meta default model"
+        fi
         echo "[models] WARNING: Failed to set default model: $DEFAULT_MODEL_REF"
         tail -n 5 /tmp/openclaw-models-set.log || true
       fi
+    else
+      if [ "$${DEFAULT_MODEL_REF%%/*}" = "meta" ]; then
+        fail "Selected Meta model is unavailable; check provider credentials and OpenClaw compatibility"
+      fi
     fi
   else
+    if provider_selected "meta"; then
+      fail "OpenClaw not ready; Meta model configuration did not complete"
+    fi
     echo "[models] WARNING: OpenClaw not ready; skipped model configuration."
   fi
 }

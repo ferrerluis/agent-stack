@@ -96,6 +96,20 @@ resource "terraform_data" "input_validation" {
 
   lifecycle {
     precondition {
+      condition     = !anytrue([for ref in concat([var.default_model], var.fallback_models) : startswith(ref, "meta/")]) || contains(var.model_providers_enabled, "meta")
+      error_message = "Meta model references require meta in model_providers_enabled."
+    }
+    precondition {
+      condition     = !contains(var.model_providers_enabled, "meta") || trimspace(var.meta_api_key) != ""
+      error_message = "meta_api_key is required when the Meta provider is selected."
+    }
+    precondition {
+      condition = !contains(var.enabled_services, "hermes") || var.hermes_config_mode == "preserve" || !startswith(trimspace(var.hermes_model), "meta/") || (
+        contains(var.model_providers_enabled, "meta") && trimspace(var.meta_api_key) != ""
+      )
+      error_message = "A meta/ hermes_model requires the Meta provider and meta_api_key."
+    }
+    precondition {
       condition = (
         !var.public_domain_enabled ||
         trimspace(var.base_domain) != "" ||
@@ -179,6 +193,7 @@ module "aws" {
   openai_codex_auth_json_base64        = var.openai_codex_auth_json_base64
   groq_api_key                         = var.groq_api_key
   gemini_api_key                       = var.gemini_api_key
+  meta_api_key                         = var.meta_api_key
   telegram_bot_token                   = var.telegram_bot_token
   telegram_allow_from                  = var.telegram_allow_from
   openclaw_config_mode                 = var.openclaw_config_mode
@@ -256,6 +271,7 @@ module "digitalocean" {
   openai_codex_auth_json_base64        = var.openai_codex_auth_json_base64
   groq_api_key                         = var.groq_api_key
   gemini_api_key                       = var.gemini_api_key
+  meta_api_key                         = var.meta_api_key
   telegram_bot_token                   = var.telegram_bot_token
   telegram_allow_from                  = var.telegram_allow_from
   openclaw_config_mode                 = var.openclaw_config_mode
@@ -330,6 +346,7 @@ module "hetzner" {
   openai_codex_auth_json_base64        = var.openai_codex_auth_json_base64
   groq_api_key                         = var.groq_api_key
   gemini_api_key                       = var.gemini_api_key
+  meta_api_key                         = var.meta_api_key
   telegram_bot_token                   = var.telegram_bot_token
   telegram_allow_from                  = var.telegram_allow_from
   openclaw_config_mode                 = var.openclaw_config_mode
@@ -443,6 +460,7 @@ locals {
     openai_codex_auth_json_base64                  = var.openai_codex_auth_json_base64
     groq_api_key                                   = var.groq_api_key
     gemini_api_key                                 = var.gemini_api_key
+    meta_api_key                                   = var.meta_api_key
     telegram_bot_token                             = var.telegram_bot_token
     telegram_allow_from_json                       = jsonencode(var.telegram_allow_from)
     openclaw_config_mode                           = var.openclaw_config_mode
@@ -498,7 +516,9 @@ locals {
     ui_auth_username                               = var.ui_auth_username
     ui_auth_password                               = local.resolved_ui_auth_password
     workspace_enabled                              = local.workspace_enabled
-    workspace_claude_enabled                       = var.workspace_claude_enabled
+    workspace_claude_enabled                       = var.workspace_claude_enabled || contains(var.workspace_harnesses, "claude_code")
+    workspace_muse_enabled                         = contains(var.workspace_harnesses, "muse_code")
+    workspace_muse_release                         = var.workspace_muse_release
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
     workspace_codex_sandbox_enabled                = var.workspace_codex_sandbox_enabled
@@ -526,7 +546,7 @@ locals {
 
   runtime_docker_compose             = templatefile("${path.module}/modules/common/templates/runtime/docker-compose.yml.tpl", local.runtime_template_vars)
   runtime_env                        = templatefile("${path.module}/modules/common/templates/runtime/env.tpl", local.runtime_template_vars)
-  runtime_hermes_seed                = jsonencode({ model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model })
+  runtime_hermes_seed                = jsonencode({ model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model, fallback_models = var.fallback_models })
   runtime_openclaw_seed              = jsonencode({ gateway_bind = local.runtime_template_vars.openclaw_gateway_bind, gateway_token = local.resolved_gateway_token, trusted_loopback_proxies_enabled = var.openclaw_host_network_enabled })
   runtime_openclaw_config            = file("${path.module}/modules/common/runtime/openclaw_config.py")
   runtime_workspace_cli_task         = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
@@ -927,6 +947,7 @@ locals {
     openai_codex_auth_json_base64                  = "managed-credential"
     groq_api_key                                   = "managed-credential"
     gemini_api_key                                 = "managed-credential"
+    meta_api_key                                   = "managed-credential"
     telegram_bot_token                             = "managed-credential"
     telegram_allow_from_json                       = jsonencode(var.telegram_allow_from)
     openclaw_config_mode                           = var.openclaw_config_mode
@@ -982,7 +1003,9 @@ locals {
     ui_auth_username                               = var.ui_auth_username
     ui_auth_password                               = "managed-credential"
     workspace_enabled                              = local.workspace_enabled
-    workspace_claude_enabled                       = var.workspace_claude_enabled
+    workspace_claude_enabled                       = var.workspace_claude_enabled || contains(var.workspace_harnesses, "claude_code")
+    workspace_muse_enabled                         = contains(var.workspace_harnesses, "muse_code")
+    workspace_muse_release                         = var.workspace_muse_release
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
     workspace_codex_sandbox_enabled                = var.workspace_codex_sandbox_enabled

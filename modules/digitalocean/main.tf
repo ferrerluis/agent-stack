@@ -42,6 +42,7 @@ locals {
     openai_codex_auth_json_base64        = var.openai_codex_auth_json_base64
     groq_api_key                         = var.groq_api_key
     gemini_api_key                       = var.gemini_api_key
+    meta_api_key                         = var.meta_api_key
     telegram_bot_token                   = var.telegram_bot_token
     telegram_allow_from_json             = jsonencode(var.telegram_allow_from)
     openclaw_config_mode                 = var.openclaw_config_mode

@@ -5,6 +5,7 @@ ANTHROPIC_AUTH_KEY=${anthropic_auth_key}
 OPENAI_API_KEY=${openai_api_key}
 GROQ_API_KEY=${groq_api_key}
 GEMINI_API_KEY=${gemini_api_key}
+MODEL_API_KEY='${meta_api_key}'
 TELEGRAM_BOT_TOKEN=${telegram_bot_token}
 OPENCLAW_GATEWAY_TOKEN=${gateway_token}
 OPENCLAW_ENABLED=${openclaw_enabled}

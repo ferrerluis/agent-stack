@@ -39,6 +39,17 @@ def install_command_link(data_dir):
     return True
 
 
+def model_route(reference, fallback=False):
+    provider, separator, model = reference.partition("/")
+    if not separator or not model or provider not in ("anthropic", "openai", "google", "groq", "meta"):
+        raise ValueError("Hermes needs an anthropic/openai/google/groq/meta provider-prefixed model")
+    route = {"provider": {"google": "gemini", "openai": "custom", "meta": "meta-ai"}.get(provider, provider),
+             "model" if fallback else "default": model}
+    if provider == "openai":
+        route["base_url"] = "https://api.openai.com/v1"
+    return route
+
+
 def seed_config(data_dir, seed, mode="auto"):
     root = Path(data_dir)
     target = root / "config.yaml"
@@ -46,12 +57,12 @@ def seed_config(data_dir, seed, mode="auto"):
         return False
     if target.is_symlink():
         raise ValueError("refusing a symlinked Hermes configuration")
-    provider, separator, model = seed["model_ref"].partition("/")
-    if not separator or not model or provider not in ("anthropic", "openai", "google", "groq"):
-        raise ValueError("Hermes needs an anthropic/openai/google/groq provider-prefixed model")
-    model_config = {"default": model, "provider": {"google": "gemini", "openai": "custom"}.get(provider, provider)}
-    if provider == "openai":
-        model_config["base_url"] = "https://api.openai.com/v1"
+    model_config = model_route(seed["model_ref"])
+    fallbacks = None
+    if "fallback_models" in seed:
+        if not isinstance(seed["fallback_models"], list) or not all(isinstance(ref, str) for ref in seed["fallback_models"]):
+            raise ValueError("fallback_models must be a list of model references")
+        fallbacks = [model_route(ref, fallback=True) for ref in seed["fallback_models"]]
     config = {}
     if target.exists():
         # AgentStack seeds JSON; fail safely for operator-owned YAML in manage
@@ -60,6 +71,9 @@ def seed_config(data_dir, seed, mode="auto"):
         if not isinstance(config, dict):
             raise ValueError("existing Hermes configuration must be an object")
     config["model"] = model_config
+    if fallbacks is not None:
+        config["fallback_providers"] = fallbacks
+        config.pop("fallback_model", None)
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".config-", delete=False) as file:
         temporary = Path(file.name)

@@ -46,6 +46,12 @@ variable "groq_api_key" {
   sensitive = true
 }
 
+variable "meta_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 variable "gemini_api_key" {
   type      = string
   sensitive = true

@@ -55,6 +55,26 @@ RUN curl -fsSL https://claude.ai/install.sh -o /tmp/install-claude.sh \
   && rm -rf /tmp/install-claude.sh /root/.local/bin/claude /root/.local/share/claude
 %{ endif }
 
+%{ if workspace_muse_enabled }
+ARG MUSE_RELEASE=${workspace_muse_release}
+ENV MUSE_NO_AUTO_UPDATE=1
+RUN set -eu; \
+    case "$(uname -m)" in x86_64) platform=x86_linux ;; aarch64|arm64) platform=aarch64_linux ;; *) exit 1 ;; esac; \
+    curl -fsSL --proto '=https' --proto-redir '=https' \
+      "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=$MUSE_RELEASE&file=manifest.json" -o /tmp/muse-manifest.json; \
+    jq -e --arg version "$MUSE_RELEASE" '.version == $version and .checksum_algorithm == "sha256"' /tmp/muse-manifest.json >/dev/null; \
+    artifact="$(jq -er --arg platform "$platform" '.artifacts[$platform].url | select(startswith("https://lookaside.facebook.com/"))' /tmp/muse-manifest.json)"; \
+    checksum="$(jq -er --arg platform "$platform" '.artifacts[$platform].checksum | select(test("^[0-9a-f]{64}$"))' /tmp/muse-manifest.json)"; \
+    install -d -m 0755 /usr/local/libexec; \
+    curl -fsSL --proto '=https' --proto-redir '=https' "$artifact" -o /usr/local/libexec/muse; \
+    printf '%s  %s\n' "$checksum" /usr/local/libexec/muse | sha256sum -c -; \
+    chmod 0755 /usr/local/libexec/muse; \
+    printf '%s\n' '#!/bin/sh' 'if [ -z "$${META_API_KEY:-}" ] && [ -r /etc/agent-stack-muse.env ]; then . /etc/agent-stack-muse.env; fi' 'export MUSE_NO_AUTO_UPDATE=1' 'exec /usr/local/libexec/muse "$@"' >/usr/local/bin/muse; \
+    chmod 0755 /usr/local/bin/muse; \
+    muse --version; \
+    rm -f /tmp/muse-manifest.json
+%{ endif }
+
 RUN install -d -m 0755 /usr/local/libexec
 
 COPY workspace-entrypoint.sh /usr/local/bin/workspace-entrypoint

@@ -708,3 +708,91 @@ run "rejects_unpinned_claude" {
   }
   expect_failures = [var.workspace_claude_release]
 }
+
+run "meta_models_and_workspace_selection" {
+  command = plan
+  variables {
+    model_providers_enabled   = ["meta"]
+    meta_api_key              = "meta-test-fixture"
+    hermes_dashboard_password = "hermes-dashboard-test-fixture"
+    hermes_dashboard_secret   = "hermes-dashboard-test-secret"
+    default_model             = "meta/muse-spark-1.3"
+    fallback_models           = ["meta/muse-wonder-1.0"]
+    enabled_services          = ["openclaw", "hermes", "workspace"]
+    workspace_password        = "workspace-fixture-password"
+    workspace_harnesses       = ["codex", "claude_code", "muse_code"]
+    workspace_claude_release  = "2.1.301"
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "MODEL_API_KEY='meta-test-fixture'") && strcontains(nonsensitive(local.runtime_workspace_env), "META_API_KEY='meta-test-fixture'")
+    error_message = "Meta API credentials must reach the agents and selected Muse workspace runtime."
+  }
+  assert {
+    condition     = strcontains(local.runtime_workspace_dockerfile, "/usr/local/libexec/muse") && strcontains(local.runtime_workspace_dockerfile, "sha256sum -c -") && strcontains(local.runtime_workspace_dockerfile, "ARG CLAUDE_RELEASE=2.1.301") && !strcontains(nonsensitive(local.runtime_workspace_dockerfile), "meta-test-fixture")
+    error_message = "Optional CLIs must be installed with pinned binaries, checksums and no credentials."
+  }
+  assert {
+    condition     = jsondecode(local.runtime_hermes_seed).model_ref == "meta/muse-spark-1.3" && jsondecode(local.runtime_hermes_seed).fallback_models == ["meta/muse-wonder-1.0"]
+    error_message = "Hermes must receive the selected primary and fallback Meta routes."
+  }
+}
+
+run "meta_requires_credentials" {
+  command = plan
+  variables {
+    model_providers_enabled = ["meta"]
+    meta_api_key            = ""
+    default_model           = "meta/muse-spark-1.3"
+  }
+  expect_failures = [terraform_data.input_validation]
+}
+
+run "codex_cannot_be_unselected" {
+  command = plan
+  variables {
+    workspace_harnesses = ["muse_code"]
+    enabled_services    = ["workspace"]
+    workspace_password  = "workspace-fixture-password"
+  }
+  expect_failures = [var.workspace_harnesses]
+}
+
+run "workspace_rejects_duplicate_tools" {
+  command = plan
+  variables { workspace_harnesses = ["codex", "codex"] }
+  expect_failures = [var.workspace_harnesses]
+}
+
+run "muse_is_opt_in" {
+  command = plan
+  assert {
+    condition     = !strcontains(local.runtime_workspace_dockerfile, "ARG MUSE_RELEASE") && !strcontains(nonsensitive(local.runtime_workspace_env), "META_API_KEY")
+    error_message = "Unselected Muse must not be installed or receive credentials."
+  }
+}
+
+run "unused_hermes_meta_override_needs_no_key" {
+  command = plan
+  variables {
+    enabled_services = ["openclaw"]
+    hermes_model     = "meta/muse-wonder-1.0"
+    meta_api_key     = ""
+  }
+  assert {
+    condition     = var.meta_api_key == ""
+    error_message = "A disabled Hermes override must not require Meta authentication."
+  }
+}
+
+run "preserved_hermes_meta_override_needs_no_key" {
+  command = plan
+  variables {
+    hermes_model       = "meta/muse-wonder-1.0"
+    hermes_config_mode = "preserve"
+    meta_api_key       = ""
+  }
+  assert {
+    condition     = var.meta_api_key == ""
+    error_message = "Preserving Hermes must not require credentials for an unused override."
+  }
+}
