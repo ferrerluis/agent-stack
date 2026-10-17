@@ -12,7 +12,13 @@ Existing model and workspace defaults are unchanged.
 | `huggingface/openai/gpt-oss-20b:groq` | HF → Groq | Text | Sequential | low / medium / high |
 | `huggingface/openai/gpt-oss-120b:groq` | HF → Groq | Text | Sequential | low / medium / high |
 
-These are the only accepted Hugging Face routes in this integration. A Hub
+The initial set is intentional: both sizes were present in HF's official router
+catalog on the same Groq backend with explicit tool support, and Groq documents
+the same sequential-tool and low/medium/high reasoning contract for both. This
+keeps the first integration within one reviewed hosted contract while offering
+two model sizes; no performance benchmark or successful paid inference is claimed.
+
+Arbitrary HF model IDs are deliberately unsupported by managed setup. A Hub
 repository's existence does not establish hosted availability, chat compatibility
 or tool support. Provider pins make the contract reviewable: unqualified IDs,
 `:fastest`, `:cheapest`, `:preferred` and other providers are rejected. HF supports

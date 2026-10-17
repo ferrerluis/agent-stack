@@ -22,7 +22,7 @@ these product acceptance counts.
 | HF02 Config | .4 Sequential/reasoning settings | Parallel=false for both agents; OpenClaw effort vocabulary; Hermes medium | Passed: configuration contract assertions |
 | HF03 Runtime boundary | .1 Credential presence | Native HF_TOKEN slot checked; absent key fails closed | Passed: executable shell fixture |
 | HF03 Runtime boundary | .2 Exact configured-model readback | Accept exact routes; reject suffix loss, substitution and fallback drift | Passed: executable readback fixture |
-| HF03 Runtime boundary | .3 Fresh native agent startup/restart | Real OpenClaw/Hermes config acceptance and settings persist | Blocked: native binaries/container runtime unavailable on this executor |
+| HF03 Runtime boundary | .3 Fresh native agent startup/restart | Real OpenClaw/Hermes config acceptance and settings persist | Partial: OpenClaw native foreground startup, clean stop and restart passed; combined case remains blocked on Hermes native runtime/container availability |
 | HF03 Runtime boundary | .4 Account authorization | Existing token scope, credits and provider/model access confirmed | Blocked: HF_TOKEN/HUGGINGFACE_HUB_TOKEN absent from the executor environment; scope, credits and access unverified |
 | HF04 Live agents | .1 OpenClaw 20B/120B response identity | Real agent response, requested/served model and provider, fallbacks empty | Blocked: paid inference prohibited |
 | HF04 Live agents | .2 Hermes 20B/120B response identity | Same through real Hermes agent session | Blocked: paid inference prohibited |
@@ -88,6 +88,48 @@ source blob verified at commit `8259f4ad805f23fc15e1138aded1530ea28da64c`;
 exact model IDs, HF_TOKEN lookup and scoped request overrides passed. This is
 partial resolver evidence, not a native agent startup or model-turn result.
 
+## Native OpenClaw follow-up
+
+OpenClaw **2026.10.4** ran with official Node **v24.22.0** in task-owned storage.
+The initial scripts-disabled, optional-dependencies-omitted install could validate
+configuration but lacked the native filesystem binding. Installing the exact
+official optional prebuild `@openclaw/fs-safe-linux-arm64-gnu@0.24.2`, matching
+`@openclaw/fs-safe@0.24.2`, closed that gap without a source build or guard bypass.
+The official prebuild probe returned `{"status":"ready"}` with
+`FS_SAFE_NATIVE_MODE=require`; native config validation then reported no warnings.
+See the [official fs-safe installation contract](https://github.com/openclaw/fs-safe)
+and [OpenClaw foreground gateway commands](https://docs.openclaw.ai/cli/gateway).
+
+The lifecycle probe used fresh user, mount, PID and network namespaces. It mounted
+the task runtime read-only, masked the real `/home` and `/root`, and put all agent
+state/cache/workspace in a private 512 MiB tmpfs. The network had only loopback and
+no external routes. Synthetic local gateway/HF token strings were the only auth
+inputs; discovery, scheduled tasks, browser and updates were disabled. No model
+turn, channel message, service installation or inference request was issued.
+
+Two consecutive foreground `gateway run --bind loopback` cycles each:
+
+- returned HTTP 200 with `ready: true` from `/readyz`;
+- returned the exact configured primary `huggingface/openai/gpt-oss-20b:groq`
+  and fallback `huggingface/openai/gpt-oss-120b:groq` through the native CLI;
+- preserved config SHA-256
+  `4fd8ca80560b54023801bf7efd2825ac2dbe94b8dac9dddcda8365195255c795`
+  and the independent workspace sentinel hash;
+- exited with status 0 after SIGTERM and released its private loopback listeners.
+
+The readiness payload also reported CPU/event-loop degradation under local load;
+these passes establish startup and configuration persistence, not performance.
+The outer namespace exited with status 0, its tmpfs state (including an internally
+generated config-journal key) was discarded, and its temporary mount directories
+were removed. No host port or persistent service was exposed. Redacted task-only
+evidence is in `.tmp/huggingface/native/lifecycle-result.json`.
+
+HF03.3 retains its original combined OpenClaw/Hermes scope: the OpenClaw portion
+now passes, while full native Hermes startup/restart remains unverified. The
+product catalog therefore remains **13 passed / 6 blocked**, with this partial
+result made explicit. Live authorization, served-model identity and real tool
+turns remain blocked independently of native startup success.
+
 ## Local run history and workflow checks
 
 - The initial broad runner used a deeply nested path. Terraform plugins exceeded
@@ -114,11 +156,18 @@ partial resolver evidence, not a native agent startup or model-turn result.
   processes because it identified sibling-process risk. The stop was not retried;
   that run finished normally. No sibling process was stopped and no approval is
   pending.
+- The native lifecycle follow-up retained four unsuccessful probe attempts: a
+  retired memory-setting fixture, an undiagnosed gateway bootstrap exit, a cache
+  snapshot exceeding the intentionally tiny masked-home tmpfs, and a wrong `ss`
+  executable path after readiness had already succeeded. The final probe used
+  the supported memory-plugin setting, a cache under the existing private tmpfs
+  and the correct executable path. Both complete lifecycle cycles then passed;
+  filesystem safety remained required throughout.
 
 The existing GitHub workflow runs the full credential-free suite from a clean
 checkout. Before final handoff, compare its successful run head SHA with both the
 PR head and pushed branch. Record the exact run URL, SHA, counts and any review
-findings in the PR description, leaving this source history intact. Native runtime
+findings in the PR description, leaving this source history intact. Native Hermes
 startup/restart, served-model identity and paid tool turns remain blocked even if
 that CI is green. No credential file was inspected; the environment presence-only
 check emitted booleans, never token values.
