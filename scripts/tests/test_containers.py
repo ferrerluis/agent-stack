@@ -1,4 +1,6 @@
+import base64
 import importlib.util
+import re
 import json
 import os
 from pathlib import Path
@@ -209,3 +211,26 @@ class ProfileRestartTest(unittest.TestCase):
                 self.assertEqual(report["status"], "pass")
                 self.assertEqual(report["persistence"], "pass")
                 self.assertEqual(connections, ["49000", "49001", "49002"])
+
+
+class OpenCodeTemplateCompatibilityTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("terraform"), "Terraform binary unavailable")
+    def test_real_templates_keep_opencode_optional_with_legacy_and_all_harnesses(self):
+        for release in (None, "1.19.3"):
+            with self.subTest(release=release), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                context = checks.render_workspace(root, checks.isolated_env(root), "0.145.0", "2.1.301",
+                    muse_release="1.4.10-R6427.1", opencode_release=release, opencode_model="huggingface/moonshotai/Kimi-K3:baseten")
+                dockerfile = (context / "Dockerfile").read_text()
+                entrypoint = (context / "workspace-entrypoint.sh").read_text()
+                self.assertIn("ARG CODEX_RELEASE=0.145.0", dockerfile)
+                self.assertIn("ARG CLAUDE_RELEASE=2.1.301", dockerfile)
+                self.assertIn("ARG MUSE_RELEASE=1.4.10-R6427.1", dockerfile)
+                self.assertEqual("ARG OPENCODE_RELEASE=" in dockerfile, release is not None)
+                self.assertEqual("agent-stack-opencode.py --seed" in entrypoint, release is not None)
+                self.assertNotIn("%{", entrypoint)
+                self.assertNotIn("$${", entrypoint)
+                if release:
+                    self.assertIn("'huggingface/moonshotai/Kimi-K3:baseten'", entrypoint)
+                    encoded = re.search(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d", dockerfile).group(1)
+                    self.assertEqual(base64.b64decode(encoded), (checks.ROOT / "modules/common/runtime/workspace_opencode.py").read_bytes())

@@ -544,14 +544,14 @@ variable "enabled_services" {
 }
 
 variable "workspace_harnesses" {
-  description = "Workspace coding tools: Codex is mandatory; optionally add claude_code and muse_code."
+  description = "Workspace coding tools: Codex is mandatory; optionally add claude_code, muse_code and opencode."
   type        = list(string)
   default     = ["codex"]
   validation {
     condition = contains(var.workspace_harnesses, "codex") && length(distinct(var.workspace_harnesses)) == length(var.workspace_harnesses) && alltrue([
-      for harness in var.workspace_harnesses : contains(["codex", "claude_code", "muse_code"], harness)
+      for harness in var.workspace_harnesses : contains(["codex", "claude_code", "muse_code", "opencode"], harness)
     ])
-    error_message = "workspace_harnesses must include codex, contain no duplicates, and use only codex, claude_code, muse_code."
+    error_message = "workspace_harnesses must include codex, contain no duplicates, and use only codex, claude_code, muse_code, opencode."
   }
   validation {
     condition     = length(var.workspace_harnesses) == 1 || contains(var.enabled_services, "workspace")
@@ -560,6 +560,30 @@ variable "workspace_harnesses" {
   validation {
     condition     = !contains(var.workspace_harnesses, "muse_code") || trimspace(var.meta_api_key) != ""
     error_message = "meta_api_key is required when muse_code is selected in workspace_harnesses."
+  }
+}
+
+variable "workspace_opencode_release" {
+  description = "Exact OpenCode V1 release from anomalyco/opencode. Only installed when opencode is selected; V2 uses a different contract."
+  type        = string
+  default     = "1.19.3"
+  validation {
+    condition     = can(regex("^1\\.[0-9]+\\.[0-9]+$", var.workspace_opencode_release))
+    error_message = "workspace_opencode_release must be an exact V1 release such as 1.19.3."
+  }
+}
+
+variable "workspace_opencode_model" {
+  description = "Required explicit OpenCode HF model when enabled, independent of personal-agent selections. Only reviewed Hub IDs pinned to Baseten are supported. Existing user config is preserved; conflicting routes fail at launch. Authenticate separately as the workspace user."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.workspace_opencode_model == "" || can(regex("^huggingface/(moonshotai/Kimi-K3|meta-models/Muse-Spark-Open-816B-A42B|deepseek-ai/DeepSeek-V4[.]1-Flash):baseten$", var.workspace_opencode_model))
+    error_message = "workspace_opencode_model must be empty or a reviewed huggingface/Hub-ID:baseten route: Kimi-K3, Muse-Spark-Open-816B-A42B or DeepSeek-V4.1-Flash."
+  }
+  validation {
+    condition     = !contains(var.workspace_harnesses, "opencode") || var.workspace_opencode_model != ""
+    error_message = "workspace_opencode_model is required when opencode is selected."
   }
 }
 

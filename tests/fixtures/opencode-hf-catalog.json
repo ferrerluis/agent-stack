@@ -1,0 +1,41 @@
+{
+  "checked_at": "2026-10-17T19:01:11.521034+00:00",
+  "router_url": "https://router.huggingface.co/v1/models",
+  "router_sha256": "3554c5d440dd921363db778df2c84954c91f6bfc335a37ffd6d382c5ecd06105",
+  "authenticated_inference": false,
+  "routes": [
+    {
+      "model": "moonshotai/Kimi-K3",
+      "provider": "baseten",
+      "providerId": "moonshotai/Kimi-K3",
+      "task": "conversational",
+      "status": "live",
+      "supports_tools": true,
+      "context_length": 1048576,
+      "mapping_url": "https://huggingface.co/api/models/moonshotai/Kimi-K3?expand[]=inferenceProviderMapping",
+      "mapping_sha256": "9662abba4bd8a3e4c3ffd5fefd8e840d1b96635633e8d49a732cdf2181884bf9"
+    },
+    {
+      "model": "meta-models/Muse-Spark-Open-816B-A42B",
+      "provider": "baseten",
+      "providerId": "meta-models/muse-spark-open",
+      "task": "conversational",
+      "status": "live",
+      "supports_tools": true,
+      "context_length": 1048576,
+      "mapping_url": "https://huggingface.co/api/models/meta-models/Muse-Spark-Open-816B-A42B?expand[]=inferenceProviderMapping",
+      "mapping_sha256": "efe6fad793a1503bcdf61ee51eaf9fb1d06fa707bc07f9349c4a6b1e41af24af"
+    },
+    {
+      "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "provider": "baseten",
+      "providerId": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "task": "conversational",
+      "status": "live",
+      "supports_tools": true,
+      "context_length": 1048576,
+      "mapping_url": "https://huggingface.co/api/models/deepseek-ai/DeepSeek-V4.1-Flash?expand[]=inferenceProviderMapping",
+      "mapping_sha256": "719ad1690bd9580224642f2582321c8df02acc4fb1fda4de23d4f132faa6354b"
+    }
+  ]
+}
