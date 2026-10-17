@@ -69,10 +69,13 @@ def isolated_env(directory):
     return env
 
 
-def render_workspace(directory, env, codex_release, claude_release, terraform="terraform", muse_release=None):
+def render_workspace(directory, env, codex_release, claude_release, terraform="terraform", muse_release=None,
+                     opencode_release=None, opencode_model=""):
     values = {"workspace_username": "testuser", "workspace_codex_release": codex_release,
               "workspace_claude_enabled": bool(claude_release), "workspace_claude_release": claude_release or "",
-              "workspace_muse_enabled": bool(muse_release), "workspace_muse_release": muse_release or ""}
+              "workspace_muse_enabled": bool(muse_release), "workspace_muse_release": muse_release or "",
+              "workspace_opencode_enabled": bool(opencode_release), "workspace_opencode_release": opencode_release or "",
+              "workspace_opencode_model": opencode_model}
     templates = ROOT / "modules/common/templates/runtime"
     sources = {
         "Dockerfile": "workspace.Dockerfile.tpl", "workspace-entrypoint.sh": "workspace-entrypoint.sh.tpl",

@@ -369,6 +369,13 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
         fail("workspace_harnesses must include codex and contain no duplicates")
     if len(harnesses) > 1 and "workspace" not in resolved["enabled_services"]:
         fail("optional workspace_harnesses require the workspace service")
+    if not re.fullmatch(r"1\.[0-9]+\.[0-9]+", resolved["workspace_opencode_release"]):
+        fail("workspace_opencode_release must be an exact V1 release such as 1.19.3")
+    opencode_model = resolved["workspace_opencode_model"]
+    if opencode_model and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_./:-]{0,199}", opencode_model):
+        fail("workspace_opencode_model must be a provider/model reference without spaces or credentials")
+    if "opencode" in harnesses and not opencode_model:
+        fail("workspace_opencode_model is required when opencode is selected")
     if resolved["workspace_claude_enabled"] or "claude_code" in harnesses:
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", resolved["workspace_claude_release"]):
             fail("workspace_claude_release must be an exact x.y.z version when Claude Code is selected")

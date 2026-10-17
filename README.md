@@ -418,6 +418,60 @@ protections.
 See the [acceptance catalog](docs/meta-integration-tests.md) and
 [completed validation record](docs/meta-integration-validation.md).
 
+## OpenCode workspace harness
+
+OpenCode is an independent optional coding tool; Codex remains installed and the
+chief-of-staff model stays unchanged. Select it alongside any other harnesses:
+
+```hcl
+enabled_services           = ["openclaw", "workspace"]
+workspace_harnesses        = ["codex", "opencode"]
+workspace_opencode_release = "1.19.3"
+workspace_opencode_model   = "openai/<model-id>" # use an available OpenCode provider/model
+```
+
+AgentStack pins **OpenCode V1**, downloads the official Linux glibc release
+(ARM64 or x64 baseline), requires its release API SHA-256 digest, and verifies the
+binary version. Missing assets/digests, download failures and incompatible
+architectures fail the image build. V2 is a separate upstream contract; it is not
+selected by this option. No Node installation or mutable installer is needed.
+
+Run `opencode --version` and `opencode` from a workspace shell or workspace SSH
+as the normal workspace user. First startup seeds `~/.config/opencode/opencode.json`
+with the explicit model, its provider allowlist, automatic updates disabled and
+all tool permissions set to `ask`. Existing `opencode.json`, `opencode.jsonc` or
+legacy `config.json` is preserved byte for byte; subsequent Terraform model
+changes do not overwrite it. Edit that user config when changing an existing
+installation. Project configuration, agents and inline environment overrides
+follow upstream precedence and can override these initial defaults. The command
+wrapper disables automatic updates in both interactive and SSH sessions.
+
+Authentication is separate: use an existing provider key in the workspace shell
+environment, or, when authorized, the upstream `opencode auth login` / TUI
+`/connect` flow. OpenCode's native login writes `~/.local/share/opencode/auth.json`.
+AgentStack does not copy Codex/Claude logins, forward personal-agent API keys, run
+a login or write OpenCode credentials. Provider IDs belong to OpenCode's catalog;
+check `opencode models <provider>` and configure custom provider endpoints in the
+user config. Model existence and account access require native/provider checks;
+setup validates the reference's syntax. The persisted workspace home retains
+config and sessions across rebuilds. Removing `opencode` from the selection omits
+its binary and seed step on rebuild while retaining user data.
+
+For supervised use, launch the TUI and approve each requested tool operation.
+The native headless command is `opencode run --format json --model provider/model
+"<task>"`; `--session <id>` continues a session and `opencode export <id>` exports
+its evidence. In pinned V1, headless `ask` requests are automatically rejected.
+A zero process exit code can accompany a rejected tool: inspect JSON errors,
+`tool_use` status and the actual result. Use a bounded timeout and independently
+verify changed files/tests before calling a run successful. Genuine unattended
+coding requires separately reviewed scoped permissions and usable auth; this
+integration does not enable `--auto`, launch a server, install a delegation route
+or change Docker protections. Do not expose upstream `serve`/`web` without its
+own authentication and network review.
+
+Official contracts and a reproducible passed/failed/blocked matrix are in
+[OpenCode acceptance and validation](docs/opencode-integration-validation.md).
+
 ## Legacy layout and provider migration
 
 New deployments use `/opt/agent-stack`. Existing `/opt/openclaw` volumes are migrated by `/usr/local/bin/agent-stack-migrate-layout` on bootstrap:

@@ -323,6 +323,6 @@ Advanced defaults:
 ## Meta models and workspace tools
 
 - Offer standard Muse Spark 1.3 (`meta/muse-spark-1.3`) and Muse Wonder 1.0 (`meta/muse-wonder-1.0`) with provider `meta`; request `meta_api_key` only for Meta or selected Muse Code authentication. Never accept the example placeholder.
-- Coding tools are a multi-selection: Codex checked and locked; Claude Code and Muse Code optional. Store choices in `workspace_harnesses`. Ask for an exact Claude release if selected; use the pinned Muse default unless overridden.
+- Coding tools are a multi-selection: Codex checked and locked; Claude Code, Muse Code and OpenCode optional. Store choices in `workspace_harnesses`. Ask for an exact Claude release if selected; use the pinned Muse default unless overridden. OpenCode uses the pinned V1 release and requires an explicit `workspace_opencode_model` in OpenCode `provider/model` format. Its initial provider/model config is independent of personal-agent model selection; existing workspace JSON/JSONC is preserved. Authenticate separately as the workspace user only when authorized. Headless mode rejects permission prompts; do not promise unattended execution or add auto approval.
 - Keep model choices independent of installed coding tools. An installed optional CLI does not configure chief-of-staff delegation.
 - For existing configs, explain `auto`/`preserve` behavior and select `manage` only when updating their model settings is requested.

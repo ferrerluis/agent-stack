@@ -290,3 +290,10 @@ tailscale_auth_key = "tskey-auth-..."
 # workspace_harnesses = ["codex", "claude_code", "muse_code"]
 # workspace_claude_release = "2.1.301"
 # workspace_muse_release = "1.4.10-R6427.1"
+
+# Independent OpenCode V1 coding harness (requires workspace service).
+# Keep codex selected; other optional harnesses can coexist.
+# workspace_harnesses = ["codex", "opencode"]
+# workspace_opencode_release = "1.19.3"
+# workspace_opencode_model = "openai/<model-id>" # replace with an available native model ID
+# Authenticate separately in the workspace; existing user config is preserved.
