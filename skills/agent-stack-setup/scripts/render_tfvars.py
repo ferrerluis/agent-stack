@@ -374,8 +374,8 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
             fail("workspace_claude_release must be an exact x.y.z version when Claude Code is selected")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-R[0-9]+(?:\.[0-9]+)?", resolved["workspace_muse_release"]):
         fail("workspace_muse_release must be an exact Muse release")
-    if "meta" in resolved["model_providers_enabled"] and not str(resolved["meta_api_key"]).strip():
-        fail("meta_api_key is required when the Meta provider is selected")
+    if ("meta" in resolved["model_providers_enabled"] or "muse_code" in harnesses) and not str(resolved["meta_api_key"]).strip():
+        fail("meta_api_key is required when the Meta provider or Muse Code is selected")
     if any(ch in resolved["meta_api_key"] for ch in "\r\n'"):
         fail("meta_api_key must be a single-line API key without quotes")
 

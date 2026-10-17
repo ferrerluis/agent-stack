@@ -374,6 +374,9 @@ missing provider support is an error, not proof that another model worked.
 Existing configurations remain unchanged in `auto`/`preserve` mode; choose
 `openclaw_config_mode = "manage"` and `hermes_config_mode = "manage"` to update
 managed model selections. Hermes-managed ordered fallbacks use `fallback_providers`.
+Hermes inherits only `anthropic/`, `openai/`, `google/`, `groq/` and `meta/`
+fallbacks, in their original order; it skips legacy `openai-codex/` entries.
+OpenClaw retains the complete global fallback list.
 Contributor models and subscription-only Wonder Full are not setup presets.
 
 Coding tools are independent of the chief-of-staff model:
@@ -391,6 +394,9 @@ are available through workspace SSH as `claude` and `muse`. The legacy
 checksum-verified official Linux binary with automatic updates disabled; its
 runtime key is available to the workspace user without baking credentials into
 the image. Claude authentication is configured separately by the workspace user.
+Muse Code requires `meta_api_key` even when the chief-of-staff uses another
+provider. A user-supplied `META_API_KEY` in a workspace shell overrides that
+configured key.
 To check installation, run `codex --version`, `claude --version` or `muse --version`
 through workspace SSH. No automatic chief-of-staff delegation is added.
 

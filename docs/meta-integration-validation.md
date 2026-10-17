@@ -1,14 +1,15 @@
 # Meta integration validation
 
-Completed on 2026-10-17 UTC against runtime implementation `cf11ef5d`.
-The final documentation and controller dependency declaration do not change the
-validated runtime. See [the repeatable acceptance catalog](meta-integration-tests.md)
-for each sub-test’s steps and expected result.
+Initial live validation completed on 2026-10-17 UTC against runtime implementation
+`cf11ef5d`. The PR review follow-up below records subsequent fixes and verification.
+See [the repeatable acceptance catalog](meta-integration-tests.md) for each
+sub-test’s steps and expected result.
 
-## Product acceptance results
+## Initial product acceptance results
 
-All **9 required cases / 36 sub-tests passed**. No required case is skipped,
-blocked, stale or running. Each parent passes only when all four children pass.
+The initial **9 required cases / 36 sub-tests passed**. No required case was skipped,
+blocked, stale or running. The active catalog now includes two additional review
+regressions, recorded below.
 
 | Case | Scope | Passed sub-tests |
 | --- | --- | --- |
@@ -94,3 +95,31 @@ another default VPC](https://docs.digitalocean.com/reference/doctl/reference/vpc
 The empty default `meta-muse-1016-vpc` remains with zero members; no replacement
 network or unrelated resources were changed. Both temporary API keys were revoked,
 local private keys/state/plans were removed, and scheduled test reporting ended.
+
+## PR review follow-up
+
+Two review findings added **TC01.5** and **TC02.5**, taking the active catalog to
+**9 required cases / 38 sub-tests**. The changes are limited to setup key
+validation and selection of inherited Hermes fallback routes.
+
+- Hermes now inherits only its supported provider-prefixed fallbacks, preserving
+  their original order. A supported primary override works with mixed Codex/API
+  fallbacks or with no compatible fallback. OpenClaw keeps its complete global
+  list; existing auto/preserve configuration and unrelated managed settings stay
+  intact.
+- Terraform and setup rendering now require `meta_api_key` whenever Muse Code is
+  selected, including with a non-Meta chief-of-staff model. A key for Muse alone
+  does not enable Meta agent models or change the selected primary. The workspace
+  wrapper still gives a user-supplied `META_API_KEY` precedence.
+
+Both bugs were reproduced before the fixes. Verification passed: **18 focused
+setup/runtime tests**, **5 new mocked Terraform plans**, **216 complete setup
+tests**, and **96 complete Terraform tests**, plus formatting and validation.
+The full suite was followed by another focused check using complete provider/auth
+fixtures; see PR #5 for CI evidence on the final published head.
+
+Unrelated live results remain valid: the tested Meta fallback lists contain only
+supported routes and render identically, and the Muse binary, wrapper, credentials
+and Docker settings are unchanged. No new cloud resources, paid model calls,
+credential changes, website deployment or periodic reporting were needed.
+The previously documented Muse command-approval limitation still applies.

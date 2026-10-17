@@ -544,9 +544,15 @@ locals {
     tailscale_host_enabled                         = local.tailscale_host_enabled
   }
 
-  runtime_docker_compose             = templatefile("${path.module}/modules/common/templates/runtime/docker-compose.yml.tpl", local.runtime_template_vars)
-  runtime_env                        = templatefile("${path.module}/modules/common/templates/runtime/env.tpl", local.runtime_template_vars)
-  runtime_hermes_seed                = jsonencode({ model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model, fallback_models = var.fallback_models })
+  runtime_docker_compose = templatefile("${path.module}/modules/common/templates/runtime/docker-compose.yml.tpl", local.runtime_template_vars)
+  runtime_env            = templatefile("${path.module}/modules/common/templates/runtime/env.tpl", local.runtime_template_vars)
+  runtime_hermes_seed = jsonencode({
+    model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model
+    fallback_models = [
+      for ref in var.fallback_models : ref
+      if can(regex("^(anthropic|openai|google|groq|meta)/.+$", ref))
+    ]
+  })
   runtime_openclaw_seed              = jsonencode({ gateway_bind = local.runtime_template_vars.openclaw_gateway_bind, gateway_token = local.resolved_gateway_token, trusted_loopback_proxies_enabled = var.openclaw_host_network_enabled })
   runtime_openclaw_config            = file("${path.module}/modules/common/runtime/openclaw_config.py")
   runtime_workspace_cli_task         = file("${path.module}/modules/common/runtime/workspace_cli_task.py")

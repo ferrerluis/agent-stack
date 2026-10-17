@@ -557,6 +557,10 @@ variable "workspace_harnesses" {
     condition     = length(var.workspace_harnesses) == 1 || contains(var.enabled_services, "workspace")
     error_message = "Optional workspace_harnesses require the workspace service."
   }
+  validation {
+    condition     = !contains(var.workspace_harnesses, "muse_code") || trimspace(var.meta_api_key) != ""
+    error_message = "meta_api_key is required when muse_code is selected in workspace_harnesses."
+  }
 }
 
 variable "workspace_muse_release" {

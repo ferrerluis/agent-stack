@@ -1,6 +1,6 @@
 # Meta integration acceptance tests
 
-All cases validate product changes. Scheduling, guideline maintenance and cleanup are workflow requirements, not acceptance cases. The active catalog has 9 cases / 36 sub-tests.
+All cases validate product changes. Scheduling, guideline maintenance and cleanup are workflow requirements, not acceptance cases. The active catalog has 9 cases / 38 sub-tests. TC01 and TC02 each have an additional .5 regression below; the other cases retain four children.
 
 | Case | .1 | .2 | .3 | .4 |
 | --- | --- | --- | --- | --- |
@@ -13,6 +13,11 @@ All cases validate product changes. Scheduling, guideline maintenance and cleanu
 | TC07 Hermes + Wonder | Confirm configured model and correct response | Tool reads fresh fixture | Return independently verified tool result | Follow-up uses result |
 | TC08 Muse Code | Authenticate/read fixture as workspace user | Fix deliberate bug in intended file | Run fixture tests | Independently verify correctness and permitted edits |
 | TC09 Regression | Terraform fmt/validate | Terraform test | Setup/doctor unit suites | Runtime shell/Python syntax |
+
+## Review regression sub-tests
+
+- **TC01.5 — Muse authentication with another agent provider.** With a Google chief-of-staff model and workspace Muse selected, render setup inputs and run mocked Terraform plans. Missing, blank and placeholder Meta keys must fail without exposing values; a real-shaped fixture key must work without enabling Meta agent models. Run the workspace wrapper test to verify a user-supplied `META_API_KEY` still overrides the configured key.
+- **TC02.5 — Hermes-compatible inherited fallbacks.** With a supported Hermes primary override and a global list mixing `openai-codex/*` with supported providers, run mocked plans in auto/manage mode and the Hermes config tests. Hermes must receive only supported fallbacks in their original order; OpenClaw must retain the complete list. With only Codex fallbacks, Hermes receives an empty list. Existing auto/preserve configurations must remain unchanged.
 
 ## Repeatable steps and expected results
 

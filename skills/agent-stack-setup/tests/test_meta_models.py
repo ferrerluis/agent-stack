@@ -67,6 +67,23 @@ class MetaSetupTest(unittest.TestCase):
         self.assertIn("workspace_claude_release", self.reject(enabled_services=["workspace"],
             workspace_password="fixture-password", workspace_harnesses=["codex", "claude_code"]))
 
+    def test_muse_requires_configured_key_independent_of_model_provider(self):
+        data = dict(enabled_services=["openclaw", "workspace"], workspace_password="fixture-password",
+            workspace_harnesses=["codex", "muse_code"], model_providers_enabled=["google"],
+            default_model="google/gemini-fixture", fallback_models=[], gemini_api_key="fixture-gemini")
+        for key in ("", "   ", "YOUR_META_API_KEY"):
+            with self.subTest(key=key):
+                self.assertIn("meta_api_key", self.reject(**data, meta_api_key=key))
+
+    def test_muse_key_does_not_require_meta_as_an_agent_provider(self):
+        _, rendered = self.render(enabled_services=["openclaw", "workspace"],
+            workspace_password="fixture-password", workspace_harnesses=["codex", "muse_code"],
+            model_providers_enabled=["google"], default_model="google/gemini-fixture",
+            fallback_models=[], gemini_api_key="fixture-gemini", meta_api_key="muse-only-fixture")
+        self.assertIn('meta_api_key = "muse-only-fixture"', rendered)
+        self.assertIn('default_model = "google/gemini-fixture"', rendered)
+        self.assertIn('model_providers_enabled = [\n  "google",\n]', rendered)
+
     def test_disabled_hermes_does_not_require_an_unused_meta_key(self):
         _, rendered = self.render(enabled_services=["openclaw"], model_providers_enabled=["google"],
             meta_api_key="", default_model="google/gemini-fixture", fallback_models=[],
@@ -92,6 +109,28 @@ class MetaHermesTest(unittest.TestCase):
                 {"provider": "gemini", "model": "gemini-fixture"}])
             self.assertNotIn("api_key", json.dumps(config))
 
+    def test_filtered_global_fallbacks_seed_both_modes_in_order(self):
+        seed = {"model_ref": "google/gemini-fixture", "fallback_models": [
+            "anthropic/claude-fixture", "openai/gpt-fixture", "google/gemini-backup",
+            "groq/llama-fixture", "meta/muse-wonder-1.0"]}
+        expected = [
+            {"provider": "anthropic", "model": "claude-fixture"},
+            {"provider": "custom", "model": "gpt-fixture", "base_url": "https://api.openai.com/v1"},
+            {"provider": "gemini", "model": "gemini-backup"},
+            {"provider": "groq", "model": "llama-fixture"},
+            {"provider": "meta-ai", "model": "muse-wonder-1.0"}]
+        for mode in ("auto", "manage"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.yaml"
+                if mode == "manage":
+                    path.write_text(json.dumps({"channels": {"telegram": True}, "model": {"default": "old"}}))
+                self.assertTrue(hermes.seed_config(directory, seed, mode))
+                result = json.loads(path.read_text())
+                self.assertEqual(result["model"], {"provider": "gemini", "default": "gemini-fixture"})
+                self.assertEqual(result["fallback_providers"], expected)
+                if mode == "manage":
+                    self.assertEqual(result["channels"], {"telegram": True})
+
     def test_manage_updates_routes_without_discarding_channels(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
@@ -108,7 +147,8 @@ class MetaHermesTest(unittest.TestCase):
             original = "model:\n  default: operator-model\n"
             path.write_text(original)
             for mode in ("auto", "preserve"):
-                self.assertFalse(hermes.seed_config(directory, {"model_ref": "meta/muse-wonder-1.0"}, mode))
+                self.assertFalse(hermes.seed_config(directory, {"model_ref": "meta/muse-wonder-1.0",
+                    "fallback_models": ["openai-codex/operator-fallback"]}, mode))
                 self.assertEqual(path.read_text(), original)
 
 
