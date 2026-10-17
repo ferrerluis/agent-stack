@@ -1048,6 +1048,9 @@ configure_huggingface_provider() {
       } |
       .agents = (.agents // {}) | .agents.defaults = (.agents.defaults // {}) |
       .agents.defaults.models = (.agents.defaults.models // {}) |
+      ($models | map("huggingface/" + .id)) as $refs |
+      .agents.defaults.models |= with_entries(select(
+        (.key | startswith("huggingface/") | not) or (.key as $ref | $refs | index($ref)))) |
       reduce $models[] as $model (.;
         .agents.defaults.models["huggingface/" + $model.id].params.parallel_tool_calls = false |
         .agents.defaults.models["huggingface/" + $model.id].params.thinking = "high")

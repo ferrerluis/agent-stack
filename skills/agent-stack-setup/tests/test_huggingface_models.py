@@ -148,6 +148,22 @@ class HuggingFaceOpenClawTest(unittest.TestCase):
             self.assertEqual(config['agents']['defaults']['models'][ref]['params']['thinking'], 'high')
         self.assertNotIn('hf_Offline', json.dumps(config))
 
+    def test_managed_catalog_removes_retired_hf_picker_entries_only(self):
+        existing = dict(agents=dict(defaults=dict(models={
+            'huggingface/openai/gpt-oss-20b:groq': dict(alias='retired'),
+            'huggingface/openai/gpt-oss-120b:groq': dict(alias='retired-large'),
+            'huggingface/*': dict(alias='unreviewed'),
+            REFS[0]: dict(alias='my-kimi', params=dict(operator_flag=True)),
+            'google/gemini-fixture': dict(alias='operator-google'),
+        })))
+        result, config, _ = self.fixture('configure_huggingface_provider', config=existing)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        models = config['agents']['defaults']['models']
+        self.assertEqual({ref for ref in models if ref.startswith('huggingface/')}, set(REFS))
+        self.assertEqual(models['google/gemini-fixture'], dict(alias='operator-google'))
+        self.assertEqual(models[REFS[0]]['alias'], 'my-kimi')
+        self.assertTrue(models[REFS[0]]['params']['operator_flag'])
+
     def test_missing_token_fails_closed_and_unselected_does_nothing(self):
         result, config, _ = self.fixture('configure_huggingface_provider', key=False)
         self.assertNotEqual(result.returncode, 0)

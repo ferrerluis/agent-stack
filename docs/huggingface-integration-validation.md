@@ -22,7 +22,7 @@ honest boundaries and cleanup. The old Muse budget grants no spending permission
 | HF01 Setup | .4 Removed/unhosted/automatic routes | Reject GPT-OSS, arbitrary IDs, unpinned policies and DeepSeek -1017 | Passed: setup and mocked plans |
 | HF02 Config | .1 OpenClaw registration and env SecretRef | Explicit three-model catalog, HF URL, no embedded token, idempotence | Passed: executable shell fixture and native CLI validation |
 | HF02 Config | .2 Hermes nested IDs and fallback order | Exact routes and scoped HF provider/auth slot | Passed: config helper and native named-provider resolver |
-| HF02 Config | .3 Managed updates and preservation | Retain unrelated settings; auto/preserve bytes unchanged | Passed: real helpers |
+| HF02 Config | .3 Managed updates and preservation | Retain unrelated settings; prune stale HF picker entries; auto/preserve bytes unchanged | Passed: real helpers |
 | HF02 Config | .4 Distinct effort and sequential policy | Supported labels only; managed high; parallel=false; off unavailable | Passed: contract assertions and native selector/wire probe |
 | HF03 Offline runtime boundaries | .1 Credential presence fails closed | HF_TOKEN slot checked; absent key rejected | Passed: executable shell fixture; real credentials absent |
 | HF03 Offline runtime boundaries | .2 Exact configured-model readback | Reject suffix loss, substitution or HF fallback drift | Passed: shell regression and native OpenClaw CLI |
@@ -125,7 +125,7 @@ terraform fmt -check
 scripts/test-local.sh
 ```
 
-The revised focused suite passed **16 Python tests and 11 mocked Terraform plans**.
+The revised focused suite passed **17 Python tests and 11 mocked Terraform plans**.
 The plans cover exports and both removed GPT-OSS/unhosted DeepSeek rejection.
 The full credential-free GitHub workflow runs formatting, validation, all mocked
 plans, setup/doctor/controller tests, syntax and checkout idempotence. Record its

@@ -94,7 +94,8 @@ Hermes removes only the outer `huggingface/` prefix and retains the full inner I
 No direct Moonshot, Meta, DeepSeek, Baseten, Groq or OpenAI API key is needed for
 this HF-routed path. `hermes_model` can override the shared personal-agent primary;
 supported inherited fallbacks retain their order. Existing auto/preserve configs
-remain unchanged; manage retains unrelated settings while updating selected routes.
+remain unchanged; manage retains unrelated settings while updating selected routes
+and removes retired/unreviewed HF picker entries from the managed catalog.
 OpenClaw verifies exact configured primary and ordered HF fallbacks, including when
 another provider's primary is unusable. Configured identity does not prove served
 identity or successful inference.
