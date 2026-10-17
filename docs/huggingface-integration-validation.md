@@ -4,6 +4,9 @@ Catalog version 1. Base: current main `e9807058` (Meta/Muse PR #5 included).
 The methodology follows `meta-integration-tests.md`: explicit cases, fresh local
 fixtures, independent identity assertions, regressions, honest blocked live checks
 and cleanup. The old Muse budget grants no spending permission here.
+The product catalog has 5 cases / 19 sub-tests: 13 passed offline and 6 blocked.
+Exact-head CI and review are workflow checks recorded on the draft PR, outside
+these product acceptance counts.
 
 ## Acceptance matrix
 
@@ -20,15 +23,14 @@ and cleanup. The old Muse budget grants no spending permission here.
 | HF03 Runtime boundary | .1 Credential presence | Native HF_TOKEN slot checked; absent key fails closed | Passed: executable shell fixture |
 | HF03 Runtime boundary | .2 Exact configured-model readback | Accept exact routes; reject suffix loss, substitution and fallback drift | Passed: executable readback fixture |
 | HF03 Runtime boundary | .3 Fresh native agent startup/restart | Real OpenClaw/Hermes config acceptance and settings persist | Blocked: native binaries/container runtime unavailable on this executor |
-| HF03 Runtime boundary | .4 Account authorization | Existing token scope, credits and provider/model access confirmed | Blocked: no credential/account changes or authenticated model calls authorized |
+| HF03 Runtime boundary | .4 Account authorization | Existing token scope, credits and provider/model access confirmed | Blocked: HF_TOKEN/HUGGINGFACE_HUB_TOKEN absent from the executor environment; scope, credits and access unverified |
 | HF04 Live agents | .1 OpenClaw 20B/120B response identity | Real agent response, requested/served model and provider, fallbacks empty | Blocked: paid inference prohibited |
 | HF04 Live agents | .2 Hermes 20B/120B response identity | Same through real Hermes agent session | Blocked: paid inference prohibited |
 | HF04 Live agents | .3 Sequential fresh-file tool/follow-up | Fresh random nonce/numbers, real tool trace, independent sum/hash and same-session follow-up | Blocked: paid inference prohibited |
 | HF04 Live agents | .4 Parallel negative contract | Native request captures show false; sequential handling or clear unsupported response | Blocked: paid inference prohibited; vendor explicitly does not support parallel calls |
-| HF05 Regression | .1 Terraform fmt/validate/mock tests | Credential-free full suite | Pending |
-| HF05 Regression | .2 Setup/doctor/runner tests | Full suite with pinned dependencies | Pending |
-| HF05 Regression | .3 Shell/Python syntax, repo idempotence | Clean generated-work cleanup | Pending |
-| HF05 Regression | .4 Exact-head CI/review | PR head SHA matches successful CI, findings resolved/disclosed | Pending |
+| HF05 Regression | .1 Terraform fmt/validate/mock tests | Credential-free plans | Passed: formatting/validation, 96 existing plans and final 9-case HF rerun; see history below |
+| HF05 Regression | .2 Setup/doctor/runner tests | Broad regressions plus final focused changes | Passed: 230 broad setup, 20 doctor, 860 runner; final 15 focused setup tests |
+| HF05 Regression | .3 Shell/Python syntax, repo idempotence | Clean generated-work cleanup | Passed: syntax, final isolated checkout-idempotence check and removed test workspaces |
 
 15 focused Python tests passed. Individual tests include multiple input/route/mode
 subcases; these are not inflated into extra acceptance passes. Config helper/shell
@@ -75,7 +77,9 @@ passed because config or vendor docs look correct.
 No cloud apply, VM creation, inference server, paid inference, persistent credential
 creation, shared deployment, website publication, or Splash edit occurred. Existing
 worktrees and unpublished selectors remain untouched. Leave the draft PR unmerged
-for morning review. Final regression/CI evidence is recorded below after execution.
+for morning review. The published final-head CI outcome is recorded on
+[draft PR #6](https://github.com/ferrerluis/agent-stack/pull/6) and its matching
+commit checks; a local partial rerun is not represented as a fresh all-green full run.
 
 The final focused readback regression also verifies that an unavailable non-HF
 primary cannot skip validation of a requested HF fallback. The official Hermes
@@ -83,3 +87,38 @@ resolver functions were executed with stubbed registry/secret boundaries against
 source blob verified at commit `8259f4ad805f23fc15e1138aded1530ea28da64c`;
 exact model IDs, HF_TOKEN lookup and scoped request overrides passed. This is
 partial resolver evidence, not a native agent startup or model-turn result.
+
+## Local run history and workflow checks
+
+- The initial broad runner used a deeply nested path. Terraform plugins exceeded
+  Linux's Unix socket path limit; existing showcase tests also rejected the long
+  temporary path. That attempt failed and is retained separately.
+- A short-path focused attempt encountered a transient provider-cache file-busy
+  error while initialization overlapped. Initial export assertions also needed
+  explicit synthetic dashboard values to make the environment known during a
+  mocked plan, and an explicit tuple/list conversion. These test fixtures were
+  corrected before publishing the implementation. The final focused Terraform
+  run passed **9/9**.
+- The short-path broad snapshot passed all **96 existing Terraform plans**, but
+  still contained the earlier HF export assertion: **96 passed, 1 failed, 8
+  skipped**. Its Python phases passed **230 setup, 20 doctor and 860 runner
+  tests**, with no skips. The final HF suite passed **15/15** after the additional
+  fallback-readback regression; these overlap the broad setup count and are not
+  added together.
+- The broad runner's initial Git status snapshot became stale when the feature
+  was staged/committed while it ran, so its idempotence row failed. A separate
+  final check at the published implementation head passed shell/Python syntax,
+  whitespace and checkout idempotence. Both broad test workspaces were removed;
+  only task-owned caches and redacted evidence were retained.
+- Automatic approval review rejected a request to stop obsolete local test
+  processes because it identified sibling-process risk. The stop was not retried;
+  that run finished normally. No sibling process was stopped and no approval is
+  pending.
+
+The existing GitHub workflow runs the full credential-free suite from a clean
+checkout. Before final handoff, compare its successful run head SHA with both the
+PR head and pushed branch. Record the exact run URL, SHA, counts and any review
+findings in the PR description, leaving this source history intact. Native runtime
+startup/restart, served-model identity and paid tool turns remain blocked even if
+that CI is green. No credential file was inspected; the environment presence-only
+check emitted booleans, never token values.
