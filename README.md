@@ -734,7 +734,7 @@ terraform destroy
 
 ### Hugging Face personal-agent models
 
-OpenClaw and Hermes can use the hosted HF router with reviewed GPT-OSS 20B/120B
-Groq routes and an existing Hugging Face Inference Providers token. This does not
+OpenClaw and Hermes can use the hosted HF router with reviewed Kimi, Muse Spark
+Open and DeepSeek Flash routes through Baseten and an existing Inference Providers token. This does not
 change workspace coding harnesses. See [setup and supported contracts](docs/huggingface-integration.md)
 and [offline/live acceptance evidence](docs/huggingface-integration-validation.md).

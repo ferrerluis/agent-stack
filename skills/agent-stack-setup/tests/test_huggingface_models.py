@@ -22,7 +22,7 @@ spec.loader.exec_module(hermes)
 def answers(**overrides):
     data = dict(cloud_provider='digitalocean', do_token='do-fixture', tailscale_enabled=False,
                 model_providers_enabled=['huggingface'], huggingface_api_key='hf_OfflineFixtureOnly',
-                default_model=REFS[0], fallback_models=[REFS[1]], enabled_services=['openclaw', 'hermes'])
+                default_model=REFS[0], fallback_models=REFS[1:], enabled_services=['openclaw', 'hermes'])
     data.update(overrides)
     return data
 
@@ -55,7 +55,8 @@ class HuggingFaceSetupTest(unittest.TestCase):
     def test_rejects_unknown_models_missing_org_and_unreviewed_provider_policies(self):
         for ref in ('huggingface/gpt-oss-20b', 'huggingface/org/arbitrary-weights:groq',
                     'huggingface/openai/gpt-oss-20b', 'huggingface/openai/gpt-oss-20b:cheapest',
-                    'huggingface/openai/gpt-oss-20b:fastest', 'huggingface/openai/gpt-oss-20b:novita'):
+                    'huggingface/openai/gpt-oss-20b:fastest', 'huggingface/openai/gpt-oss-20b:novita', 'huggingface/openai/gpt-oss-20b:groq',
+                    'huggingface/openai/gpt-oss-120b:groq', 'huggingface/deepseek-ai/DeepSeek-V4.1-Flash-1017:baseten'):
             for field in ('default_model', 'fallback_models', 'hermes_model'):
                 with self.subTest(ref=ref, field=field):
                     result, _ = run_render(answers(**{field: [ref] if field == 'fallback_models' else ref}), expect_success=False)
@@ -81,7 +82,7 @@ class HuggingFaceHermesTest(unittest.TestCase):
             provider = config['providers']['agentstack-huggingface']
             self.assertEqual(provider['key_env'], 'HF_TOKEN')
             self.assertEqual(provider['base_url'], 'https://router.huggingface.co/v1')
-            self.assertEqual(provider['extra_body'], dict(parallel_tool_calls=False, reasoning_effort='medium'))
+            self.assertEqual(provider['extra_body'], dict(parallel_tool_calls=False, reasoning_effort='high'))
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertNotIn('hf_Offline', path.read_text())
 
@@ -123,7 +124,7 @@ class HuggingFaceOpenClawTest(unittest.TestCase):
             script = 'set -euo pipefail\nOPENCLAW_CONFIG=' + shlex.quote(str(path)) + '\n'
             script += 'HUGGINGFACE_MODELS_JSON=' + shlex.quote(json.dumps(CATALOG)) + '\n'
             script += 'DEFAULT_MODEL_REF=' + shlex.quote(REFS[0]) + '\n'
-            script += 'FALLBACK_MODELS_JSON=' + shlex.quote(json.dumps([REFS[1]])) + '\n'
+            script += 'FALLBACK_MODELS_JSON=' + shlex.quote(json.dumps(REFS[1:])) + '\n'
             script += 'provider_selected() { ' + ('return 0' if selected else 'return 1') + '; }\n'
             script += 'has_env_key() { ' + ('return 0' if key else 'return 1') + '; }\n'
             script += 'mark_openclaw_restart_needed() { :; }\nfail() { echo "$*" >&2; exit 1; }\n'
@@ -144,6 +145,7 @@ class HuggingFaceOpenClawTest(unittest.TestCase):
         self.assertEqual(mode, 0o600)
         for ref in REFS:
             self.assertIs(config['agents']['defaults']['models'][ref]['params']['parallel_tool_calls'], False)
+            self.assertEqual(config['agents']['defaults']['models'][ref]['params']['thinking'], 'high')
         self.assertNotIn('hf_Offline', json.dumps(config))
 
     def test_missing_token_fails_closed_and_unselected_does_nothing(self):
@@ -156,7 +158,7 @@ class HuggingFaceOpenClawTest(unittest.TestCase):
         self.assertNotIn('huggingface', config['models']['providers'])
 
     def test_exact_model_readback_detects_provider_suffix_loss_and_fallback_drift(self):
-        good = dict(agents=dict(defaults=dict(model=dict(primary=REFS[0], fallbacks=[REFS[1]]))))
+        good = dict(agents=dict(defaults=dict(model=dict(primary=REFS[0], fallbacks=REFS[1:]))))
         result, _, _ = self.fixture('verify_huggingface_model_config', config=good)
         self.assertEqual(result.returncode, 0, result.stderr)
         for primary, fallbacks in ((REFS[0].split(':')[0], [REFS[1]]), (REFS[0], []), ('openai/gpt-oss-20b', [REFS[1]])):
@@ -190,8 +192,21 @@ model_is_usable() { return 1; }
         self.assertEqual(result.stdout, b'')
 
     def test_reviewed_reasoning_and_tool_contract_is_explicit(self):
-        self.assertEqual([model['id'] for model in CATALOG], ['openai/gpt-oss-20b:groq', 'openai/gpt-oss-120b:groq'])
-        for model in CATALOG:
-            self.assertEqual(model['compat']['supportedReasoningEfforts'], ['low', 'medium', 'high'])
-            self.assertEqual(model['compat']['reasoningEffortMap']['off'], 'low')
+        self.assertEqual([model['id'] for model in CATALOG], [
+            'moonshotai/Kimi-K3:baseten', 'meta-models/Muse-Spark-Open-816B-A42B:baseten',
+            'deepseek-ai/DeepSeek-V4.1-Flash:baseten'])
+        expected_efforts = [['low', 'high', 'max'], ['low', 'medium', 'high', 'xhigh'], ['high', 'max']]
+        for model, efforts in zip(CATALOG, expected_efforts):
+            self.assertEqual(model['compat']['supportedReasoningEfforts'], efforts)
+            self.assertIsNone(model['thinkingLevelMap']['off'])
             self.assertTrue(model['compat']['supportsTools'])
+            self.assertTrue(model['compat']['requiresReasoningContentOnAssistantMessages'])
+            self.assertEqual(model['contextWindow'], 1048576)
+            self.assertEqual(model['input'], ['text'])
+
+    def test_catalog_excludes_disabled_or_unsupported_thinking_choices(self):
+        levels = {'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'}
+        for model in CATALOG:
+            allowed = set(model['compat']['supportedReasoningEfforts'])
+            self.assertEqual(set(model['thinkingLevelMap']), levels - allowed)
+            self.assertTrue(all(value is None for value in model['thinkingLevelMap'].values()))

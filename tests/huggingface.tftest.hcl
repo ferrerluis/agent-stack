@@ -89,8 +89,8 @@ run "hf_exact_routes_and_runtime_exports" {
     huggingface_api_key       = "hf_OfflineFixtureOnly"
     hermes_dashboard_password = "hermes-dashboard-test-fixture"
     hermes_dashboard_secret   = "hermes-dashboard-test-secret"
-    default_model             = "huggingface/openai/gpt-oss-20b:groq"
-    fallback_models           = ["huggingface/openai/gpt-oss-120b:groq"]
+    default_model             = "huggingface/moonshotai/Kimi-K3:baseten"
+    fallback_models           = ["huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten", "huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten"]
   }
   assert {
     condition     = strcontains(nonsensitive(local.runtime_env), "HF_TOKEN='hf_OfflineFixtureOnly'") && !strcontains(nonsensitive(local.runtime_workspace_env), "hf_OfflineFixtureOnly") && !strcontains(nonsensitive(local.runtime_workspace_dockerfile), "hf_OfflineFixtureOnly")
@@ -101,7 +101,7 @@ run "hf_exact_routes_and_runtime_exports" {
     error_message = "Nested HF IDs and provider suffixes must survive Hermes seeding."
   }
   assert {
-    condition     = strcontains(nonsensitive(local.runtime_installer), "openai/gpt-oss-120b:groq") && strcontains(nonsensitive(local.runtime_installer), "verify_huggingface_model_config")
+    condition     = strcontains(nonsensitive(local.runtime_installer), "meta-models/Muse-Spark-Open-816B-A42B:baseten") && strcontains(nonsensitive(local.runtime_installer), "verify_huggingface_model_config")
     error_message = "Bootstrap must include reviewed provider metadata and exact model readback."
   }
 }
@@ -110,7 +110,7 @@ run "hf_requires_existing_token" {
   command = plan
   variables {
     model_providers_enabled = ["huggingface"]
-    default_model           = "huggingface/openai/gpt-oss-20b:groq"
+    default_model           = "huggingface/moonshotai/Kimi-K3:baseten"
   }
   expect_failures = [terraform_data.input_validation]
 }
@@ -123,7 +123,7 @@ run "hf_rejects_token_injection" {
 
 run "hf_requires_selected_provider" {
   command = plan
-  variables { fallback_models = ["huggingface/openai/gpt-oss-20b:groq"] }
+  variables { fallback_models = ["huggingface/moonshotai/Kimi-K3:baseten"] }
   expect_failures = [terraform_data.input_validation]
 }
 
@@ -142,14 +142,14 @@ run "hf_rejects_automatic_provider_policy" {
   variables {
     model_providers_enabled = ["huggingface"]
     huggingface_api_key     = "hf_OfflineFixtureOnly"
-    default_model           = "huggingface/openai/gpt-oss-120b:cheapest"
+    default_model           = "huggingface/meta-models/Muse-Spark-Open-816B-A42B:cheapest"
   }
   expect_failures = [terraform_data.input_validation]
 }
 
 run "hf_hermes_override_requires_provider_and_token" {
   command = plan
-  variables { hermes_model = "huggingface/openai/gpt-oss-20b:groq" }
+  variables { hermes_model = "huggingface/moonshotai/Kimi-K3:baseten" }
   expect_failures = [terraform_data.input_validation]
 }
 
@@ -167,4 +167,24 @@ run "hf_preserved_hermes_override_is_unused" {
     hermes_config_mode = "preserve"
     hermes_model       = "huggingface/org/unused:provider"
   }
+}
+
+run "hf_rejects_removed_gpt_oss_choice" {
+  command = plan
+  variables {
+    model_providers_enabled = ["huggingface"]
+    huggingface_api_key     = "hf_OfflineFixtureOnly"
+    default_model           = "huggingface/openai/gpt-oss-120b:groq"
+  }
+  expect_failures = [terraform_data.input_validation]
+}
+
+run "hf_rejects_unhosted_dated_deepseek_revision" {
+  command = plan
+  variables {
+    model_providers_enabled = ["huggingface"]
+    huggingface_api_key     = "hf_OfflineFixtureOnly"
+    default_model           = "huggingface/deepseek-ai/DeepSeek-V4.1-Flash-1017:baseten"
+  }
+  expect_failures = [terraform_data.input_validation]
 }

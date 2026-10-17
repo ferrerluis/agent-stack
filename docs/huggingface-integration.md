@@ -1,126 +1,140 @@
 # Hugging Face personal-agent models
 
-AgentStack can route OpenClaw and Hermes chat/tool turns through the hosted
-Hugging Face Inference Providers router at `https://router.huggingface.co/v1`.
-No weights, inference servers, coding harnesses or cloud resources are added.
-Existing model and workspace defaults are unchanged.
+AgentStack routes OpenClaw and Hermes through the hosted Hugging Face Inference
+Providers chat endpoint, `https://router.huggingface.co/v1`. This adds no weights,
+inference servers or cloud resources. Personal-agent selections remain independent
+of workspace coding-harness selections. Existing non-HF defaults are unchanged.
 
-## Reviewed routes
+## Reviewed offerings
 
-| AgentStack reference | Backend | Input | Tools | Reasoning |
-| --- | --- | --- | --- | --- |
-| `huggingface/openai/gpt-oss-20b:groq` | HF → Groq | Text | Sequential | low / medium / high |
-| `huggingface/openai/gpt-oss-120b:groq` | HF → Groq | Text | Sequential | low / medium / high |
+| Family | Exact AgentStack reference | Hosted backend | Managed reasoning |
+| --- | --- | --- | --- |
+| Kimi | `huggingface/moonshotai/Kimi-K3:baseten` | HF → Baseten | high; supported labels low/high/max |
+| Muse Spark Open | `huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten` | HF → Baseten | high; low/medium/high/xhigh |
+| DeepSeek Flash | `huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten` | HF → Baseten | high; high/max |
 
-The initial set is intentional: both sizes were present in HF's official router
-catalog on the same Groq backend with explicit tool support, and Groq documents
-the same sequential-tool and low/medium/high reasoning contract for both. This
-keeps the first integration within one reviewed hosted contract while offering
-two model sizes; no performance benchmark or successful paid inference is claimed.
+These are Luis's selected offerings. GPT-OSS HF choices have been removed and are
+rejected by managed setup. A family label can be short, but exports and readback
+always retain the exact ID, organization and `:baseten` suffix above. The provider
+pin prevents a policy change from silently selecting a different backend contract.
+Do not send Baseten's internal Muse slug `meta-models/muse-spark-open` to the HF
+router: HF maps the public Hub ID to that provider ID itself.
 
-Arbitrary HF model IDs are deliberately unsupported by managed setup. A Hub
-repository's existence does not establish hosted availability, chat compatibility
-or tool support. Provider pins make the contract reviewable: unqualified IDs,
-`:fastest`, `:cheapest`, `:preferred` and other providers are rejected. HF supports
-those routing policies, but switching backend can change the tool/reasoning
-contract. Extending the catalog requires checking the new pair and its tests.
+The unauthenticated official HF router catalog reported all three pairs live,
+with tools, text/image input and 1,048,576 context on 2026-10-17. The managed catalog
+currently enables **text input only**, with an 8,192-token completion cap. Images,
+audio and video are not certified by this integration. Prices are snapshot estimates
+for runtime accounting, not spending authorization. The redacted public observation
+is retained in [hosted catalog evidence](huggingface-hosted-catalog.json).
 
-The public HF `/v1/models` catalog was read without credentials on 2026-10-17.
-Both pairs reported `status: live`, `supports_tools: true` and a 131,072-token
-context. This is catalog evidence, not an authenticated inference result.
-`huggingface-models.json` records that snapshot and a conservative 8,192-token
-OpenClaw completion budget. Prices are estimates for runtime accounting, not a
-spending authorization or guaranteed current price.
+A Hub checkpoint alone does not establish hosted API availability or agent
+compatibility. `deepseek-ai/DeepSeek-V4.1-Flash-1017` exists on the Hub but had an
+empty Inference Provider mapping at observation time; it is rejected. The selected
+undated route is never aliased to that revision. Arbitrary models, unpinned IDs,
+other providers and `:fastest`/`:cheapest`/`:preferred` are also rejected. Adding a
+pair requires reviewing its hosted contract and tests.
 
-Groq explicitly lists parallel tool calls as unsupported for these two models.
-OpenClaw's per-model `params.parallel_tool_calls` is false. Hermes uses a named
-`custom:agentstack-huggingface` provider with the fixed HF URL, `key_env: HF_TOKEN`,
-and `extra_body.parallel_tool_calls: false`. A separate provider name is deliberate:
-current Hermes gives canonical built-in names precedence over named configuration,
-so an entry named `huggingface` would silently lose its request overrides.
-Sequential multi-step agent tools remain available. Parallel execution has no
-passing live claim; requests for multiple independent tasks must use sequential
-model turns with these routes.
+## Reasoning and tools
 
-GPT-OSS reasoning cannot be disabled on this backend. OpenClaw declares the
-supported effort vocabulary and maps off/minimal to low and xhigh to high.
-Hermes sends medium through its provider-specific request overrides. No reasoning
-transcript or hidden chain of thought is collected by the integration. This path
-uses chat completions, not the HF beta Responses API or Groq built-in server tools.
+K3 always thinks and requires the full assistant reasoning/tool-call history on
+later turns. Muse also always reasons. DeepSeek's underlying model card describes
+numeric effort 1–100, while **Baseten's hosted API documents string effort**
+`high`/`max` (and a non-thinking mode). This integration uses the hosted contract;
+it does not claim numeric effort is forwarded. Baseten has additional disable/alias
+settings; managed setup keeps reasoning enabled for all three.
+
+OpenClaw declares each model's distinct effort vocabulary. Unsupported thinking
+levels, including off, are unavailable through `thinkingLevelMap`; its native
+selector clamps legacy values into the enabled vocabulary. Managed per-model
+`params.thinking` is high. This is necessary: on OpenClaw 2026.10.4, mapping an
+outbound off request to an enabled effort alone can still discard returned
+reasoning before the next tool turn. The native acceptance probe covers both the
+selector and actual SSE replay path. Do not bypass that selector with raw off/none
+transport calls or claim those calls preserve K3's required history.
+
+Hermes uses `custom:agentstack-huggingface`, the fixed HF URL, `key_env: HF_TOKEN`,
+chat completions and `extra_body.reasoning_effort: high`. High is independently
+documented for each selected hosted model. The separate name matters: canonical
+built-in provider names can take precedence over named entries and lose request
+overrides. Native resolver, history-builder and SDK-body checks preserve the tested
+`reasoning_content`, content, tool IDs/arguments and matching results across turns.
+These are synthetic transport checks, not live agent/model results.
+
+Both agents request `parallel_tool_calls: false`. The managed policy uses sequential
+tool turns until separately authorized live checks establish parallel behavior.
+The offline probes also verify correct replay of two returned tool calls and their
+results if a response contains a batch. This proves serialization, not hosted
+parallel execution or a vendor prohibition. Live tool behavior remains unverified.
+No real model reasoning transcript is collected by these tests.
 
 ## Setup and exports
 
-Use the setup skill or supply these Terraform inputs:
+Use the setup skill or supply:
 
 ```hcl
 model_providers_enabled = ["huggingface"]
-default_model           = "huggingface/openai/gpt-oss-20b:groq"
-fallback_models         = ["huggingface/openai/gpt-oss-120b:groq"]
-# Supply huggingface_api_key through your existing secure tfvars/input workflow.
+default_model           = "huggingface/moonshotai/Kimi-K3:baseten"
+fallback_models = [
+  "huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten",
+  "huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten",
+]
+# Supply huggingface_api_key through your existing secure input workflow.
 ```
 
-`huggingface_api_key` is a sensitive, optional-by-default string. Selecting HF,
-including a managed Hermes-only primary override, requires an existing token.
-The renderer and Terraform reject blank, placeholder and unsafe/multiline values;
-this is presence/shape validation, not proof of permission, balance or model access.
-No token is created, imported from local login stores, or checked through inference.
-As with existing provider keys, configured values enter Terraform state and the
-protected runtime `.env`. They are not placed in images or workspace harness env.
+`huggingface_api_key` is sensitive and empty by default. Selecting HF, including a
+managed Hermes-only override, requires an existing token. Terraform/setup reject
+missing, placeholder and unsafe values without echoing them. This checks presence
+and shape, not permissions, balance or access. No credential is generated, imported
+from login stores or authenticated through inference. As with existing provider
+keys, supplied values enter Terraform state and the protected runtime `.env`.
+They do not enter build images or coding-harness environments.
 
-OpenClaw uses the bundled HF provider with an explicit reviewed model catalog and
-an environment SecretRef to `HF_TOKEN`. Hermes removes only the outer
-`huggingface/` prefix: `openai/gpt-oss-20b:groq` remains intact. The nested `openai/`
-component is a Hub organization, and does not select OpenAI API/Codex auth.
-No `GROQ_API_KEY` or `OPENAI_API_KEY` is needed for this HF route.
-
-`hermes_model` can override the shared primary. Supported inherited fallbacks keep
-their order; incompatible Codex fallbacks are filtered as before. Existing configs
-remain byte-identical in auto/preserve modes; manage changes selected model routes
-and the named HF provider while retaining unrelated channels/providers. OpenClaw
-follows its existing auto/manage/preserve policy. In managed setup, it verifies
-that the CLI-written primary and ordered HF fallbacks exactly match the requested
-IDs, including provider suffixes. Other providers' existing canonicalization is
-left intact. Configured identity does not prove which model served an API turn.
+OpenClaw receives the explicit catalog and an environment SecretRef to `HF_TOKEN`.
+Hermes removes only the outer `huggingface/` prefix and retains the full inner ID.
+No direct Moonshot, Meta, DeepSeek, Baseten, Groq or OpenAI API key is needed for
+this HF-routed path. `hermes_model` can override the shared personal-agent primary;
+supported inherited fallbacks retain their order. Existing auto/preserve configs
+remain unchanged; manage retains unrelated settings while updating selected routes.
+OpenClaw verifies exact configured primary and ordered HF fallbacks, including when
+another provider's primary is unusable. Configured identity does not prove served
+identity or successful inference.
 
 ## Account gating and errors
 
-The existing HF token needs **Make calls to Inference Providers** permission.
-HF-routed billing applies; review the account's provider permissions and available
-credits before separately authorizing a live test. Do not assume a free allowance:
-current HF pricing says free accounts need purchased credits; older agent docs
-still describe a historical free tier. This task authorizes no spending.
+An existing HF token needs **Make calls to Inference Providers** permission plus
+sufficient account credits and provider/model access. All selected hosted entries
+reported `is_free: false`. Muse's Hub weights are manually gated; Kimi/DeepSeek
+weights are ungated. Those weight-access flags neither establish nor waive hosted
+account/model terms. Check actual account authorization separately. Do not assume a
+free allowance or transfer direct-vendor account/top-up rules to HF-routed billing.
+This task authorizes no spending or credential setup.
 
 | Failure | Action |
 | --- | --- |
-| Missing `huggingface_api_key` / `HF_TOKEN` | Supply an existing permitted token through secure inputs; rerender setup. |
-| Unreviewed/malformed route | Choose one of the exact references above; don't substitute a Hub weights URL. |
-| Catalog/CLI incompatibility or readback mismatch | Inspect agent version and config modes; require OpenClaw compatible with the documented 2026.10.4 configuration fields and a current Hermes named-provider implementation. Do not accept a silent fallback. |
-| HTTP 401 / 403 | Check token validity, Inference Providers scope, model terms/access and account/provider permissions; do not print the token. |
-| HTTP 402 or exhausted balance | Stop. Account access/budget approval is needed before purchasing or retrying inference. |
-| HTTP 404 / provider unavailable | Recheck the public catalog and provider pin; don't silently switch providers/models. |
-| HTTP 400 on tools/reasoning | Check sequential tool settings and low/medium/high effort; preserve native diagnostics privately and redact credentials before reporting. |
-| HTTP 429 / timeout | Respect provider limits and bound retries before any separately approved live test. |
+| Missing `huggingface_api_key` / `HF_TOKEN` | Supply an existing permitted token through secure inputs and rerender. |
+| Removed, unhosted, unpinned or malformed route | Select an exact reference above; do not substitute a weights URL or dated checkpoint. |
+| Config/schema/readback mismatch | Check supported agent version and config modes; reject suffix loss or fallback substitution. |
+| HTTP 401 / 403 | Check existing token scope, model terms and account/provider permission without printing credentials. |
+| HTTP 402 / exhausted credits | Stop; obtain fresh account/budget authorization before purchasing or retrying. |
+| HTTP 404 / provider unavailable | Recheck the public mapping and pin; do not silently switch models/backends. |
+| HTTP 400 on reasoning/tools | Check the selected Baseten vocabulary, enabled reasoning/history and sequential policy. Numeric DeepSeek-card effort is not this hosted contract. |
+| HTTP 429 / timeout | Bound retries and respect provider limits before any separately approved live test. |
 
 ## Official references checked 2026-10-17
 
-- [HF router and provider selection](https://huggingface.co/docs/inference-providers/en/index)
-- [HF chat completion schema](https://huggingface.co/docs/inference-providers/en/tasks/chat-completion)
-- [HF function calling](https://huggingface.co/docs/inference-providers/en/guides/function-calling)
-- [HF pricing and billing](https://huggingface.co/docs/inference-providers/en/pricing)
-- [HF public router catalog](https://router.huggingface.co/v1/models)
-- [OpenClaw Hugging Face configuration](https://docs.openclaw.ai/providers/huggingface)
-- [OpenClaw 2026.10.4 compatibility schema](https://github.com/openclaw/openclaw/blob/v2026.10.4/src/config/zod-schema.model-compat.ts)
-- [OpenClaw 2026.10.4 parallel-tool parameter handling](https://github.com/openclaw/openclaw/blob/v2026.10.4/src/agents/embedded-agent-runner/extra-params.ts)
-- [Hermes provider configuration](https://hermes-agent.nousresearch.com/docs/integrations/providers)
-- [Hermes named-provider request/auth fields](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/runtime_provider_custom.py)
-- [Groq tool support matrix](https://console.groq.com/docs/tool-use/overview)
-- [Groq reasoning contract](https://console.groq.com/docs/reasoning)
+- [HF routing](https://huggingface.co/docs/inference-providers/en/index), [chat schema](https://huggingface.co/docs/inference-providers/en/tasks/chat-completion), [billing](https://huggingface.co/docs/inference-providers/en/pricing), [public catalog](https://router.huggingface.co/v1/models)
+- [Kimi K3 model card](https://huggingface.co/moonshotai/Kimi-K3) and [official API contract](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart)
+- [Muse Spark Open model card](https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B) and [Baseten hosted launch](https://www.baseten.co/blog/muse-spark-open-launch/)
+- [DeepSeek V4.1 Flash model card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash)
+- [Baseten hosted reasoning vocabulary](https://docs.baseten.co/inference/model-apis/reasoning)
+- [OpenClaw HF configuration](https://docs.openclaw.ai/providers/huggingface) and [2026.10.4 compatibility schema](https://github.com/openclaw/openclaw/blob/v2026.10.4/src/config/zod-schema.model-compat.ts)
+- [Hermes provider configuration](https://hermes-agent.nousresearch.com/docs/integrations/providers) and [native transport source tested](https://github.com/NousResearch/hermes-agent/blob/4b1adbfe5d274c5dbfaa981fcc4dd68391867701/agent/transports/chat_completions.py)
 
 ## Website handoff
 
-After morning review, Splash can offer Hugging Face under personal-agent model
-providers using the two exact references above, an existing-token field, and the
-account/tool limitations. Export `huggingface_api_key` plus provider/default/fallback
-selections through the schema-driven setup path. Do not offer every Hub model or
-imply parallel tool support/free inference. Keep this option separate from coding
-harness selectors. No Splash files or unpublished selectors were changed here.
+After review, show three personal-agent families: Kimi, Muse Spark Open and DeepSeek
+Flash. Export their exact references and an existing-token input through the setup
+schema. Explain account gating, enabled reasoning and the sequential policy. Keep
+OpenCode's independent model selection separate even when it uses the same HF
+shortlist. Do not offer GPT-OSS, the unhosted -1017 revision, all Hub models or free
+inference. No Splash files, unpublished selectors or website deployment were changed.

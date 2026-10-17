@@ -94,7 +94,7 @@ def seed_config(data_dir, seed, mode="auto"):
         providers["agentstack-huggingface"] = {
             "base_url": "https://router.huggingface.co/v1",
             "api_mode": "chat_completions", "key_env": "HF_TOKEN",
-            "extra_body": {"parallel_tool_calls": False, "reasoning_effort": "medium"},
+            "extra_body": {"parallel_tool_calls": False, "reasoning_effort": "high"},
         }
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".config-", delete=False) as file:

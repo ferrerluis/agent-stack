@@ -330,9 +330,12 @@ Advanced defaults:
 ## Hugging Face personal-agent option
 
 Offer `huggingface` as an optional personal-agent provider. Use only
-`huggingface/openai/gpt-oss-20b:groq` and `huggingface/openai/gpt-oss-120b:groq`
+`huggingface/moonshotai/Kimi-K3:baseten`,
+`huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten` and
+`huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten`
 for primary/fallback selections. Preserve the inner Hub organization and backend
 suffix. Collect an existing `huggingface_api_key` with Inference Providers
 permission only after HF is selected; do not create/import credentials or assume
-free inference. Explain account credits/access gating and sequential-only tools.
+free inference. Explain account credits/access gating, preserved reasoning history
+and the managed sequential-tool policy; parallel tool behavior is not live-verified.
 See `docs/huggingface-integration.md`. This choice does not select a coding harness.

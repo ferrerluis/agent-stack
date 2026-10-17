@@ -295,5 +295,5 @@ tailscale_auth_key = "tskey-auth-..."
 # See docs/huggingface-integration.md for reviewed routes, account gates and tools.
 huggingface_api_key = "" # Existing permitted token only; never infer free usage.
 # model_providers_enabled = ["huggingface"]
-# default_model = "huggingface/openai/gpt-oss-20b:groq"
-# fallback_models = ["huggingface/openai/gpt-oss-120b:groq"]
+# default_model = "huggingface/moonshotai/Kimi-K3:baseten"
+# fallback_models = ["huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten", "huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten"]

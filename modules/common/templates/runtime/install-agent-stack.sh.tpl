@@ -1049,7 +1049,8 @@ configure_huggingface_provider() {
       .agents = (.agents // {}) | .agents.defaults = (.agents.defaults // {}) |
       .agents.defaults.models = (.agents.defaults.models // {}) |
       reduce $models[] as $model (.;
-        .agents.defaults.models["huggingface/" + $model.id].params.parallel_tool_calls = false)
+        .agents.defaults.models["huggingface/" + $model.id].params.parallel_tool_calls = false |
+        .agents.defaults.models["huggingface/" + $model.id].params.thinking = "high")
     ' "$OPENCLAW_CONFIG" >"$tmp_config"; then
     rm -f "$tmp_config"
     fail "Could not configure the reviewed Hugging Face chat/tool catalog"

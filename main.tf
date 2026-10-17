@@ -115,7 +115,7 @@ resource "terraform_data" "input_validation" {
     }
     precondition {
       condition     = alltrue([for ref in local.huggingface_requested_refs : contains(local.huggingface_model_refs, ref)])
-      error_message = "Use a reviewed Hugging Face route: huggingface/openai/gpt-oss-20b:groq or huggingface/openai/gpt-oss-120b:groq. Arbitrary Hub models and automatic provider policies are not validated for agent tools."
+      error_message = "Use a reviewed Hugging Face route: ${join(", ", local.huggingface_model_refs)}. Arbitrary Hub models and automatic provider policies are not validated for agent tools."
     }
     precondition {
       condition     = !anytrue([for ref in concat([var.default_model], var.fallback_models) : startswith(ref, "meta/")]) || contains(var.model_providers_enabled, "meta")
