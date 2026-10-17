@@ -129,7 +129,7 @@ class MetaOpenClawBootstrapTest(unittest.TestCase):
             if mode == "install_failure":
                 script += "echo fixture-private-diagnostic; return 1; }\n"
             elif mode == "already_installed":
-                script += "if [ \"$2\" = install ]; then echo 'already installed'; return 1; fi; }\n"
+                script += "if [ \"$2\" = install ] && [[ \" $* \" != *' --force '* ]]; then echo 'plugin already exists'; return 1; fi; }\n"
             elif mode == "enable_failure":
                 script += "[ \"$2\" != enable ]; }\n"
             else:
@@ -153,6 +153,7 @@ class MetaOpenClawBootstrapTest(unittest.TestCase):
         self.assertFalse(restart)
         result, calls, restart = self.run_fixture("already_installed")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("plugins install @openclaw/meta-provider@2026.10.4 --force", calls)
         self.assertIn("plugins enable meta", calls)
         self.assertTrue(restart)
 

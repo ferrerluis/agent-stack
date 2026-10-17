@@ -1023,10 +1023,12 @@ configure_meta_provider() {
   local log="$app/.meta-provider-install.log"
   touch "$log"
   chmod 0600 "$log"
-  if ! run_openclaw_cli plugins install "@openclaw/meta-provider@2026.10.4" >"$log" 2>&1; then
-    grep -qi 'already installed' "$log" || fail "Could not install the Meta provider; check OpenClaw version compatibility"
+  # Replace the managed package at its exact pin. This also repairs an install
+  # interrupted after extraction, which OpenClaw reports as "plugin already exists".
+  if ! OPENCLAW_CLI_TIMEOUT_SECONDS=180 run_openclaw_cli plugins install "@openclaw/meta-provider@2026.10.4" --force >"$log" 2>&1; then
+    fail "Could not install the Meta provider; check OpenClaw version compatibility"
   fi
-  run_openclaw_cli plugins enable meta >"$log" 2>&1 || fail "Could not enable the Meta provider; check OpenClaw plugin policy"
+  OPENCLAW_CLI_TIMEOUT_SECONDS=180 run_openclaw_cli plugins enable meta >"$log" 2>&1 || fail "Could not enable the Meta provider; check OpenClaw plugin policy"
   rm -f "$log"
   mark_openclaw_restart_needed
 }
