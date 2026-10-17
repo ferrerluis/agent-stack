@@ -1,0 +1,83 @@
+{
+  "observed_at": "2026-10-17T18:51:59.755623+00:00",
+  "source": "https://router.huggingface.co/v1/models",
+  "mapping_source": "https://huggingface.co/api/models/{hub_id}?expand[]=inferenceProviderMapping&expand[]=gated&expand[]=sha",
+  "authentication_sent": false,
+  "generation_calls": 0,
+  "selected": [
+    {
+      "hub_id": "meta-models/Muse-Spark-Open-816B-A42B",
+      "route": "meta-models/Muse-Spark-Open-816B-A42B:baseten",
+      "hub_weights_gated": "manual",
+      "hub_revision": "0fb02478b02565b2ce7fc57e6051c91172774ac9",
+      "mapping": {
+        "status": "live",
+        "providerId": "meta-models/muse-spark-open",
+        "task": "conversational",
+        "isModelAuthor": false
+      },
+      "hosted_metadata": {
+        "status": "live",
+        "context_length": 1048576,
+        "pricing": {
+          "input": 1.25,
+          "output": 4.25
+        },
+        "is_free": false,
+        "supports_tools": true,
+        "supports_structured_output": true
+      }
+    },
+    {
+      "hub_id": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "route": "deepseek-ai/DeepSeek-V4.1-Flash:baseten",
+      "hub_weights_gated": false,
+      "hub_revision": "314113f8a7dadb388215396ba5fbee2c610a04d6",
+      "mapping": {
+        "status": "live",
+        "providerId": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "task": "conversational",
+        "isModelAuthor": false
+      },
+      "hosted_metadata": {
+        "status": "live",
+        "context_length": 1048576,
+        "pricing": {
+          "input": 0.3,
+          "output": 1.2
+        },
+        "is_free": false,
+        "supports_tools": true,
+        "supports_structured_output": true
+      }
+    },
+    {
+      "hub_id": "moonshotai/Kimi-K3",
+      "route": "moonshotai/Kimi-K3:baseten",
+      "hub_weights_gated": false,
+      "hub_revision": "f831ab66814297da540d832a5235f8e904f29d06",
+      "mapping": {
+        "status": "live",
+        "providerId": "moonshotai/Kimi-K3",
+        "task": "conversational",
+        "isModelAuthor": false
+      },
+      "hosted_metadata": {
+        "status": "live",
+        "context_length": 1048576,
+        "pricing": {
+          "input": 3,
+          "output": 15
+        },
+        "is_free": false,
+        "supports_tools": true,
+        "supports_structured_output": true
+      }
+    }
+  ],
+  "excluded": {
+    "hub_id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    "inferenceProviderMapping": {},
+    "reason": "Hub checkpoint exists but has no hosted HF Inference Provider mapping; never alias the selected undated route to this revision"
+  }
+}

@@ -290,3 +290,10 @@ tailscale_auth_key = "tskey-auth-..."
 # workspace_harnesses = ["codex", "claude_code", "muse_code"]
 # workspace_claude_release = "2.1.301"
 # workspace_muse_release = "1.4.10-R6427.1"
+
+# Hugging Face hosted personal-agent inference (optional; no coding harness change).
+# See docs/huggingface-integration.md for reviewed routes, account gates and tools.
+huggingface_api_key = "" # Existing permitted token only; never infer free usage.
+# model_providers_enabled = ["huggingface"]
+# default_model = "huggingface/moonshotai/Kimi-K3:baseten"
+# fallback_models = ["huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten", "huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten"]
