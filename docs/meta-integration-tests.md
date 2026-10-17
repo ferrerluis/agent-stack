@@ -1,6 +1,6 @@
 # Meta integration acceptance tests
 
-All cases validate product changes. Scheduling, guideline maintenance and cleanup are workflow requirements, not acceptance cases. Each case has four sub-tests; the initial catalog is 9 cases / 36 sub-tests.
+All cases validate product changes. Scheduling, guideline maintenance and cleanup are workflow requirements, not acceptance cases. The active catalog has 9 cases / 36 sub-tests.
 
 | Case | .1 | .2 | .3 | .4 |
 | --- | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ All cases validate product changes. Scheduling, guideline maintenance and cleanu
 - TC02: run the Hermes tests in the same suite and Terraform render assertions; deploy a fresh stack, verify `openclaw models list --provider meta`, inspect provider/model names only, and repeat bootstrap with manage/auto/preserve. Expected: native Meta provider, ordered fallbacks, preserved operator content, no exposed credentials. Local assertions alone do not prove plugin availability.
 - TC03: build Codex-only and all-selected workspace images on the temporary DigitalOcean host; run version commands as the workspace user through container exec, interactive shell, and SSH. Create a sentinel/auth fixture, restart and rebuild, then compare contents/permissions and repeat version checks. Expected: only selected optional binaries, unchanged sentinels/auth, existing Codex behavior.
 - TC04–TC07: select the named model with empty fallbacks; create a fresh random nonce and numbers in a runtime-visible file. Through the real agent session, ask it to read the file with a tool, calculate their sum, and return the nonce. Verify the tool trace and numeric result independently; ask a follow-up referencing the same values in the same session. Confirm runtime metadata matches the requested model; no raw provider-only calls substitute for agent turns.
-- TC08: prepare `calculator.py` with an incorrect add implementation plus immutable tests; run bounded `muse exec` as the workspace user with the Meta API key, requesting read/fix/test. Independently run the tests and compare the changed-file set against `calculator.py` only. An exit code alone is insufficient.
+- TC08: prepare `calculator.py` with an incorrect add implementation plus immutable tests; run Muse interactively or through `muse serve` as the workspace user with the Meta API key and finite time/API limits, requesting read/fix/test. Use Muse’s normal one-time command approval if Docker blocks its nested sandbox; approve only the exact fixture test command in the fixture directory. Keep Docker protections and persistent permission rules unchanged. Independently run the tests and compare the changed-file set against `calculator.py` only. An exit code alone is insufficient.
 - TC09: run `bash scripts/test-local.sh`; map Terraform fmt/validate, Terraform tests, setup/doctor suites, and runtime syntax outcomes to their respective sub-tests. Other existing suites remain normal regression obligations without inflating the catalog.
 
 ## Evidence and invalidation

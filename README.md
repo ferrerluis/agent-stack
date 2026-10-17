@@ -367,7 +367,8 @@ default_model           = "meta/muse-spark-1.3"
 fallback_models         = ["meta/muse-wonder-1.0"]
 ```
 
-OpenClaw 2026.10.4 or newer installs the pinned official `@openclaw/meta-provider` plugin. Hermes maps
+With a compatible OpenClaw release (verified on 2026.10.4), AgentStack installs
+the pinned official `@openclaw/meta-provider` plugin. Hermes maps
 `meta/*` to its native `meta-ai` provider. Use current compatible agent releases;
 missing provider support is an error, not proof that another model worked.
 Existing configurations remain unchanged in `auto`/`preserve` mode; choose
@@ -392,6 +393,15 @@ runtime key is available to the workspace user without baking credentials into
 the image. Claude authentication is configured separately by the workspace user.
 To check installation, run `codex --version`, `claude --version` or `muse --version`
 through workspace SSH. No automatic chief-of-staff delegation is added.
+
+Muse uses its normal command approvals inside the workspace. Docker’s default
+path protections can prevent its nested Linux sandbox from starting; approve a
+specific trusted command when Muse asks. Live validation used one-time approval
+for the fixture test command, with no saved permission rule or change to Docker
+protections.
+
+See the [acceptance catalog](docs/meta-integration-tests.md) and
+[completed validation record](docs/meta-integration-validation.md).
 
 ## Legacy layout and provider migration
 

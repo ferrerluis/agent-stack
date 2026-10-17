@@ -1,3 +1,4 @@
-# Optional read-only/live showcase tools. Install in a task-owned virtualenv.
+# Controller dependencies for config tests and optional live tools. Install in a task-owned virtualenv.
 botocore==1.43.108
 cryptography==46.0.5
+PyYAML==6.0.3
