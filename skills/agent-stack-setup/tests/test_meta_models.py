@@ -134,7 +134,13 @@ class MetaOpenClawBootstrapTest(unittest.TestCase):
                 script += "[ \"$2\" != enable ]; }\n"
             else:
                 script += "return 0; }\n"
+            script += 'OPENCLAW_CONFIG="$app/openclaw.json"\n'
+            (root / "openclaw.json").write_text(json.dumps({"channels": {"fixture": True}, "models": {"providers": {"meta": {"baseUrl": "https://operator-gateway.example/v1"}}}}))
+            provider = json.dumps({"baseUrl": "https://api.meta.ai/v1", "api": "openai-responses", "models": [{"id": "muse-spark-1.3"}, {"id": "muse-wonder-1.0"}]})
+            script += "build_meta_provider_catalog() { printf '%s\\n' " + shlex.quote(provider) + "; }\n"
             script += self.function("configure_meta_provider") + "\nconfigure_meta_provider\n"
+            script += "jq -e '.channels.fixture == true and .models.providers.meta.baseUrl == \"https://operator-gateway.example/v1\" and .models.providers.meta.apiKey.id == \"MODEL_API_KEY\" and (.models.providers.meta.models | length) == 2' \"$OPENCLAW_CONFIG\" >/dev/null\n" if selected else ""
+
             result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
             calls = (root / "calls").read_text() if (root / "calls").exists() else ""
             return result, calls, (root / "restart").exists()
