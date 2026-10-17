@@ -183,6 +183,27 @@ EOF
 install_para_memory_drive_skill
 upsert_workspace_agents_guidance
 
+# sshd does not forward the container environment into user sessions. The Muse
+# wrapper loads this runtime-only credential; it never exists in an image layer.
+%{ if workspace_muse_enabled }
+MUSE_WORKSPACE_GROUP="$username" python3 - <<'MUSE_ENV'
+import grp
+import os
+from pathlib import Path
+import shlex
+path = Path("/etc/agent-stack-muse.env")
+path.unlink(missing_ok=True)
+fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
+with os.fdopen(fd, "w") as stream:
+    stream.write("export META_API_KEY=" + shlex.quote(os.environ.get("META_API_KEY", "")) + "\n")
+os.chown(path, 0, grp.getgrnam(os.environ["MUSE_WORKSPACE_GROUP"]).gr_gid)
+os.chmod(path, 0o640)
+MUSE_ENV
+%{ else }
+rm -f /etc/agent-stack-muse.env
+%{ endif }
+
+
 if [ "$${WORKSPACE_CODEX_AUTO_UPDATE_ENABLED:-false}" = "true" ]; then
   if ! /usr/local/libexec/agent-stack-workspace-codex-update --initialize "$username"; then
     echo "[workspace] WARNING: could not initialize the user-scoped Codex fallback; starting SSH without blocking access." >&2

@@ -54,12 +54,22 @@ class HermesConfigTest(unittest.TestCase):
         self.assertEqual(result["channels"], {"telegram": True})
         self.assertEqual(result["model"], {"provider": "anthropic", "default": "claude-test"})
 
-    def test_manage_yaml_fails_without_truncating_operator_config(self):
-        original = "model:\n  default: old\n"
+    def test_manage_invalid_yaml_fails_without_truncating_operator_config(self):
+        original = "model: [invalid\n"
         self.file.write_text(original)
         with self.assertRaises(ValueError):
             config.seed_config(self.root, {"model_ref": "anthropic/test"}, "manage")
         self.assertEqual(self.file.read_text(), original)
+
+    def test_manage_accepts_hermes_migrated_yaml_and_preserves_other_settings(self):
+        self.file.write_text('{"model": {"provider": "meta-ai", "default": "muse-spark-1.3"}, '
+                             '"fallback_providers": [], _config_version: 50, channels: {telegram: true}}\n')
+        self.assertTrue(config.seed_config(self.root, {"model_ref": "meta/muse-wonder-1.0", "fallback_models": []}, "manage"))
+        result = json.loads(self.file.read_text())
+        self.assertEqual(result["model"], {"provider": "meta-ai", "default": "muse-wonder-1.0"})
+        self.assertEqual(result["channels"], {"telegram": True})
+        self.assertEqual(result["_config_version"], 50)
+        self.assertEqual(result["fallback_providers"], [])
 
     def test_invalid_model_does_not_create_config(self):
         for model in ("no-prefix", "other/model", "anthropic/"):

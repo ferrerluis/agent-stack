@@ -708,3 +708,173 @@ run "rejects_unpinned_claude" {
   }
   expect_failures = [var.workspace_claude_release]
 }
+
+run "meta_models_and_workspace_selection" {
+  command = plan
+  variables {
+    model_providers_enabled   = ["meta"]
+    meta_api_key              = "meta-test-fixture"
+    hermes_dashboard_password = "hermes-dashboard-test-fixture"
+    hermes_dashboard_secret   = "hermes-dashboard-test-secret"
+    default_model             = "meta/muse-spark-1.3"
+    fallback_models           = ["meta/muse-wonder-1.0"]
+    enabled_services          = ["openclaw", "hermes", "workspace"]
+    workspace_password        = "workspace-fixture-password"
+    workspace_harnesses       = ["codex", "claude_code", "muse_code"]
+    workspace_claude_release  = "2.1.301"
+  }
+  assert {
+    condition     = strcontains(nonsensitive(local.runtime_env), "MODEL_API_KEY='meta-test-fixture'") && strcontains(nonsensitive(local.runtime_workspace_env), "META_API_KEY='meta-test-fixture'")
+    error_message = "Meta API credentials must reach the agents and selected Muse workspace runtime."
+  }
+  assert {
+    condition     = strcontains(local.runtime_workspace_dockerfile, "/usr/local/libexec/muse") && strcontains(local.runtime_workspace_dockerfile, "sha256sum -c -") && strcontains(local.runtime_workspace_dockerfile, "ARG CLAUDE_RELEASE=2.1.301") && !strcontains(nonsensitive(local.runtime_workspace_dockerfile), "meta-test-fixture")
+    error_message = "Optional CLIs must be installed with pinned binaries, checksums and no credentials."
+  }
+  assert {
+    condition     = jsondecode(local.runtime_hermes_seed).model_ref == "meta/muse-spark-1.3" && jsondecode(local.runtime_hermes_seed).fallback_models == ["meta/muse-wonder-1.0"]
+    error_message = "Hermes must receive the selected primary and fallback Meta routes."
+  }
+}
+
+run "meta_requires_credentials" {
+  command = plan
+  variables {
+    model_providers_enabled = ["meta"]
+    meta_api_key            = ""
+    default_model           = "meta/muse-spark-1.3"
+  }
+  expect_failures = [terraform_data.input_validation]
+}
+
+run "codex_cannot_be_unselected" {
+  command = plan
+  variables {
+    workspace_harnesses = ["muse_code"]
+    enabled_services    = ["workspace"]
+    workspace_password  = "workspace-fixture-password"
+  }
+  expect_failures = [var.workspace_harnesses]
+}
+
+run "workspace_rejects_duplicate_tools" {
+  command = plan
+  variables { workspace_harnesses = ["codex", "codex"] }
+  expect_failures = [var.workspace_harnesses]
+}
+
+run "muse_is_opt_in" {
+  command = plan
+  assert {
+    condition     = !strcontains(local.runtime_workspace_dockerfile, "ARG MUSE_RELEASE") && !strcontains(nonsensitive(local.runtime_workspace_env), "META_API_KEY")
+    error_message = "Unselected Muse must not be installed or receive credentials."
+  }
+}
+
+run "unused_hermes_meta_override_needs_no_key" {
+  command = plan
+  variables {
+    enabled_services = ["openclaw"]
+    hermes_model     = "meta/muse-wonder-1.0"
+    meta_api_key     = ""
+  }
+  assert {
+    condition     = var.meta_api_key == ""
+    error_message = "A disabled Hermes override must not require Meta authentication."
+  }
+}
+
+run "preserved_hermes_meta_override_needs_no_key" {
+  command = plan
+  variables {
+    hermes_model       = "meta/muse-wonder-1.0"
+    hermes_config_mode = "preserve"
+    meta_api_key       = ""
+  }
+  assert {
+    condition     = var.meta_api_key == ""
+    error_message = "Preserving Hermes must not require credentials for an unused override."
+  }
+}
+
+run "hermes_auto_filters_global_fallbacks_preserving_supported_order" {
+  command = plan
+  variables {
+    openai_auth_mode              = "codex"
+    openai_codex_auth_json_base64 = base64encode(jsonencode({ tokens = { access_token = "fixture" } }))
+    openai_api_key                = "openai-test-fixture"
+    anthropic_api_key             = "anthropic-test-fixture"
+    groq_api_key                  = "groq-test-fixture"
+    default_model                 = "openai-codex/gpt-fixture"
+    hermes_model                  = "google/gemini-fixture"
+    model_providers_enabled       = ["google", "openai", "anthropic", "groq", "meta"]
+    meta_api_key                  = "meta-test-fixture"
+    fallback_models               = ["openai-codex/first", "anthropic/claude-fixture", "openai/gpt-fixture", "openai-codex/middle", "google/gemini-backup", "groq/llama-fixture", "meta/muse-wonder-1.0", "openai-codex/last"]
+  }
+  assert {
+    condition     = jsondecode(local.runtime_hermes_seed).model_ref == "google/gemini-fixture" && jsondecode(local.runtime_hermes_seed).fallback_models == ["anthropic/claude-fixture", "openai/gpt-fixture", "google/gemini-backup", "groq/llama-fixture", "meta/muse-wonder-1.0"]
+    error_message = "Fresh Hermes auto setup must exclude incompatible Codex routes while retaining all supported fallbacks in order."
+  }
+  assert {
+    condition     = local.runtime_template_vars.fallback_models_json == jsonencode(var.fallback_models)
+    error_message = "Filtering Hermes fallbacks must preserve OpenClaw's complete global list."
+  }
+}
+
+run "hermes_manage_filters_global_fallbacks" {
+  command = plan
+  variables {
+    openai_auth_mode              = "codex"
+    openai_codex_auth_json_base64 = base64encode(jsonencode({ tokens = { access_token = "fixture" } }))
+    model_providers_enabled       = ["google", "openai"]
+    hermes_config_mode            = "manage"
+    default_model                 = "openai-codex/gpt-fixture"
+    hermes_model                  = "google/gemini-fixture"
+    fallback_models               = ["openai-codex/first", "google/gemini-backup", "openai-codex/last"]
+  }
+  assert {
+    condition     = jsondecode(local.runtime_hermes_seed).fallback_models == ["google/gemini-backup"]
+    error_message = "Managed Hermes must exclude incompatible inherited fallbacks."
+  }
+}
+
+run "hermes_override_with_only_codex_fallbacks_seeds_empty_list" {
+  command = plan
+  variables {
+    openai_auth_mode              = "codex"
+    openai_codex_auth_json_base64 = base64encode(jsonencode({ tokens = { access_token = "fixture" } }))
+    model_providers_enabled       = ["google", "openai"]
+    default_model                 = "openai-codex/gpt-fixture"
+    hermes_model                  = "google/gemini-fixture"
+    fallback_models               = ["openai-codex/backup"]
+  }
+  assert {
+    condition     = length(jsondecode(local.runtime_hermes_seed).fallback_models) == 0
+    error_message = "Hermes with a supported primary override must work when no inherited fallback is compatible."
+  }
+}
+
+run "muse_without_meta_model_provider_requires_configured_key" {
+  command = plan
+  variables {
+    enabled_services    = ["openclaw", "workspace"]
+    workspace_password  = "workspace-fixture-password"
+    workspace_harnesses = ["codex", "muse_code"]
+    meta_api_key        = ""
+  }
+  expect_failures = [var.workspace_harnesses]
+}
+
+run "muse_with_non_meta_model_provider_accepts_configured_key" {
+  command = plan
+  variables {
+    enabled_services    = ["openclaw", "workspace"]
+    workspace_password  = "workspace-fixture-password"
+    workspace_harnesses = ["codex", "muse_code"]
+    meta_api_key        = "muse-only-fixture"
+  }
+  assert {
+    condition     = var.model_providers_enabled == tolist(["google"]) && var.default_model == "google/gemini-3-flash-preview" && strcontains(nonsensitive(local.runtime_workspace_env), "META_API_KEY='muse-only-fixture'")
+    error_message = "Muse authentication must work independently of the chief-of-staff provider selection."
+  }
+}

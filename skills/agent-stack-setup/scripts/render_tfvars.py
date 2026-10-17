@@ -298,6 +298,8 @@ def validate_value(spec: VariableSpec, value: Any) -> None:
 def model_refs(values: dict[str, Any]) -> list[str]:
     refs = [str(values["default_model"])]
     refs.extend(str(item) for item in values["fallback_models"])
+    if "hermes" in values["enabled_services"] and values["hermes_config_mode"] != "preserve" and str(values["hermes_model"]).strip():
+        refs.append(str(values["hermes_model"]).strip())
     return refs
 
 
@@ -361,6 +363,21 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
             "n8n_database_mode = external_postgres requires external_postgres_host, "
             "external_postgres_database, external_postgres_user, and external_postgres_password"
         )
+
+    harnesses = resolved["workspace_harnesses"]
+    if "codex" not in harnesses or len(set(harnesses)) != len(harnesses):
+        fail("workspace_harnesses must include codex and contain no duplicates")
+    if len(harnesses) > 1 and "workspace" not in resolved["enabled_services"]:
+        fail("optional workspace_harnesses require the workspace service")
+    if resolved["workspace_claude_enabled"] or "claude_code" in harnesses:
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", resolved["workspace_claude_release"]):
+            fail("workspace_claude_release must be an exact x.y.z version when Claude Code is selected")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-R[0-9]+(?:\.[0-9]+)?", resolved["workspace_muse_release"]):
+        fail("workspace_muse_release must be an exact Muse release")
+    if ("meta" in resolved["model_providers_enabled"] or "muse_code" in harnesses) and not str(resolved["meta_api_key"]).strip():
+        fail("meta_api_key is required when the Meta provider or Muse Code is selected")
+    if any(ch in resolved["meta_api_key"] for ch in "\r\n'"):
+        fail("meta_api_key must be a single-line API key without quotes")
 
     workspace_services = resolved["enabled_services"]
     workspace_auto_update = resolved["workspace_codex_auto_update_enabled"]

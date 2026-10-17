@@ -315,6 +315,21 @@ variable "repo_ssh_private_key_path" {
 # OpenClaw / LLM API keys
 # ─────────────────────────────────────────────────────────
 
+variable "meta_api_key" {
+  description = "Meta Model API key for Muse Spark/Wonder and optional workspace Muse Code."
+  type        = string
+  default     = ""
+  sensitive   = true
+  validation {
+    condition = var.meta_api_key == "" || (
+      trimspace(var.meta_api_key) != "" &&
+      !can(regex("[\\r\\n']", var.meta_api_key)) &&
+      !can(regex("(?i)^(YOUR_|REPLACE|CHANGEME|sk-\\.\\.\\.)", var.meta_api_key))
+    )
+    error_message = "meta_api_key must be a real single-line API key, not a placeholder."
+  }
+}
+
 variable "anthropic_api_key" {
   description = "Anthropic API key for Claude models. This is the preferred Anthropic credential for AgentStack."
   type        = string
@@ -415,17 +430,17 @@ variable "agent_channel" {
 }
 
 variable "model_providers_enabled" {
-  description = "Required list of model providers to configure at bootstrap. Allowed values: anthropic, openai, google, groq."
+  description = "Required list of model providers to configure at bootstrap. Allowed values: anthropic, openai, google, groq, meta."
   type        = list(string)
 
   validation {
     condition = (
       length(var.model_providers_enabled) > 0 &&
       alltrue([
-        for provider in var.model_providers_enabled : contains(["anthropic", "openai", "google", "groq"], provider)
+        for provider in var.model_providers_enabled : contains(["anthropic", "openai", "google", "groq", "meta"], provider)
       ])
     )
-    error_message = "model_providers_enabled must include at least one provider and only: anthropic, openai, google, groq."
+    error_message = "model_providers_enabled must include at least one provider and only: anthropic, openai, google, groq, meta."
   }
 }
 
@@ -528,8 +543,38 @@ variable "enabled_services" {
   }
 }
 
+variable "workspace_harnesses" {
+  description = "Workspace coding tools: Codex is mandatory; optionally add claude_code and muse_code."
+  type        = list(string)
+  default     = ["codex"]
+  validation {
+    condition = contains(var.workspace_harnesses, "codex") && length(distinct(var.workspace_harnesses)) == length(var.workspace_harnesses) && alltrue([
+      for harness in var.workspace_harnesses : contains(["codex", "claude_code", "muse_code"], harness)
+    ])
+    error_message = "workspace_harnesses must include codex, contain no duplicates, and use only codex, claude_code, muse_code."
+  }
+  validation {
+    condition     = length(var.workspace_harnesses) == 1 || contains(var.enabled_services, "workspace")
+    error_message = "Optional workspace_harnesses require the workspace service."
+  }
+  validation {
+    condition     = !contains(var.workspace_harnesses, "muse_code") || trimspace(var.meta_api_key) != ""
+    error_message = "meta_api_key is required when muse_code is selected in workspace_harnesses."
+  }
+}
+
+variable "workspace_muse_release" {
+  description = "Exact official Muse Code binary release. Only installed when muse_code is selected."
+  type        = string
+  default     = "1.4.10-R6427.1"
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+-R[0-9]+(\\.[0-9]+)?$", var.workspace_muse_release))
+    error_message = "workspace_muse_release must be an exact release such as 1.4.10-R6427.1."
+  }
+}
+
 variable "workspace_claude_enabled" {
-  description = "Install Claude Code alongside Codex in the workspace. Requires an explicit workspace_claude_release."
+  description = "Legacy alias for adding claude_code to workspace_harnesses. Requires an explicit workspace_claude_release."
   type        = bool
   default     = false
   validation {
@@ -543,7 +588,7 @@ variable "workspace_claude_release" {
   type        = string
   default     = ""
   validation {
-    condition     = !var.workspace_claude_enabled || can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.workspace_claude_release))
+    condition     = !(var.workspace_claude_enabled || contains(var.workspace_harnesses, "claude_code")) || can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.workspace_claude_release))
     error_message = "workspace_claude_release must be an exact x.y.z version when Claude Code is enabled."
   }
 }
@@ -854,9 +899,9 @@ variable "hermes_model" {
   default     = ""
   validation {
     condition = !contains(var.enabled_services, "hermes") || var.hermes_config_mode == "preserve" || can(
-      regex("^(anthropic|openai|google|groq)/.+$", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)
+      regex("^(anthropic|openai|google|groq|meta)/.+$", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)
     )
-    error_message = "When Hermes config may be seeded or managed, use an anthropic/, openai/, google/ or groq/ reference with a non-empty model name. If default_model uses legacy openai-codex/, supply a supported hermes_model override or preserve an existing Hermes config."
+    error_message = "When Hermes config may be seeded or managed, use an anthropic/, openai/, google/, groq/ or meta/ reference with a non-empty model name. If default_model uses legacy openai-codex/, supply a supported hermes_model override or preserve an existing Hermes config."
   }
 }
 

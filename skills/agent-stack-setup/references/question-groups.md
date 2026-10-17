@@ -319,3 +319,10 @@ Advanced defaults:
 - External Postgres is an advanced branch and requires host, port, database, user, password, and SSL choice.
 - Host VPN egress is an advanced branch. If enabled, collect manual VPN service credentials, an OpenVPN config URL, and at least one bypass CIDR for SSH or host Tailscale access.
 - Hermes, n8n, Postgres image tags, generated secret overrides, and public webhook exposure are advanced config.
+
+## Meta models and workspace tools
+
+- Offer standard Muse Spark 1.3 (`meta/muse-spark-1.3`) and Muse Wonder 1.0 (`meta/muse-wonder-1.0`) with provider `meta`; request `meta_api_key` only for Meta or selected Muse Code authentication. Never accept the example placeholder.
+- Coding tools are a multi-selection: Codex checked and locked; Claude Code and Muse Code optional. Store choices in `workspace_harnesses`. Ask for an exact Claude release if selected; use the pinned Muse default unless overridden.
+- Keep model choices independent of installed coding tools. An installed optional CLI does not configure chief-of-staff delegation.
+- For existing configs, explain `auto`/`preserve` behavior and select `manage` only when updating their model settings is requested.

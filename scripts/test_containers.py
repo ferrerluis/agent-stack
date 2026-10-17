@@ -61,7 +61,7 @@ def execute(args, env, timeout=60, input=None, check=True):
 def isolated_env(directory):
     env = {key: value for key, value in os.environ.items() if not key.startswith(("TF_", "AWS_", "ARM_", "GOOGLE_", "GCLOUD_"))
            and key not in ("OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
-                           "GEMINI_API_KEY", "GROQ_API_KEY", "DIGITALOCEAN_TOKEN", "HCLOUD_TOKEN", "TAILSCALE_AUTH_KEY")}
+                           "GEMINI_API_KEY", "GROQ_API_KEY", "META_API_KEY", "MODEL_API_KEY", "DIGITALOCEAN_TOKEN", "HCLOUD_TOKEN", "TAILSCALE_AUTH_KEY")}
     env.update(DOCKER_CONFIG=str(directory / "docker-client"), TF_DATA_DIR=str(directory / "terraform-data"), TF_INPUT="0")
     config = directory / "terraform.rc"
     config.write_text("")
@@ -69,9 +69,10 @@ def isolated_env(directory):
     return env
 
 
-def render_workspace(directory, env, codex_release, claude_release, terraform="terraform"):
+def render_workspace(directory, env, codex_release, claude_release, terraform="terraform", muse_release=None):
     values = {"workspace_username": "testuser", "workspace_codex_release": codex_release,
-              "workspace_claude_enabled": bool(claude_release), "workspace_claude_release": claude_release or ""}
+              "workspace_claude_enabled": bool(claude_release), "workspace_claude_release": claude_release or "",
+              "workspace_muse_enabled": bool(muse_release), "workspace_muse_release": muse_release or ""}
     templates = ROOT / "modules/common/templates/runtime"
     sources = {
         "Dockerfile": "workspace.Dockerfile.tpl", "workspace-entrypoint.sh": "workspace-entrypoint.sh.tpl",

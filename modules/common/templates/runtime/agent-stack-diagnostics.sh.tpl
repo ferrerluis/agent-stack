@@ -120,6 +120,21 @@ show_workspace_codex_update_status() {
   echo "canonical_target=$canonical_target"
 }
 
+show_workspace_coding_tools() {
+  local cid tool version
+  echo "default=codex"
+  cid="$(container_id workspace)"
+  [ -n "$cid" ] || { echo "workspace_container=missing"; return 0; }
+  for tool in codex claude muse; do
+    version="$(docker exec --user ${workspace_username} "$cid" /usr/bin/timeout 10 /bin/sh -c 'command -v "$1" >/dev/null 2>&1 && "$1" --version' sh "$tool" 2>/dev/null | head -n 1 || true)"
+    if [ -n "$version" ]; then
+      printf '%s=%s\n' "$tool" "$version"
+    else
+      printf '%s=unavailable\n' "$tool"
+    fi
+  done
+}
+
 queue_workspace_codex_update() {
   if [ "$WORKSPACE_CODEX_AUTO_UPDATE_ENABLED" != "true" ]; then
     echo "workspace Codex auto update is disabled" >&2
@@ -240,6 +255,9 @@ show_status() {
   echo
   echo "== workspace Codex updater =="
   show_workspace_codex_update_status
+  echo
+  echo "== workspace coding tools =="
+  show_workspace_coding_tools
 }
 
 show_health() {

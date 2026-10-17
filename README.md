@@ -365,6 +365,59 @@ Postgres data is stored on the persistent volume under `/opt/agent-stack/data/po
 
 ---
 
+## Meta models and workspace coding tools
+
+Use standard Meta Model API credentials for Muse Spark or Muse Wonder:
+
+```hcl
+model_providers_enabled = ["meta"]
+meta_api_key            = "<your real Meta Model API key>"
+default_model           = "meta/muse-spark-1.3"
+fallback_models         = ["meta/muse-wonder-1.0"]
+```
+
+With a compatible OpenClaw release (verified on 2026.10.4), AgentStack installs
+the pinned official `@openclaw/meta-provider` plugin. Hermes maps
+`meta/*` to its native `meta-ai` provider. Use current compatible agent releases;
+missing provider support is an error, not proof that another model worked.
+Existing configurations remain unchanged in `auto`/`preserve` mode; choose
+`openclaw_config_mode = "manage"` and `hermes_config_mode = "manage"` to update
+managed model selections. Hermes-managed ordered fallbacks use `fallback_providers`.
+Hermes inherits only `anthropic/`, `openai/`, `google/`, `groq/` and `meta/`
+fallbacks, in their original order; it skips legacy `openai-codex/` entries.
+OpenClaw retains the complete global fallback list.
+Contributor models and subscription-only Wonder Full are not setup presets.
+
+Coding tools are independent of the chief-of-staff model:
+
+```hcl
+enabled_services        = ["openclaw", "hermes", "workspace"]
+workspace_harnesses     = ["codex", "claude_code", "muse_code"]
+workspace_claude_release = "2.1.301" # choose a verified exact Claude release
+workspace_muse_release   = "1.4.10-R6427.1"
+```
+
+Codex is always installed and remains the default. Optional tools coexist and
+are available through workspace SSH as `claude` and `muse`. The legacy
+`workspace_claude_enabled` flag still adds Claude Code. Muse uses a pinned,
+checksum-verified official Linux binary with automatic updates disabled; its
+runtime key is available to the workspace user without baking credentials into
+the image. Claude authentication is configured separately by the workspace user.
+Muse Code requires `meta_api_key` even when the chief-of-staff uses another
+provider. A user-supplied `META_API_KEY` in a workspace shell overrides that
+configured key.
+To check installation, run `codex --version`, `claude --version` or `muse --version`
+through workspace SSH. No automatic chief-of-staff delegation is added.
+
+Muse uses its normal command approvals inside the workspace. Docker’s default
+path protections can prevent its nested Linux sandbox from starting; approve a
+specific trusted command when Muse asks. Live validation used one-time approval
+for the fixture test command, with no saved permission rule or change to Docker
+protections.
+
+See the [acceptance catalog](docs/meta-integration-tests.md) and
+[completed validation record](docs/meta-integration-validation.md).
+
 ## Legacy layout and provider migration
 
 New deployments use `/opt/agent-stack`. Existing `/opt/openclaw` volumes are migrated by `/usr/local/bin/agent-stack-migrate-layout` on bootstrap:
