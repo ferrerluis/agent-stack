@@ -65,9 +65,20 @@ def seed_config(data_dir, seed, mode="auto"):
         fallbacks = [model_route(ref, fallback=True) for ref in seed["fallback_models"]]
     config = {}
     if target.exists():
-        # AgentStack seeds JSON; fail safely for operator-owned YAML in manage
-        # mode rather than discarding channels, tools, profiles or auth settings.
-        config = json.loads(target.read_text())
+        # Hermes migrations rewrite the JSON seed as YAML, including flow maps.
+        # Preserve all unrelated settings when managing that migrated config.
+        text = target.read_text()
+        try:
+            config = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                import yaml
+            except ImportError as error:
+                raise ValueError("PyYAML is required to manage existing Hermes YAML") from error
+            try:
+                config = yaml.safe_load(text)
+            except yaml.YAMLError as error:
+                raise ValueError("existing Hermes YAML could not be read safely") from error
         if not isinstance(config, dict):
             raise ValueError("existing Hermes configuration must be an object")
     config["model"] = model_config
