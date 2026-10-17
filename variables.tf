@@ -574,12 +574,12 @@ variable "workspace_opencode_release" {
 }
 
 variable "workspace_opencode_model" {
-  description = "Initial OpenCode provider/model (independent of agent models). Required when opencode is selected. Existing user JSON/JSONC config is preserved. Authenticate separately in the workspace."
+  description = "Required explicit OpenCode HF model when enabled, independent of personal-agent selections. Only reviewed Hub IDs pinned to Baseten are supported. Existing user config is preserved; conflicting routes fail at launch. Authenticate separately as the workspace user."
   type        = string
   default     = ""
   validation {
-    condition     = var.workspace_opencode_model == "" || can(regex("^[a-z0-9][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_./:-]{0,199}$", var.workspace_opencode_model))
-    error_message = "workspace_opencode_model must be empty or a provider/model reference without spaces or credentials."
+    condition     = var.workspace_opencode_model == "" || can(regex("^huggingface/(moonshotai/Kimi-K3|meta-models/Muse-Spark-Open-816B-A42B|deepseek-ai/DeepSeek-V4[.]1-Flash):baseten$", var.workspace_opencode_model))
+    error_message = "workspace_opencode_model must be empty or a reviewed huggingface/Hub-ID:baseten route: Kimi-K3, Muse-Spark-Open-816B-A42B or DeepSeek-V4.1-Flash."
   }
   validation {
     condition     = !contains(var.workspace_harnesses, "opencode") || var.workspace_opencode_model != ""

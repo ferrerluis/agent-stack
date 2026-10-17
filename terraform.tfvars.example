@@ -295,5 +295,7 @@ tailscale_auth_key = "tskey-auth-..."
 # Keep codex selected; other optional harnesses can coexist.
 # workspace_harnesses = ["codex", "opencode"]
 # workspace_opencode_release = "1.19.3"
-# workspace_opencode_model = "openai/<model-id>" # replace with an available native model ID
+# workspace_opencode_model = "huggingface/moonshotai/Kimi-K3:baseten" # required explicit HF choice
+# Other reviewed choices: huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten
+# or huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten. Independent of personal-agent models.
 # Authenticate separately in the workspace; existing user config is preserved.

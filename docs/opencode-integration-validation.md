@@ -1,126 +1,176 @@
 # OpenCode integration acceptance and validation
 
-Verified on 2026-10-17 UTC. Scope: optional OpenCode coding harness, independent
-of personal-agent providers, Codex, Claude Code and Muse Code. No Splash changes.
-Base: current `main` at `e98070588c784706b95ee048ed96a7e3380b2668`.
+Verified on 2026-10-17 UTC. Scope: optional **HF-only OpenCode coding harness**,
+independent of personal-agent selections, Codex, Claude Code and Muse Code.
+No Splash changes. Base: `main` at `e98070588c784706b95ee048ed96a7e3380b2668`.
 
-## Official contract checked
+## Official contracts and evidence boundaries
 
-- [Install and supported platforms](https://opencode.ai/docs/): native CLI,
-  Node package and platform installers exist. Windows users are directed toward
-  WSL. AgentStack's Ubuntu workspace supports Linux glibc ARM64 and x64; macOS,
-  Windows, musl and other architectures are outside this integration's runtime
-  matrix. The x64 baseline artifact avoids requiring AVX2.
-- [Official pinned V1 release](https://github.com/anomalyco/opencode/releases/tag/v1.19.3)
-  and [its installer source](https://github.com/anomalyco/opencode/blob/v1.19.3/install):
-  V1 and V2 share the `opencode` name. AgentStack selects an exact V1 tag,
-  requires the GitHub release asset's SHA-256 digest, verifies the download and
-  checks the executable version. It never runs the mutable install script.
-- [Configuration](https://opencode.ai/docs/config/): global JSON/JSONC, provider
-  allowlists, model references, update settings and project/inline overrides.
-  AgentStack creates only the initial user config, preserving existing native
-  JSON, JSONC and legacy config. Model/provider changes after seeding are manual.
-- [Authentication](https://opencode.ai/docs/providers/): provider environment
-  variables or interactive connection/login; native saved auth lives under
-  `~/.local/share/opencode/auth.json`. No authentication is provisioned here.
-- [CLI](https://opencode.ai/docs/cli/): TUI, `run`, JSON events, model selection,
-  session continuation and export. [Pinned run source](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/opencode/src/cli/cmd/run.ts)
-  and native tests establish that headless permission requests are rejected
-  unless auto approval is requested. Tool rejection can still produce exit 0.
-- [Permissions](https://opencode.ai/docs/permissions/): initial `* = ask` supports
-  supervised operation. Project or agent settings can override user defaults.
-  Unattended execution needs separately reviewed auth, permissions, timeout and
-  independent result verification. No auto approval or server exposure is added.
+- [Install/platforms](https://opencode.ai/docs/),
+  [pinned V1 release](https://github.com/anomalyco/opencode/releases/tag/v1.19.3)
+  and [pinned installer](https://github.com/anomalyco/opencode/blob/v1.19.3/install):
+  Ubuntu workspace uses Linux glibc ARM64 or x64 baseline (no AVX2 requirement).
+  Windows/WSL, macOS and musl are outside this runtime matrix. Exact V1 release,
+  published asset SHA-256 and executable version are checked. The mutable V1/V2
+  install script is never executed.
+- [OpenCode configuration](https://opencode.ai/docs/config/) and
+  [providers/auth](https://opencode.ai/docs/providers/#hugging-face): native
+  JSON/JSONC precedence, provider/model allowlists and separate HF authentication.
+  The [official provider catalog](https://github.com/anomalyco/models.dev/blob/dev/providers/huggingface/provider.toml)
+  records `huggingface`, `HF_TOKEN`, `@ai-sdk/openai-compatible` and
+  `https://router.huggingface.co/v1`. No auth is provisioned or inspected here.
+- [HF chat API](https://huggingface.co/docs/inference-providers/tasks/chat-completion)
+  and [function calling](https://huggingface.co/docs/inference-providers/guides/function-calling):
+  OpenAI-compatible chat requests, streaming tools and provider-dependent effort.
+  [Public router metadata](https://router.huggingface.co/v1/models) and Hub
+  `inferenceProviderMapping` were read without authentication. The compact
+  [catalog receipt](../tests/fixtures/opencode-hf-catalog.json) records timestamp,
+  source URLs/digests, live Baseten mappings, tools and 1,048,576-token context.
+  This establishes public availability, **not authenticated account access**.
+- Model cards: [Kimi K3](https://huggingface.co/moonshotai/Kimi-K3),
+  [Muse Spark Open](https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B),
+  [DeepSeek V4.1 Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash).
+  Kimi always reasons and requires full assistant `reasoning_content` and
+  `tool_calls` replay. Muse's Hub weights have manual gating; no gate was accepted
+  and no weights downloaded. Hosted eligibility remains untested.
+- [Baseten reasoning contract](https://docs.baseten.co/inference/model-apis/reasoning)
+  and [Muse public API launch](https://www.baseten.co/blog/muse-spark-open-launch/):
+  the selected hosted routes use string efforts. DeepSeek's underlying model card
+  describes numeric 1–100; Baseten instead documents `none/high/max`, warns that
+  `low` runs at default depth, and supports `high` explicitly. We offer high/max.
+  Kimi offers low/high/max, Muse low/medium/high/xhigh. All default to supported
+  `high`; none/off are excluded. No universal medium or numeric passthrough.
+- Pinned [provider source](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/opencode/src/provider/provider.ts),
+  [message transform](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/opencode/src/provider/transform.ts)
+  and [provider schema](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/core/src/v1/config/provider.ts):
+  explicit `interleaved: reasoning_content`, reasoning capability/options and
+  model-specific variants. Native binary tests below exercise the actual parser,
+  serializer and file tools, rather than a local serializer reimplementation.
+- [CLI](https://opencode.ai/docs/cli/), [permissions](https://opencode.ai/docs/permissions/)
+  and [pinned run source](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/opencode/src/cli/cmd/run.ts):
+  headless `ask` auto-rejects and can still exit 0. Initial permissions support
+  supervised TUI use. Unattended operation requires separately reviewed auth,
+  scoped permissions, timeouts and independent verification. No auto approval,
+  server, remote attachment or delegation integration is enabled.
+
+## Exact independent model choices
+
+| OpenCode reference | HF request `model` | Offered efforts |
+| --- | --- | --- |
+| `huggingface/moonshotai/Kimi-K3:baseten` | `moonshotai/Kimi-K3:baseten` | low/high/max |
+| `huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten` | `meta-models/Muse-Spark-Open-816B-A42B:baseten` | low/medium/high/xhigh |
+| `huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten` | `deepseek-ai/DeepSeek-V4.1-Flash:baseten` | high/max |
+
+Use the public HF ID, including for Muse: its internal Baseten providerId
+`meta-models/muse-spark-open` is metadata, not the model sent to the HF router.
+The unhosted DeepSeek `-1017` revision, GPT-OSS HF routes, direct vendor providers,
+automatic provider selection and fallback are rejected. Personal-agent models
+and workspace OpenCode models are separate required choices when enabled.
+
+Startup creates the initial 0600 user config only when native JSON/JSONC/legacy
+config is absent. It sets both main and small model explicitly, three reviewed
+HF models, a text-only reviewed profile and conservative 8,192-token client output cap, updates off and `* = ask`.
+Existing files/auth/sessions are untouched. The launcher checks native HF API-key
+presence before inference and fails locally when absent; it does not attempt a
+paid request to validate credentials. Native compatible-provider retries on missing
+auth were observed in a bounded failed fixture, motivating this explicit guard. The launcher captures native effective
+config without logging its potentially sensitive content, rejects conflicting
+model/URL/agent/command/reasoning settings, and overlays the reviewed provider
+contract in memory. Persistent agent effort overrides must stay at `high`; choose
+other efforts through the model variant picker. Unsupported config fails with
+repair guidance; SSH and other harnesses remain usable. This is a configuration
+contract, not a security boundary against the workspace owner or arbitrary plugins.
 
 ## Repeatable acceptance matrix
 
-`test_opencode.py` exercises the production installer RUN block, seed Python and
-command wrapper rather than separate reimplementations. The native tests are an
-explicit opt-in and use only a scripted localhost OpenAI-compatible endpoint.
-They demonstrate CLI/tool/config contracts, not real model reasoning or vendor
-inference. Fixture API strings never authenticate to an external service.
+`test_opencode.py` executes production seed/launcher code and the real installer
+RUN block. Native tests use a separately checksum-verified OpenCode executable,
+fresh homes and bounded scripted localhost responses. Fixture tokens never
+leave loopback. These tests prove runtime contracts, **not model quality or
+actual hosted inference**.
 
-| Case | Expected result | Evidence / result |
+| Case | Expected result | Evidence/result |
 | --- | --- | --- |
-| OC01.1 Fresh setup and existing tfvars merge | OpenCode selected; chief model and other tool defaults unchanged | Setup renderer tests: pass |
-| OC01.2 Selection combinations | Codex only, each optional combination and all tools coexist | Renderer tests + mocked plans: pass |
-| OC01.3 Invalid choices | Missing Codex/workspace/model, duplicates, unknown harness, V2/mutable release and unsafe model rejected | Renderer tests + mocked failure plans: pass |
-| OC02.1 Linux installation and repeat run | ARM64 and x64 baseline select exact artifacts and reproduce executable install | Two-pass installer fixtures: pass |
-| OC02.2 Installation failure | Bad/missing digest, duplicate asset, wrong tag, failed download and unknown architecture stop before wrapper install | Installer fixtures: pass |
-| OC02.3 Official ARM64 artifact | Published digest and binary version agree | Native `1.19.3`: pass; digest below |
-| OC03.1 Fresh user config | Explicit model/provider, updates off, permission prompts, owner user and file mode 0600 | Seed tests + real CLI config parse: pass |
-| OC03.2 Existing workspace data | JSON/JSONC/legacy config and auth fixture bytes/mode survive repeat seed and changed Terraform model | Seed tests: pass; no real auth read |
-| OC03.3 Repair path | Config failure warns while keeping SSH startup reachable | Failure fixture + entrypoint contract: pass |
-| OC04.1 Shell/SSH command behavior | Wrapper forwards arguments, disables auto update and propagates native exit code | Executed wrapper fixture: pass; native process runs as UID 1000 |
-| OC04.2 Container shell, SSH, restart/rebuild | Binary reachable through real workspace SSH; home/config/session hashes persist | Blocked: no Docker runtime in execution session; unchanged persistent-home and PATH wiring covered locally |
-| OC04.3 Disable after enable | Rebuild removes managed binary/seed; retained user files survive | Default-off mocked rendering: pass; real rebuild blocked as OC04.2 |
-| OC05.1 Native provider/model config | Seeded config parses; requested provider/model catalog is available | Real CLI `debug config`, `models fixture`: pass |
-| OC05.2 Native headless file task | Read fixture, edit only calculator, run immutable tests and independently check result | Scripted localhost model + real read/write/bash tools: pass |
-| OC05.3 Session evidence | Native JSON session ID continues and exports as the same session | Real CLI `run --session <id>` and `export <id>`: pass |
-| OC05.4 Approval behavior | Headless prompt rejects without hanging or modifying fixture | Native `tool_use` error and unchanged bytes: pass; exit status alone is insufficient |
-| OC05.5 Safe native failures | Missing auth, unknown model and invalid config fail without localhost model requests/fallback | Native failures: pass |
-| OC05.6 Real provider/model and supervised/unattended use | Actual provider identity, agent-chosen repair, follow-up and reviewed permissions | Blocked: persistent login, credentials and paid inference not authorized; no model quality claim |
-| OC06.1 Regressions | Terraform fmt/validate/mocked plans, setup, doctor, controller tests and runtime syntax pass | Pass: 105 Terraform plans, 226 setup passes + 5 native skips, 20 doctor and 861 controller/helper tests; syntax checks passed |
-| OC06.2 Cleanup and scope | No test processes/resources/credentials left; source status unchanged by runner | Pass: runner status unchanged; temporary test copies/probe homes removed; caches/evidence retained in task-owned ignored storage |
+| OC01.1 Fresh setup/existing tfvars | Explicit independent model, chief model unchanged | Renderer tests: pass |
+| OC01.2 Enable/disable/tool combinations | Codex mandatory, optional tools independent, default off | Renderer, real template render and mocked plans |
+| OC01.3 Invalid input | Missing Codex/workspace/model, duplicates, unknown harness, mutable/V2 release, non-HF/unreviewed/unpinned/unhosted model rejected | Renderer and mocked failure plans |
+| OC02.1 Install/idempotency | ARM64 and x64 baseline exact release/digest, repeat install works | Two-pass executed installer fixtures: pass |
+| OC02.2 Install failure | Bad/missing digest, duplicate asset, wrong tag, failed download/unsupported architecture stop before wrapper | Installer fixtures: pass |
+| OC02.3 Official native artifact | Published SHA-256 and binary version agree | Verified ARM64 1.19.3: pass |
+| OC03.1 Fresh user config | Exact main/small model, HF-only provider/models, per-model efforts, ask, mode600/user owner | Production seed + native parse: pass |
+| OC03.2 Existing data | JSON/JSONC/legacy/auth/session bytes survive repeat seed/Terraform model change | Production preservation tests: pass |
+| OC03.3 Repair path | Seed error warns, SSH startup remains reachable | Failure fixture/entrypoint contract: pass |
+| OC04.1 Workspace command | Wrapper quotes arguments, disables updates, propagates failure; native readback only lists three HF models | Executed wrapper + native managed launcher: pass |
+| OC04.2 Container SSH/restart/rebuild | Real image launch, SSH PATH, config/session hashes retained | Blocked, not run: no existing container runtime on pi-main |
+| OC04.3 Disable after enable | Render omits executable/seed, persistent user data retained | Default-off render: pass; real rebuild blocked as OC04.2 |
+| OC05.1 HF serialization | Each exact model ID/provider suffix and high default on wire; all offered variant values serialized | Real native OpenCode + scripted loopback SSE: pass |
+| OC05.2 Reasoning/tool history | Assistant reasoning/text, tool IDs/arguments/results retained through read/write/bash and same-session follow-up | Real native transcript capture for all3: pass |
+| OC05.3 File repair/evidence | Calculator repaired; immutable independent tests/hash, session export/continuation | Native tools + independent verifier: pass |
+| OC05.4 Approval semantics | Headless ask rejects without hanging or modification | Native tool error/unchanged file: pass; exit0 alone is insufficient |
+| OC05.5 Safe failures | Missing HF auth, unknown model, invalid config/endpoint, disabled/incompatible effort, agent/command overrides reject without fallback/config leak | Native + production launcher rejection tests: pass |
+| OC05.6 Live hosted operation | Account eligibility, HF-to-Baseten forwarding, real reasoning/tools/task quality, supervised/unattended use | Blocked, not run: credentials and paid inference unauthorized |
+| OC06.1 Regressions | Terraform/setup/doctor/controller/syntax checks | 109 mocked plans; 231 setup passes + 8 native skips; 20 doctor passes; controller/renderer repair evidence below. Exact-head CI on PR |
+| OC06.2 Cleanup | No test resources/credentials left, runner Git status unchanged | Pass: runner removed test copies; native homes/servers cleaned; caches/evidence retained |
 
-## Commands and evidence
+## Reproduction and recorded results
 
-Run the repository's safe default suite with declared dependencies in a task-owned
-virtual environment:
+Use task-owned dependencies and disk caches under `AGENTS.md` storage rules:
 
 ```bash
 python3 -m pip install -r scripts/requirements-live.txt
 AGENT_STACK_TEST_ROOT="$PWD/.tmp/t" scripts/test-local.sh
-```
 
-On pi-main, use disk storage for caches/downloads and a short disk test path if
-needed for provider Unix socket length. The test root must meet `AGENTS.md` and
-runner storage checks. Preserve existing caches; do not clear other tasks' data.
-
-After independently verifying a native artifact digest:
-
-```bash
-OPENCODE_TEST_BINARY=/absolute/path/to/verified/opencode \
+OPENCODE_TEST_BINARY=/absolute/path/to/checksum-verified/opencode \
   PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s skills/agent-stack-setup/tests -p test_opencode.py -v
 ```
 
-Local verified artifact: `opencode-linux-arm64.tar.gz`, SHA-256
+Verified ARM64 archive SHA-256:
 `7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405`.
-The tests use fresh temporary homes, an explicit provider allowlist, disabled
-model fetching/default plugins/LSP downloads/update checks and no inherited
-credential environment. The fixture allows only its calculator read/edit and
-`python3 checks.py`; all other permissions remain `ask`. A 35-second child
-watchdog kills its process group on timeout; the server has a request ceiling.
-The independent check verifies correct addition and unchanged `checks.py` hash.
+Native tests disable model refresh, default plugins, LSP downloads, project config
+and updates, omit inherited credentials and use a closed external proxy with
+loopback bypass. A 35-second child watchdog kills process groups on timeout; the
+scripted server has a request ceiling. Only calculator read/edit and
+`python3 checks.py` are allowed; other tools remain ask.
 
-OpenCode acceptance module with native checks enabled: **15 passed, zero skipped**
-(10 local cases and 5 native cases), including same-session continuation/export.
-The standalone container/helper regression module: **15 passed**, including the
-legacy/all-harness template regression.
-Full-suite Terraform validation and **105 mocked plans passed**; setup recorded
-**226 passes and 5 intentional native skips** (231 total), and **20 doctor tests
-passed**. The native cases also passed separately as recorded above. **861 controller/helper tests passed**, with runtime shell/Python syntax and
-runner source-status idempotence checks also passing. The final full runner
-exited 0 and removed its temporary worktree. GitHub Actions results are attached
-to the published PR head; the PR report records that head and run URL. Earlier failed fixture
-attempts and long-path provider startup failures are retained separately in
-ignored task logs and are not counted as passes.
+Revised OpenCode module: **23 passed, zero skipped** (15 offline, 8 native),
+rerun after final model-field rejection was added. This includes the default high
+transcript contract for all three routes, every offered native effort, HF auth
+source matching and missing-auth failure before inference. Fixtures follow the
+[pinned native auth schema](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/opencode/src/auth/index.ts).
 
-## Cleanup, deployment limits and website handoff
+The full local runner passed **109 mocked Terraform tests**, **231 setup tests
+with 8 intentional native skips**, **20 doctor tests**, runtime syntax and Git
+status idempotence. Its 861 controller/helper cases found one file-dependency
+regression: the standalone renderer read the OpenCode launcher even when disabled,
+but a deferred legacy source bundle correctly omitted that optional file. The
+read is now conditional. The exact failing deferred-template case passed after
+repair, and the complete **15-test container/template-helper module passed**.
+The final strict model-field guard was separately covered by the final native
+rerun. The PR records broad exact-head CI results and distinguishes environment
+skips; the earlier generic-provider head's CI is historical evidence only.
+Failed attempts are retained in ignored task logs and are not counted as passes.
 
-No Terraform apply/destroy, cloud instance, paid resource, model bill, real persistent
-credential creation, real auth inspection, shared infrastructure change, merge
-or website publication occurred. Native test servers and homes are disposable.
-The verified binary and dependency/provider caches remain in task-owned disk
-storage for reproducibility; no credential or transcript is committed.
+## Cleanup, blocked live checks and website handoff
 
-For the separate morning website handoff: add `opencode` as an independent
-optional harness with Codex locked on; export `workspace_opencode_release` and
-`workspace_opencode_model`; require an explicit native `provider/model`; explain
-separate workspace authentication, first-seed preservation, Linux-only runtime,
-V1 pin and supervised-versus-unattended limits. Do not conflate this selector
-with Hugging Face/personal-agent model providers or claim live inference passed.
-This PR contains no Splash files. Shared integration touchpoints are
-`variables.tf`, the runtime/proof maps in `main.tf`, setup renderer and README;
-merge independent provider changes with their respective defaults intact.
+No apply/destroy, paid resource/inference, real credential creation/configuration,
+auth inspection, shared infrastructure change, merge or website publication.
+Native homes/servers are disposable; verified binary, caches and evidence remain
+in task-owned ignored disk storage. No real credential/transcript is committed.
+
+The Docker/boot/SSH blocker was checked on actual **pi-main** using host-level
+read-only probes, not inferred from the sandbox: Docker/Podman/containerd tools,
+packages, services and system/rootless sockets are absent; no remote Docker
+context is configured. Installing a runtime or changing infrastructure is outside
+the permitted existing capabilities. The workspace directory is on pi-main;
+no alternate executor was used. These checks are **blocked/not run**, not passed.
+
+Morning website handoff: add `opencode` as an independent optional harness with
+Codex locked on; require an independent three-choice model picker with the exact
+references above; export `workspace_opencode_release` and
+`workspace_opencode_model`; do not default/copy the personal-agent selection.
+Explain separate HF auth, preservation/repair, Linux V1 scope, supported reasoning
+variants, supervised versus unattended operation, and blocked live checks.
+No Splash files are changed. Shared merge touchpoints are `variables.tf`,
+`main.tf`, setup renderer/question groups, README and tfvars example; preserve the
+independent personal-agent schema/defaults from the sibling HF PR.

@@ -207,26 +207,7 @@ rm -f /etc/agent-stack-muse.env
 %{ if workspace_opencode_enabled }
 # Seed as the unprivileged user. Never replace user JSON/JSONC, auth or sessions.
 # Failure must leave SSH available for repair and the other harnesses usable.
-if ! runuser -u "$username" -- python3 - "$home_dir" '${workspace_opencode_model}' <<'OPENCODE_CONFIG'
-import json
-import os
-from pathlib import Path
-import sys
-config = {"$schema": "https://opencode.ai/config.json", "model": sys.argv[2],
-          "enabled_providers": [sys.argv[2].split("/", 1)[0]],
-          "autoupdate": False, "permission": {"*": "ask"}}
-directory = Path(sys.argv[1]) / ".config/opencode"
-directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-if not any((directory / name).exists() for name in ("opencode.json", "opencode.jsonc", "config.json")):
-    try:
-        fd = os.open(directory / "opencode.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(config, stream, indent=2)
-            stream.write("\n")
-OPENCODE_CONFIG
+if ! runuser -u "$username" -- python3 /usr/local/libexec/agent-stack-opencode.py --seed "$home_dir" '${workspace_opencode_model}'
 then
   echo "[workspace] WARNING: could not seed OpenCode config; configure ~/.config/opencode manually." >&2
 fi

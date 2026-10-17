@@ -85,7 +85,7 @@ variables {
 run "codex_only_has_no_opencode" {
   command = plan
   assert {
-    condition     = !strcontains(local.runtime_workspace_dockerfile, "ARG OPENCODE_RELEASE") && !strcontains(local.runtime_workspace_entrypoint, "OPENCODE_CONFIG")
+    condition     = !strcontains(local.runtime_workspace_dockerfile, "ARG OPENCODE_RELEASE") && !strcontains(local.runtime_workspace_entrypoint, "agent-stack-opencode.py --seed")
     error_message = "OpenCode must be entirely opt in."
   }
 }
@@ -96,14 +96,14 @@ run "opencode_independent_of_chief_model_and_optional_tools" {
     enabled_services         = ["workspace"]
     workspace_password       = "fixture-workspace-password"
     workspace_harnesses      = ["codex", "opencode"]
-    workspace_opencode_model = "openai/fixture-model"
+    workspace_opencode_model = "huggingface/moonshotai/Kimi-K3:baseten"
   }
   assert {
     condition     = strcontains(local.runtime_workspace_dockerfile, "ARG OPENCODE_RELEASE=1.19.3") && strcontains(local.runtime_workspace_dockerfile, "sha256sum -c -") && strcontains(local.runtime_workspace_dockerfile, "ARG CODEX_RELEASE") && !strcontains(local.runtime_workspace_dockerfile, "ARG CLAUDE_RELEASE") && !strcontains(local.runtime_workspace_dockerfile, "ARG MUSE_RELEASE")
     error_message = "Codex must remain mandatory and optional CLIs independent."
   }
   assert {
-    condition     = strcontains(local.runtime_workspace_entrypoint, "'openai/fixture-model'") && local.runtime_template_vars.workspace_opencode_model == local.proof_runtime_template_vars.workspace_opencode_model && local.proof_runtime_template_vars.workspace_opencode_enabled
+    condition     = strcontains(local.runtime_workspace_entrypoint, "'huggingface/moonshotai/Kimi-K3:baseten'") && local.runtime_template_vars.workspace_opencode_model == local.proof_runtime_template_vars.workspace_opencode_model && local.proof_runtime_template_vars.workspace_opencode_enabled
     error_message = "Model config and export/proof recipes must reflect OpenCode selection."
   }
   assert {
@@ -119,7 +119,7 @@ run "all_harnesses_coexist" {
     workspace_password       = "fixture-workspace-password"
     workspace_harnesses      = ["codex", "claude_code", "muse_code", "opencode"]
     workspace_claude_release = "2.1.301"
-    workspace_opencode_model = "anthropic/fixture-model"
+    workspace_opencode_model = "huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten"
     meta_api_key             = "muse-fixture-key"
   }
   assert {
@@ -142,7 +142,7 @@ run "requires_workspace_for_opencode" {
   command = plan
   variables {
     workspace_harnesses      = ["codex", "opencode"]
-    workspace_opencode_model = "openai/fixture-model"
+    workspace_opencode_model = "huggingface/moonshotai/Kimi-K3:baseten"
   }
   expect_failures = [var.workspace_harnesses]
 }
@@ -171,7 +171,39 @@ run "codex_mandatory_with_opencode" {
     enabled_services         = ["workspace"]
     workspace_password       = "fixture-workspace-password"
     workspace_harnesses      = ["opencode"]
-    workspace_opencode_model = "openai/fixture-model"
+    workspace_opencode_model = "huggingface/moonshotai/Kimi-K3:baseten"
   }
   expect_failures = [var.workspace_harnesses]
+}
+
+run "deepseek_exact_hosted_revision" {
+  command = plan
+  variables {
+    enabled_services         = ["workspace"]
+    workspace_password       = "fixture-workspace-password"
+    workspace_harnesses      = ["codex", "opencode"]
+    workspace_opencode_model = "huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten"
+  }
+  assert {
+    condition     = strcontains(local.runtime_workspace_entrypoint, "huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten")
+    error_message = "The exact hosted model revision and provider must survive rendering."
+  }
+}
+
+run "rejects_non_hf_model" {
+  command = plan
+  variables { workspace_opencode_model = "openai/gpt-4.1" }
+  expect_failures = [var.workspace_opencode_model]
+}
+
+run "rejects_automatic_hf_routing" {
+  command = plan
+  variables { workspace_opencode_model = "huggingface/moonshotai/Kimi-K3" }
+  expect_failures = [var.workspace_opencode_model]
+}
+
+run "rejects_unhosted_deepseek_revision" {
+  command = plan
+  variables { workspace_opencode_model = "huggingface/deepseek-ai/DeepSeek-V4.1-Flash-1017:baseten" }
+  expect_failures = [var.workspace_opencode_model]
 }

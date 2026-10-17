@@ -421,55 +421,76 @@ See the [acceptance catalog](docs/meta-integration-tests.md) and
 ## OpenCode workspace harness
 
 OpenCode is an independent optional coding tool; Codex remains installed and the
-chief-of-staff model stays unchanged. Select it alongside any other harnesses:
+personal-agent model selection stays unchanged. Enabling it requires an explicit
+Hugging Face model choice:
 
 ```hcl
 enabled_services           = ["openclaw", "workspace"]
 workspace_harnesses        = ["codex", "opencode"]
 workspace_opencode_release = "1.19.3"
-workspace_opencode_model   = "openai/<model-id>" # use an available OpenCode provider/model
+workspace_opencode_model   = "huggingface/moonshotai/Kimi-K3:baseten"
 ```
+
+| Choice | Exact `workspace_opencode_model` | Reasoning variants |
+| --- | --- | --- |
+| Kimi | `huggingface/moonshotai/Kimi-K3:baseten` | `low`, `high`, `max` |
+| Muse Spark Open | `huggingface/meta-models/Muse-Spark-Open-816B-A42B:baseten` | `low`, `medium`, `high`, `xhigh` |
+| DeepSeek Flash | `huggingface/deepseek-ai/DeepSeek-V4.1-Flash:baseten` | `high`, `max` |
+
+All three use the HF router with Baseten explicitly pinned, the public Hub ID,
+`reasoning_content` replay and a supported `high` default. DeepSeek's unhosted
+`-1017` revision is excluded. These are hosted route contracts, not interchangeable
+reasoning vocabularies: the DeepSeek model card's numeric effort is distinct from
+Baseten's documented string interface. No automatic provider routing or fallback
+is configured. Public catalog availability and offline serialization tests do not
+establish account access, live inference quality or current hosted behavior.
 
 AgentStack pins **OpenCode V1**, downloads the official Linux glibc release
 (ARM64 or x64 baseline), requires its release API SHA-256 digest, and verifies the
 binary version. Missing assets/digests, download failures and incompatible
-architectures fail the image build. V2 is a separate upstream contract; it is not
-selected by this option. No Node installation or mutable installer is needed.
+architectures fail the image build. V2 is a separate upstream contract. No Node
+installation or mutable installer is needed.
 
-Run `opencode --version` and `opencode` from a workspace shell or workspace SSH
-as the normal workspace user. First startup seeds `~/.config/opencode/opencode.json`
-with the explicit model, its provider allowlist, automatic updates disabled and
-all tool permissions set to `ask`. Existing `opencode.json`, `opencode.jsonc` or
-legacy `config.json` is preserved byte for byte; subsequent Terraform model
-changes do not overwrite it. Edit that user config when changing an existing
-installation. Project configuration, agents and inline environment overrides
-follow upstream precedence and can override these initial defaults. The command
-wrapper disables automatic updates in both interactive and SSH sessions.
+Run `opencode --version`, `opencode models huggingface` and `opencode` from a
+workspace shell or workspace SSH as the normal workspace user. Startup seeds
+`~/.config/opencode/opencode.json` with the explicit main/small model, the three
+reviewed HF routes, updates disabled and all tool permissions set to `ask`.
+Existing JSON, JSONC, legacy config, auth and sessions are preserved byte for byte;
+subsequent Terraform model changes do not replace operator config. Edit its
+`model` and `small_model` to another exact reference above when changing an
+existing installation.
 
-Authentication is separate: use an existing provider key in the workspace shell
-environment, or, when authorized, the upstream `opencode auth login` / TUI
-`/connect` flow. OpenCode's native login writes `~/.local/share/opencode/auth.json`.
-AgentStack does not copy Codex/Claude logins, forward personal-agent API keys, run
-a login or write OpenCode credentials. Provider IDs belong to OpenCode's catalog;
-check `opencode models <provider>` and configure custom provider endpoints in the
-user config. Model existence and account access require native/provider checks;
-setup validates the reference's syntax. The persisted workspace home retains
-config and sessions across rebuilds. Removing `opencode` from the selection omits
-its binary and seed step on rebuild while retaining user data.
+The launcher resolves native config precedence, rejects conflicting model,
+provider URL, agent/command or reasoning overrides, and applies the reviewed HF provider
+allowlist in memory. Persistent agent effort overrides must use the common `high`
+setting; choose other supported efforts through the model variant picker.
+Unsupported configurations stop with repair guidance while
+workspace SSH and other harnesses remain usable. Version/help remain available.
+The launcher disables updates and model catalog refresh. It is a configuration
+contract, not a security sandbox against the workspace owner or arbitrary plugins.
 
-For supervised use, launch the TUI and approve each requested tool operation.
-The native headless command is `opencode run --format json --model provider/model
-"<task>"`; `--session <id>` continues a session and `opencode export <id>` exports
-its evidence. In pinned V1, headless `ask` requests are automatically rejected.
-A zero process exit code can accompany a rejected tool: inspect JSON errors,
-`tool_use` status and the actual result. Use a bounded timeout and independently
-verify changed files/tests before calling a run successful. Genuine unattended
-coding requires separately reviewed scoped permissions and usable auth; this
-integration does not enable `--auto`, launch a server, install a delegation route
-or change Docker protections. Do not expose upstream `serve`/`web` without its
-own authentication and network review.
+Authentication is separate: when authorized, use an existing `HF_TOKEN` in the
+workspace shell or the native `opencode auth login` flow for Hugging Face.
+The managed launcher stops inference commands locally when HF auth is missing;
+model listing, config diagnostics and native auth login remain available. The token needs Inference Providers permission. Native login writes
+`~/.local/share/opencode/auth.json`. AgentStack does not provision tokens, forward
+personal-agent keys, copy Codex/Claude logins, or authenticate directly to Baseten.
+Persisted workspace home retains config and sessions across rebuilds. Removing
+`opencode` from the harness selection omits its binary and seed step on rebuild,
+retaining user data.
 
-Official contracts and a reproducible passed/failed/blocked matrix are in
+For supervised use, launch the TUI and approve requested tool operations. For
+headless use, `opencode run --format json "<task>"` uses the explicit configured
+model; `--variant <effort>` selects a supported variant for that model.
+`--session <id>` continues a session and `opencode export <id>` exports evidence.
+Pinned V1 automatically rejects headless `ask` requests, and a rejected tool can
+still produce exit 0. Inspect JSON errors, `tool_use` status and the actual files
+and tests under a bounded timeout. Unattended coding needs separately reviewed
+scoped permissions, auth and independent result verification. The managed launcher
+rejects `--auto`, remote attachment, servers and upgrades; this integration adds
+no delegation route or Docker security changes.
+
+Official sources, offline native evidence and blocked live checks are in
 [OpenCode acceptance and validation](docs/opencode-integration-validation.md).
 
 ## Legacy layout and provider migration

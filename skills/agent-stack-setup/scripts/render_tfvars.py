@@ -372,8 +372,8 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
     if not re.fullmatch(r"1\.[0-9]+\.[0-9]+", resolved["workspace_opencode_release"]):
         fail("workspace_opencode_release must be an exact V1 release such as 1.19.3")
     opencode_model = resolved["workspace_opencode_model"]
-    if opencode_model and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_./:-]{0,199}", opencode_model):
-        fail("workspace_opencode_model must be a provider/model reference without spaces or credentials")
+    if opencode_model and not re.fullmatch(r"huggingface/(moonshotai/Kimi-K3|meta-models/Muse-Spark-Open-816B-A42B|deepseek-ai/DeepSeek-V4[.]1-Flash):baseten", opencode_model):
+        fail("workspace_opencode_model must select a reviewed Hugging Face Hub ID pinned to :baseten (Kimi-K3, Muse Spark Open or DeepSeek-V4.1-Flash)")
     if "opencode" in harnesses and not opencode_model:
         fail("workspace_opencode_model is required when opencode is selected")
     if resolved["workspace_claude_enabled"] or "claude_code" in harnesses:
