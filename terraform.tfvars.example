@@ -290,3 +290,10 @@ tailscale_auth_key = "tskey-auth-..."
 # workspace_harnesses = ["codex", "claude_code", "muse_code"]
 # workspace_claude_release = "2.1.301"
 # workspace_muse_release = "1.4.10-R6427.1"
+
+# Hugging Face hosted personal-agent inference (optional; no coding harness change).
+# See docs/huggingface-integration.md for reviewed routes, account gates and tools.
+huggingface_api_key = "" # Existing permitted token only; never infer free usage.
+# model_providers_enabled = ["huggingface"]
+# default_model = "huggingface/openai/gpt-oss-20b:groq"
+# fallback_models = ["huggingface/openai/gpt-oss-120b:groq"]

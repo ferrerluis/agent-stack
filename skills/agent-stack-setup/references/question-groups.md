@@ -326,3 +326,13 @@ Advanced defaults:
 - Coding tools are a multi-selection: Codex checked and locked; Claude Code and Muse Code optional. Store choices in `workspace_harnesses`. Ask for an exact Claude release if selected; use the pinned Muse default unless overridden.
 - Keep model choices independent of installed coding tools. An installed optional CLI does not configure chief-of-staff delegation.
 - For existing configs, explain `auto`/`preserve` behavior and select `manage` only when updating their model settings is requested.
+
+## Hugging Face personal-agent option
+
+Offer `huggingface` as an optional personal-agent provider. Use only
+`huggingface/openai/gpt-oss-20b:groq` and `huggingface/openai/gpt-oss-120b:groq`
+for primary/fallback selections. Preserve the inner Hub organization and backend
+suffix. Collect an existing `huggingface_api_key` with Inference Providers
+permission only after HF is selected; do not create/import credentials or assume
+free inference. Explain account credits/access gating and sequential-only tools.
+See `docs/huggingface-integration.md`. This choice does not select a coding harness.
