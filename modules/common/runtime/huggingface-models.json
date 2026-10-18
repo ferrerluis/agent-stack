@@ -1,0 +1,104 @@
+[
+  {
+    "id": "moonshotai/Kimi-K3:baseten",
+    "name": "Kimi (HF / Baseten)",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    },
+    "contextWindow": 1048576,
+    "maxTokens": 8192,
+    "compat": {
+      "supportsReasoningEffort": true,
+      "supportedReasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "maxTokensField": "max_tokens",
+      "supportsTools": true,
+      "supportsStrictMode": false,
+      "requiresReasoningContentOnAssistantMessages": true
+    },
+    "thinkingLevelMap": {
+      "off": null,
+      "minimal": null,
+      "medium": null,
+      "xhigh": null
+    }
+  },
+  {
+    "id": "meta-models/Muse-Spark-Open-816B-A42B:baseten",
+    "name": "Muse Spark Open (HF / Baseten)",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 1.25,
+      "output": 4.25,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    },
+    "contextWindow": 1048576,
+    "maxTokens": 8192,
+    "compat": {
+      "supportsReasoningEffort": true,
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "maxTokensField": "max_tokens",
+      "supportsTools": true,
+      "supportsStrictMode": false,
+      "requiresReasoningContentOnAssistantMessages": true
+    },
+    "thinkingLevelMap": {
+      "off": null,
+      "minimal": null,
+      "max": null
+    }
+  },
+  {
+    "id": "deepseek-ai/DeepSeek-V4.1-Flash:baseten",
+    "name": "DeepSeek Flash (HF / Baseten)",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.3,
+      "output": 1.2,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    },
+    "contextWindow": 1048576,
+    "maxTokens": 8192,
+    "compat": {
+      "supportsReasoningEffort": true,
+      "supportedReasoningEfforts": [
+        "high",
+        "max"
+      ],
+      "maxTokensField": "max_tokens",
+      "supportsTools": true,
+      "supportsStrictMode": false,
+      "requiresReasoningContentOnAssistantMessages": true
+    },
+    "thinkingLevelMap": {
+      "off": null,
+      "minimal": null,
+      "low": null,
+      "medium": null,
+      "xhigh": null
+    }
+  }
+]

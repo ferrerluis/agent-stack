@@ -41,9 +41,9 @@ def install_command_link(data_dir):
 
 def model_route(reference, fallback=False):
     provider, separator, model = reference.partition("/")
-    if not separator or not model or provider not in ("anthropic", "openai", "google", "groq", "meta"):
-        raise ValueError("Hermes needs an anthropic/openai/google/groq/meta provider-prefixed model")
-    route = {"provider": {"google": "gemini", "openai": "custom", "meta": "meta-ai"}.get(provider, provider),
+    if not separator or not model or provider not in ("anthropic", "openai", "google", "groq", "meta", "huggingface"):
+        raise ValueError("Hermes needs an anthropic/openai/google/groq/meta/huggingface provider-prefixed model")
+    route = {"provider": {"google": "gemini", "openai": "custom", "meta": "meta-ai", "huggingface": "custom:agentstack-huggingface"}.get(provider, provider),
              "model" if fallback else "default": model}
     if provider == "openai":
         route["base_url"] = "https://api.openai.com/v1"
@@ -85,6 +85,17 @@ def seed_config(data_dir, seed, mode="auto"):
     if fallbacks is not None:
         config["fallback_providers"] = fallbacks
         config.pop("fallback_model", None)
+    if any(route.get("provider") == "custom:agentstack-huggingface" for route in [model_config, *(fallbacks or [])]):
+        # Named provider configuration pins auth and per-provider request options.
+        # No token is written to YAML or shared OpenAI credential slots.
+        providers = config.setdefault("providers", {})
+        if not isinstance(providers, dict):
+            raise ValueError("Hermes providers must be an object")
+        providers["agentstack-huggingface"] = {
+            "base_url": "https://router.huggingface.co/v1",
+            "api_mode": "chat_completions", "key_env": "HF_TOKEN",
+            "extra_body": {"parallel_tool_calls": False, "reasoning_effort": "high"},
+        }
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".config-", delete=False) as file:
         temporary = Path(file.name)
