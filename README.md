@@ -731,3 +731,10 @@ terraform destroy
 ```
 
 > **Note**: New EBS, DigitalOcean, and Hetzner volumes created by this repo are intentionally *not* set to `prevent_destroy`, so `terraform destroy` will delete them. If you want to keep your data, take a snapshot before destroying, or set `aws_existing_volume_id`, `do_existing_volume_id`, or `hcloud_existing_volume_id` to detach the volume from Terraform management first.
+
+### Hugging Face personal-agent models
+
+OpenClaw and Hermes can use the hosted HF router with reviewed Kimi, Muse Spark
+Open and DeepSeek Flash routes through Baseten and an existing Inference Providers token. This does not
+change workspace coding harnesses. See [setup and supported contracts](docs/huggingface-integration.md)
+and [offline/live acceptance evidence](docs/huggingface-integration-validation.md).

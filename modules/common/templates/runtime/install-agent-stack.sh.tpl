@@ -720,6 +720,7 @@ AGENT_CHANNEL="${agent_channel}"
 MODEL_PROVIDERS_ENABLED_JSON='${model_providers_enabled_json}'
 OPENAI_AUTH_MODE='${openai_auth_mode}'
 DEFAULT_MODEL_REF='${default_model}'
+HUGGINGFACE_MODELS_JSON='${huggingface_models_json}'
 FALLBACK_MODELS_JSON='${fallback_models_json}'
 TELEGRAM_ALLOW_FROM_JSON='${telegram_allow_from_json}'
 STARTER_SOUL_PROFILE='${starter_soul_profile}'
@@ -876,6 +877,9 @@ model_route_has_credentials() {
     groq)
       has_env_key GROQ_API_KEY
       ;;
+    huggingface)
+      has_env_key HF_TOKEN
+      ;;
     meta)
       has_env_key MODEL_API_KEY
       ;;
@@ -1031,6 +1035,45 @@ build_meta_provider_catalog() {
     ' "$plugin_root"
 }
 
+configure_huggingface_provider() {
+  provider_selected "huggingface" || return 0
+  has_env_key HF_TOKEN || fail "Hugging Face selected but HF_TOKEN is missing; supply an existing token with Inference Providers permission"
+  local tmp_config
+  tmp_config="$(mktemp)"
+  if ! jq --argjson models "$HUGGINGFACE_MODELS_JSON" '
+      .models = (.models // {}) | .models.providers = (.models.providers // {}) |
+      .models.providers.huggingface = {
+        baseUrl: "https://router.huggingface.co/v1", api: "openai-completions",
+        apiKey: {source: "env", provider: "default", id: "HF_TOKEN"}, models: $models
+      } |
+      .agents = (.agents // {}) | .agents.defaults = (.agents.defaults // {}) |
+      .agents.defaults.models = (.agents.defaults.models // {}) |
+      ($models | map("huggingface/" + .id)) as $refs |
+      .agents.defaults.models |= with_entries(select(
+        (.key | startswith("huggingface/") | not) or (.key as $ref | $refs | index($ref)))) |
+      reduce $models[] as $model (.;
+        .agents.defaults.models["huggingface/" + $model.id].params.parallel_tool_calls = false |
+        .agents.defaults.models["huggingface/" + $model.id].params.thinking = "high")
+    ' "$OPENCLAW_CONFIG" >"$tmp_config"; then
+    rm -f "$tmp_config"
+    fail "Could not configure the reviewed Hugging Face chat/tool catalog"
+  fi
+  chmod 0600 "$tmp_config"
+  mv "$tmp_config" "$OPENCLAW_CONFIG"
+  chown 1000:1000 "$OPENCLAW_CONFIG" || true
+  mark_openclaw_restart_needed
+}
+
+verify_huggingface_model_config() {
+  # Read actual CLI-written config; success alone must not hide normalization,
+  # substitution, or an old primary/fallback list.
+  jq -e --arg primary "$DEFAULT_MODEL_REF" --argjson fallbacks "$FALLBACK_MODELS_JSON" '
+    (if ($primary | startswith("huggingface/")) then .agents.defaults.model.primary == $primary else true end) and
+    ((.agents.defaults.model.fallbacks // []) | map(select(startswith("huggingface/")))) ==
+      ($fallbacks | map(select(startswith("huggingface/"))))
+  ' "$OPENCLAW_CONFIG" >/dev/null || fail "Hugging Face model readback differs from the requested primary/fallbacks; check OpenClaw compatibility"
+}
+
 configure_meta_provider() {
   provider_selected "meta" || return 0
   has_env_key MODEL_API_KEY || fail "Meta provider selected but MODEL_API_KEY is missing"
@@ -1144,6 +1187,7 @@ configure_openclaw_channels_and_models() {
   fi
 
   configure_meta_provider
+  configure_huggingface_provider
   echo "[models] Configuring user-selected model defaults and fallbacks..."
   if wait_openclaw_healthy; then
     MODEL_CATALOG="$(run_openclaw_cli models list --all --plain 2>/dev/null || true)"
@@ -1163,36 +1207,39 @@ configure_openclaw_channels_and_models() {
             if run_openclaw_cli models fallbacks add "$fallback_model" >/tmp/openclaw-models-fallback-add.log 2>&1; then
               echo "[models] Added fallback: $fallback_model"
             else
-              if [ "$${fallback_model%%/*}" = "meta" ]; then
-                fail "Failed to configure selected Meta fallback model"
+              if [[ "$${fallback_model%%/*}" = "meta" || "$${fallback_model%%/*}" = "huggingface" ]]; then
+                fail "Failed to configure selected Meta/Hugging Face fallback model"
               fi
               echo "[models] WARNING: Failed to add fallback: $fallback_model"
               tail -n 5 /tmp/openclaw-models-fallback-add.log || true
             fi
           else
-            if [ "$${fallback_model%%/*}" = "meta" ]; then
-              fail "Selected Meta fallback model is unavailable"
+            if [[ "$${fallback_model%%/*}" = "meta" || "$${fallback_model%%/*}" = "huggingface" ]]; then
+              fail "Selected Meta/Hugging Face fallback model is unavailable"
             fi
           fi
         done < <(printf '%s' "$FALLBACK_MODELS_JSON" | jq -r '.[]')
         configure_openai_codex_runtime_routes || true
       else
-        if [ "$${DEFAULT_MODEL_REF%%/*}" = "meta" ]; then
-          fail "Failed to set selected Meta default model"
+        if [[ "$${DEFAULT_MODEL_REF%%/*}" = "meta" || "$${DEFAULT_MODEL_REF%%/*}" = "huggingface" ]]; then
+          fail "Failed to set selected Meta/Hugging Face default model"
         fi
         echo "[models] WARNING: Failed to set default model: $DEFAULT_MODEL_REF"
         tail -n 5 /tmp/openclaw-models-set.log || true
       fi
     else
-      if [ "$${DEFAULT_MODEL_REF%%/*}" = "meta" ]; then
-        fail "Selected Meta model is unavailable; check provider credentials and OpenClaw compatibility"
+      if [[ "$${DEFAULT_MODEL_REF%%/*}" = "meta" || "$${DEFAULT_MODEL_REF%%/*}" = "huggingface" ]]; then
+        fail "Selected Meta/Hugging Face model is unavailable; check credentials, reviewed route and OpenClaw compatibility"
       fi
     fi
   else
-    if provider_selected "meta"; then
-      fail "OpenClaw not ready; Meta model configuration did not complete"
+    if provider_selected "meta" || provider_selected "huggingface"; then
+      fail "OpenClaw not ready; Meta/Hugging Face model configuration did not complete"
     fi
     echo "[models] WARNING: OpenClaw not ready; skipped model configuration."
+  fi
+  if [[ "$DEFAULT_MODEL_REF $FALLBACK_MODELS_JSON" == *"huggingface/"* ]]; then
+    verify_huggingface_model_config
   fi
 }
 

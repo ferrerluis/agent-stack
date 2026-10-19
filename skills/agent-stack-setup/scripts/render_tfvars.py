@@ -379,6 +379,16 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
     if any(ch in resolved["meta_api_key"] for ch in "\r\n'"):
         fail("meta_api_key must be a single-line API key without quotes")
 
+    hf_token = resolved["huggingface_api_key"]
+    if hf_token and (not re.fullmatch(r"hf_[A-Za-z0-9]+", hf_token) or "..." in hf_token):
+        fail("huggingface_api_key must be an existing single-line hf_ token, not a placeholder")
+    if "huggingface" in resolved["model_providers_enabled"] and not hf_token:
+        fail("huggingface_api_key is required for Hugging Face; use an existing token with Inference Providers permission")
+    catalog = json.loads((Path(__file__).resolve().parents[3] / "modules/common/runtime/huggingface-models.json").read_text())
+    supported_hf = ["huggingface/" + model["id"] for model in catalog]
+    if any(ref.startswith("huggingface/") and ref not in supported_hf for ref in model_refs(resolved)):
+        fail("Use a reviewed Hugging Face route: " + ", ".join(supported_hf) + "; arbitrary Hub models are not validated for agent tools")
+
     workspace_services = resolved["enabled_services"]
     workspace_auto_update = resolved["workspace_codex_auto_update_enabled"]
     workspace_recovery = resolved["workspace_codex_auto_recover_interrupted_turns"]
