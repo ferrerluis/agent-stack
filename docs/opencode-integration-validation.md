@@ -1,6 +1,7 @@
 # OpenCode integration acceptance and validation
 
-Verified on 2026-10-17 UTC. Scope: optional **HF-only OpenCode coding harness**,
+Offline verification on 2026-10-17 UTC, with an authorized disposable DigitalOcean
+follow-up on 2026-10-19 documented below. Scope: optional **HF-only OpenCode coding harness**,
 independent of personal-agent selections, Codex, Claude Code and Muse Code.
 No Splash changes. Base: `main` at `e98070588c784706b95ee048ed96a7e3380b2668`.
 
@@ -18,7 +19,8 @@ No Splash changes. Base: `main` at `e98070588c784706b95ee048ed96a7e3380b2668`.
   JSON/JSONC precedence, provider/model allowlists and separate HF authentication.
   The [official provider catalog](https://github.com/anomalyco/models.dev/blob/dev/providers/huggingface/provider.toml)
   records `huggingface`, `HF_TOKEN`, `@ai-sdk/openai-compatible` and
-  `https://router.huggingface.co/v1`. No auth is provisioned or inspected here.
+  `https://router.huggingface.co/v1`. The initial offline phase provisioned no auth;
+  the later bounded hosted check is described separately below.
 - [HF chat API](https://huggingface.co/docs/inference-providers/tasks/chat-completion)
   and [function calling](https://huggingface.co/docs/inference-providers/guides/function-calling):
   OpenAI-compatible chat requests, streaming tools and provider-dependent effort.
@@ -101,14 +103,14 @@ actual hosted inference**.
 | OC03.2 Existing data | JSON/JSONC/legacy/auth/session bytes survive repeat seed/Terraform model change | Production preservation tests: pass |
 | OC03.3 Repair path | Seed error warns, SSH startup remains reachable | Failure fixture/entrypoint contract: pass |
 | OC04.1 Workspace command | Wrapper quotes arguments, disables updates, propagates failure; native readback only lists three HF models | Executed wrapper + native managed launcher: pass |
-| OC04.2 Container SSH/restart/rebuild | Real image launch, SSH PATH, config/session hashes retained | Blocked, not run: no existing container runtime on pi-main |
-| OC04.3 Disable after enable | Render omits executable/seed, persistent user data retained | Default-off render: pass; real rebuild blocked as OC04.2 |
+| OC04.2 Container SSH/restart/rebuild | Real image launch, SSH PATH, persistent configuration retained | Disposable x64 image, pinned workspace SSH and shared restart: pass below; disable/rebuild remains untested |
+| OC04.3 Disable after enable | Render omits executable/seed, persistent user data retained | Default-off render: pass; disable/rebuild on a real image remains untested |
 | OC05.1 HF serialization | Each exact model ID/provider suffix and high default on wire; all offered variant values serialized | Real native OpenCode + scripted loopback SSE: pass |
 | OC05.2 Reasoning/tool history | Assistant reasoning/text, tool IDs/arguments/results retained through read/write/bash and same-session follow-up | Real native transcript capture for all3: pass |
 | OC05.3 File repair/evidence | Calculator repaired; immutable independent tests/hash, session export/continuation | Native tools + independent verifier: pass |
 | OC05.4 Approval semantics | Headless ask rejects without hanging or modification | Native tool error/unchanged file: pass; exit0 alone is insufficient |
 | OC05.5 Safe failures | Missing HF auth, unknown model, invalid config/endpoint, disabled/incompatible effort, agent/command overrides reject without fallback/config leak | Native + production launcher rejection tests: pass |
-| OC05.6 Live hosted operation | Account eligibility, HF-to-Baseten forwarding, real reasoning/tools/task quality, supervised/unattended use | Blocked, not run: credentials and paid inference unauthorized |
+| OC05.6 Live hosted operation | Account eligibility, HF-to-Baseten forwarding, real reasoning/tools/task quality, supervised/unattended use | Partial DeepSeek response/read; second request HTTP403. No complete hosted session passed; remaining calls stopped |
 | OC06.1 Regressions | Terraform/setup/doctor/controller/syntax checks | 109 mocked plans; 231 setup passes + 8 native skips; 20 doctor passes; controller/renderer repair evidence below. Exact-head CI on PR |
 | OC06.2 Cleanup | No test resources/credentials left, runner Git status unchanged | Pass: runner removed test copies; native homes/servers cleaned; caches/evidence retained |
 
@@ -151,19 +153,78 @@ rerun. The PR records broad exact-head CI results and distinguishes environment
 skips; the earlier generic-provider head's CI is historical evidence only.
 Failed attempts are retained in ignored task logs and are not counted as passes.
 
-## Cleanup, blocked live checks and website handoff
+## Disposable deployed follow-up, 2026-10-19
 
-No apply/destroy, paid resource/inference, real credential creation/configuration,
-auth inspection, shared infrastructure change, merge or website publication.
-Native homes/servers are disposable; verified binary, caches and evidence remain
-in task-owned ignored disk storage. No real credential/transcript is committed.
+The user subsequently authorized one bounded DigitalOcean-only combined test of
+the two independent draft PRs. The tested code heads were OpenCode
+`fbe3d3af55e1e0af900d285e997d6d09a4c04180` and personal-agent HF
+`817eca6d257a546a2ba2a007ef14e060bdfe3001`, composed locally at
+`766a6375a02ac73c208451513c6338960742ccd1`. No PR or main branch was merged.
+The final documentation update changes no runtime code.
+
+| Deployed acceptance | Result and boundary |
+| --- | --- |
+| Fresh Linux x64 installation | Managed image installed OpenCode **1.19.3** and mandatory Codex **0.145.0**; actual user config was mode600 and repeat seeding preserved its bytes |
+| Workspace shell | Pinned admin/workspace SSH hops, without agent forwarding, reached UID1000 and launched `/usr/local/bin/opencode --version` and Codex before and after restart |
+| Independent selections | Coding main/small model stayed exact DeepSeek `:baseten`; personal defaults stayed exact Kimi `:baseten`, empty fallbacks. Default OpenCode permission remained `* = ask` |
+| Full native synthetic session | Production launcher and real binary completed read/write/final, then updated-input read/write/final in the same session. Independent nonce/sum/delta and immutable-file checks passed |
+| Synthetic wire/replay | Six admitted requests: **14,569 / 15,137 / 15,582 / 15,920 / 16,488 / 16,953 bytes**. Original HF URL and exact model ID retained; high, output4096, parallelfalse, streaming usage, and every prior reasoning carrier hash verified |
+| Deployed safe failures | Missing auth, invalid model/config and headless ask refusal passed without fallback. Native exit0 was never accepted as proof of successful tools |
+| Shared restart | All three managed containers restarted once; image IDs, checked managed/fixture config hashes and sentinels were preserved. Workspace SSH host identity and native commands still passed |
+| Teardown | Exact owned Droplet, data volume, firewall, non-default VPC, SSH registration and empty tag were deleted. Two independent API passes verified absence; matching-name inventories were empty and the unrelated regional default VPC remained intact |
+| Temporary access cleanup | Both new vendor tokens were revoked and rejected harmless identity/account checks with HTTP401. Local token/key/capability files, generated state/backups, raw plans and private logs were removed; the older unrelated token was untouched |
+
+The synthetic transport was explicit test instrumentation: a native final-HTTP
+plugin forwarded unchanged serialized bodies through container loopback, an owned
+Unix/SSH relay and a Pi-local budget gateway. It used fixture-only credentials
+and scripted SSE replies. The real HF token remained on Pi. These checks establish
+native installation, serialization, transcript and tool execution contracts;
+they do not establish hosted model semantics or quality. Earlier fixture failures
+were retained: a fresh workspace needed a Git root for native relative permission
+matching, and the narrow permission rules were corrected without granting shell
+or arbitrary path access.
+
+The separately authorized real DeepSeek check admitted **two** upstream requests.
+The first returned served ID `deepseek-ai/DeepSeek-V4.1-Flash`, numeric usage
+**3,470 prompt / 67 completion / 3,537 total tokens**, and a successful native
+file read. The following request retained the returned **29-byte** reasoning
+carrier (SHA-256
+`4771665d1616d80ed20420471a3f50ccc7c1aad685d094abe5b4f9b01bdb8aef`)
+with its tool history, but HF returned **HTTP403**. The upstream cause is unknown;
+the original error body was not retained. Local replay preservation was verified;
+remote acceptance of that replay remains unverified. The agreed stop rule disabled
+the paid
+gateway immediately; no blind resend, route change or other paid case followed.
+Both full request reservations remain accounted for, including the uncertain
+second request. **Zero of nine planned authenticated sessions completed**; Kimi,
+Muse and all personal-agent hosted sessions remain blocked by that stop rule.
+
+Supporting combined checks also completed native OpenClaw and Hermes synthetic
+two-turn file sessions. Hermes required an opt-in temporary `.pth` import because
+its official launcher replaces `PYTHONPATH`; the launcher, native source,
+isolation and frozen HTTP hook remained unchanged. Its native overwrite guard
+correctly refused an existing output on a resumed CLI process, despite CLI exit0;
+independent disk checks caught the failure. The final fresh fixture created a new
+output per revision after the operator retired only the hash-verified prior
+output. This does not prove cross-process overwrite or recovery from a denied
+write. The temporary preload was removed before the shared restart.
+
+## Cleanup, remaining live checks and website handoff
+
+The initial offline phase performed no apply/destroy, paid inference or credential
+setup. The later authorized disposable run is recorded above; no shared/live
+infrastructure, merge or website publication occurred.
+The owned remote homes, histories and servers were removed with the VM/data
+volume. Local verified binaries, caches and safe receipts remain in task-owned
+ignored disk storage. No real credential or reasoning transcript is committed.
 
 The Docker/boot/SSH blocker was checked on actual **pi-main** using host-level
 read-only probes, not inferred from the sandbox: Docker/Podman/containerd tools,
 packages, services and system/rootless sockets are absent; no remote Docker
-context is configured. Installing a runtime or changing infrastructure is outside
-the permitted existing capabilities. The workspace directory is on pi-main;
-no alternate executor was used. These checks are **blocked/not run**, not passed.
+context is configured. That initial limitation was later addressed by the
+explicitly authorized disposable DO machine, without installing a runtime on Pi.
+Disable/rebuild after enable, live fallback and complete authenticated hosted
+tool sessions remain untested. The HTTP403 cause remains unresolved.
 
 Morning website handoff: add `opencode` as an independent optional harness with
 Codex locked on; require an independent three-choice model picker with the exact
