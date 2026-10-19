@@ -62,6 +62,16 @@ class HuggingFaceSetupTest(unittest.TestCase):
                     result, _ = run_render(answers(**{field: [ref] if field == 'fallback_models' else ref}), expect_success=False)
                     self.assertIn('reviewed Hugging Face route', result.stderr)
 
+    def test_unreviewed_route_error_offers_current_catalog_without_retired_choices(self):
+        ref = 'huggingface/org/unreviewed:baseten'
+        for field in ('default_model', 'fallback_models', 'hermes_model'):
+            with self.subTest(field=field):
+                result, _ = run_render(answers(**{field: [ref] if field == 'fallback_models' else ref}), expect_success=False)
+                for reviewed_ref in REFS:
+                    self.assertIn(reviewed_ref, result.stderr)
+                self.assertNotIn('gpt-oss', result.stderr)
+                self.assertNotIn(':groq', result.stderr)
+
     def test_unused_hermes_override_does_not_activate_hf(self):
         for overrides in (dict(enabled_services=['openclaw']), dict(hermes_config_mode='preserve')):
             _, rendered = run_render(answers(model_providers_enabled=['google'], gemini_api_key='fixture',
