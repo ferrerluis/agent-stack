@@ -392,9 +392,9 @@ def build_values(specs: list[VariableSpec], answers: dict[str, Any]) -> dict[str
     if "huggingface" in resolved["model_providers_enabled"] and not hf_token:
         fail("huggingface_api_key is required for Hugging Face; use an existing token with Inference Providers permission")
     catalog = json.loads((Path(__file__).resolve().parents[3] / "modules/common/runtime/huggingface-models.json").read_text())
-    supported_hf = {"huggingface/" + model["id"] for model in catalog}
+    supported_hf = ["huggingface/" + model["id"] for model in catalog]
     if any(ref.startswith("huggingface/") and ref not in supported_hf for ref in model_refs(resolved)):
-        fail("Use a reviewed Hugging Face route: huggingface/openai/gpt-oss-20b:groq or huggingface/openai/gpt-oss-120b:groq; arbitrary Hub models are not validated for agent tools")
+        fail("Use a reviewed Hugging Face route: " + ", ".join(supported_hf) + "; arbitrary Hub models are not validated for agent tools")
 
     workspace_services = resolved["enabled_services"]
     workspace_auto_update = resolved["workspace_codex_auto_update_enabled"]
