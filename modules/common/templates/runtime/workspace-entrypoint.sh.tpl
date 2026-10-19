@@ -204,6 +204,15 @@ rm -f /etc/agent-stack-muse.env
 %{ endif }
 
 
+%{ if workspace_opencode_enabled }
+# Seed as the unprivileged user. Never replace user JSON/JSONC, auth or sessions.
+# Failure must leave SSH available for repair and the other harnesses usable.
+if ! runuser -u "$username" -- python3 /usr/local/libexec/agent-stack-opencode.py --seed "$home_dir" '${workspace_opencode_model}'
+then
+  echo "[workspace] WARNING: could not seed OpenCode config; configure ~/.config/opencode manually." >&2
+fi
+%{ endif }
+
 if [ "$${WORKSPACE_CODEX_AUTO_UPDATE_ENABLED:-false}" = "true" ]; then
   if ! /usr/local/libexec/agent-stack-workspace-codex-update --initialize "$username"; then
     echo "[workspace] WARNING: could not initialize the user-scoped Codex fallback; starting SSH without blocking access." >&2
