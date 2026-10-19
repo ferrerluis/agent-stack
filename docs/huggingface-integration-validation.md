@@ -1,11 +1,13 @@
 # Hugging Face integration acceptance and evidence
 
 Catalog **version 2** replaces the rejected GPT-OSS offerings with Luis's confirmed
-Kimi K3, Muse Spark Open and DeepSeek V4.1 Flash shortlist. Base remains current
-main `e9807058`; this is the same draft [PR #6](https://github.com/ferrerluis/agent-stack/pull/6).
+Kimi K3, Muse Spark Open and DeepSeek V4.1 Flash shortlist. The base is main
+`e9807058`; this is the same draft [PR #6](https://github.com/ferrerluis/agent-stack/pull/6).
 Old route-specific passes are historical, not evidence for the replacement models.
 
-The product catalog has **4 cases / 19 sub-tests: 13 passed offline, 6 blocked**.
+The product catalog has **4 cases / 19 sub-tests: 14 passed offline or with native
+synthetic responses, 5 blocked on hosted verification**. The deployed evidence
+below was collected on 2026-10-19; it does not establish hosted model capability.
 Regression CI/review are separate workflow checks below; their exact-head status
 is recorded on the PR so publishing results does not change the tested commit.
 The methodology follows `meta-integration-validation.md`: explicit acceptance,
@@ -16,7 +18,7 @@ honest boundaries and cleanup. The old Muse budget grants no spending permission
 
 | Case | Sub-test | Evidence | Status |
 | --- | --- | --- | --- |
-| HF01 Setup | .1 Fresh exports for each of three exact routes | Nested organization/ID and Baseten suffix retained; coding harness defaults independent | Passed: setup fixture |
+| HF01 Setup | .1 Fresh exports for each of three exact routes | Nested organization/ID and Baseten suffix retained; all nine coding/personal selection combinations exported independently | Passed: setup fixtures; deployed distinct selections retained after restart |
 | HF01 Setup | .2 Missing/placeholder/unsafe credentials | Named-field failure without token echo | Passed: setup fixture |
 | HF01 Setup | .3 Primary/fallback/Hermes override gating | Provider and existing token required; unused overrides ignored | Passed: setup and mocked plans |
 | HF01 Setup | .4 Removed/unhosted/automatic routes | Reject GPT-OSS, arbitrary IDs, unpinned policies and DeepSeek -1017 | Passed: setup and mocked plans |
@@ -24,17 +26,17 @@ honest boundaries and cleanup. The old Muse budget grants no spending permission
 | HF02 Config | .2 Hermes nested IDs and fallback order | Exact routes and scoped HF provider/auth slot | Passed: config helper and native named-provider resolver |
 | HF02 Config | .3 Managed updates and preservation | Retain unrelated settings; prune stale HF picker entries; auto/preserve bytes unchanged | Passed: real helpers |
 | HF02 Config | .4 Distinct effort and sequential policy | Supported labels only; managed high; parallel=false; off unavailable | Passed: contract assertions and native selector/wire probe |
-| HF03 Offline runtime boundaries | .1 Credential presence fails closed | HF_TOKEN slot checked; absent key rejected | Passed: executable shell fixture; real credentials absent |
+| HF03 Offline runtime boundaries | .1 Credential presence fails closed | HF_TOKEN slot checked; absent key rejected | Passed: executable credential-free shell fixture |
 | HF03 Offline runtime boundaries | .2 Exact configured-model readback | Reject suffix loss, substitution or HF fallback drift | Passed: shell regression and native OpenClaw CLI |
 | HF03 Offline runtime boundaries | .3 OpenClaw parser/selector/replay | Enabled efforts and legacy-off clamp, 1/2 tool calls, matched results and follow-up | Passed: 42 native mocked-SSE cases, 126 in-memory requests |
 | HF03 Offline runtime boundaries | .4 Hermes resolver/history/SDK body | Reasoning, content and tool fields survive normalization/history/JSON replay and SDK merge | Passed: 6 native cases, 18 mocked HTTP requests |
 | HF03 Offline runtime boundaries | .5 OpenClaw startup/stop/restart | Fresh config acceptance, readiness, exact routes, hashes, clean exit and listener release | Passed: two isolated foreground cycles with the replacement catalog |
-| HF04 Native/live completion | .1 Full Hermes startup/restart | Fresh native service/agent session with persistence | Blocked: full agent/service environment not provisioned; repository Docker runtime unavailable; transport modules are tested separately |
-| HF04 Native/live completion | .2 Account authorization | Existing HF token scope, credits, model/provider terms and access | Blocked: HF_TOKEN/HUGGINGFACE_HUB_TOKEN absent; no credential setup or spending authorized |
-| HF04 Native/live completion | .3 OpenClaw response identity | Real responses for all three, configured/requested/served IDs and provider, fallbacks empty | Blocked: authenticated paid inference prohibited |
-| HF04 Native/live completion | .4 Hermes response identity | Same through real Hermes turns | Blocked: authenticated paid inference prohibited |
-| HF04 Native/live completion | .5 Fresh-file tools and follow-up | Random nonce/numbers, actual tool trace, independent sum/hash and same-session follow-up per route/agent | Blocked: paid inference prohibited |
-| HF04 Native/live completion | .6 Hosted parallel behavior | Real provider request captures and tool results with bounded execution | Blocked: paid inference prohibited; managed configuration requests sequential calls |
+| HF04 Native/live completion | .1 Full Hermes startup/restart | Deployed managed service, two native CLI turns in one session, persistent config/sentinel checks across shared restart | Passed: synthetic gateway, native tools and independent file verification; no personal paid calls |
+| HF04 Native/live completion | .2 Account authorization | Authorization for every selected model/provider pair | Blocked: temporary account access existed, but a sibling coding tool follow-up returned HTTP403 and stopped the shared paid experiment; personal model access remains unverified |
+| HF04 Native/live completion | .3 OpenClaw response identity | Real responses for all three, configured/requested/served IDs and provider, fallbacks empty | Blocked: zero OpenClaw paid calls; synthetic transport evidence below cannot establish served identity |
+| HF04 Native/live completion | .4 Hermes response identity | Same through real Hermes turns | Blocked: zero Hermes paid calls; synthetic transport evidence below cannot establish served identity |
+| HF04 Native/live completion | .5 Fresh-file tools and follow-up | Random nonce/numbers, actual tool trace, independent sum/hash and same-session follow-up per route/agent | Blocked for hosted execution; both native agents passed a deployed synthetic two-turn case, with the Hermes creation-only caveat below |
+| HF04 Native/live completion | .6 Hosted parallel behavior | Real provider request captures and tool results with bounded execution | Blocked: paid execution stopped; managed configuration requests sequential calls |
 
 Tests may have multiple subcases; 42/6 fixture cases are not added to the 19
 acceptance rows. Synthetic responses prove transport behavior, not model capability,
@@ -116,6 +118,93 @@ No agent turn/inference, channel message or persistent service was started.
 The namespace exited and discarded its state; temporary mount directories were removed.
 Task evidence, including hashes, is under `.tmp/huggingface/shortlist/`.
 
+## Deployed native synthetic verification, 2026-10-19
+
+An approved disposable deployment composed the HF product code at `817eca6d` with
+the independent OpenCode PR, yielding local composition
+`766a6375a02ac73c208451513c6338960742ccd1`. This evidence update changes only this
+document; it does not change the product code tested in that composition.
+
+The official pinned OpenClaw image ran **2026.10.4**, Node **24.21.0** and Undici
+**8.11.2**. The official pinned Hermes image had an unknown source commit;
+installed public source hashes identified its direct CLI dispatch, rather than
+assuming the earlier cached source's gateway RPC behavior. Its runtime was Python
+**3.14.7**, OpenAI **2.24.0**, httpx **0.28.1** and httpcore **1.0.9**. Its normal
+managed service remained separate from the actual CLI model worker.
+
+Both agents executed their full native CLI loops against synthetic responses.
+Temporary final-HTTP instrumentation preserved the official
+`https://router.huggingface.co/v1` classification and native serialized request
+bytes, forwarding only the exact chat-completions endpoint to a bounded loopback
+gateway. The remote runtimes held synthetic capabilities, with the real HF token
+confined to the coordinator's gateway. The frozen hooks did not replace the SDK,
+SSE parser, reasoning replay, native tool loop or security checks. Requests required
+high effort, an explicit output cap at most 4,096, sequential tool calls, usage
+reporting and a serialized body at most 32KiB. Synthetic ledger accounting is
+separate from real provider charges.
+
+| Deployed check | Observed result | Limit |
+| --- | --- | --- |
+| OpenClaw native session | Two turns in the exact same session; native read/write each turn; independent nonce/sum/delta and input/context/config hashes verified; official trajectory export checked and raw export removed | One synthetic route case; no hosted response or all-model capability claim |
+| OpenClaw final HTTP | Six synthetic requests: 11,100 / 11,505 / 12,022 / 12,679 / 13,088 / 13,624 bytes; every prior reasoning carrier replayed | Short authored fixture context; no real high-effort response-size claim |
+| Hermes native session | Two turns in the exact same session; four native read_file/write_file results, zero payload errors or stale-write blocks; independent nonce/sum/delta and immutable hashes verified | New output creation each revision, as explained below |
+| Hermes final HTTP | Six synthetic requests: 19,094 / 19,694 / 20,435 / 20,928 / 21,532 / 22,292 bytes; every prior reasoning carrier replayed | No real hosted response; full native loop evidence is distinct from earlier parser controls |
+| Independent selections | All nine coding/personal setup combinations exported; deployed coding DeepSeek and personal Kimi selections remained distinct, with empty personal fallbacks | Configuration/readback evidence, not model execution for each combination |
+| Shared restart | All three managed containers restarted with images and config/sentinel hashes preserved; workspace SSH host identity matched before/after; distinct selections survived | No paid model turn after restart; Hermes image defines no container health check |
+
+Hermes's official launcher resets PYTHONPATH before starting Python with `-P`.
+The first direct-controller attempt therefore missed the external sitecustomize
+preload. An exclusive temporary `.pth` imported the exact frozen final-HTTP hook
+from a verified source file through the launcher's normal site processing. An
+import-only official-launcher check preserved safe-path mode and hook identities;
+the later full native turns established transport coverage beyond that check.
+The temporary `.pth` was removed before the shared restart. No native source,
+import-path security policy, SSL verification, SSRF checks or overwrite guard was
+relaxed.
+
+The first Hermes turn created and independently verified an output file. A fresh
+CLI invocation resuming that session does not inherit the previous process's
+in-memory full-file write baseline. The initial follow-up correctly refused to
+overwrite the existing output. For the final fresh case, the operator verified
+the prior output's regular-file status, ownership and recorded hash, recorded its
+retirement, then removed only that fixture output before the unchanged controller
+advanced the input. The resumed native agent created and verified a new output at
+the same filename. This proves session continuation and creation per revision; it
+does **not** prove cross-process overwrite success or recovery after a denied write.
+
+Retained coordinator receipts include `deployed-claw-synthetic-proof.json`,
+`deployed-hermes-synthetic-proof.json`, `shared-restart-receipt.json` and
+`restart-independent-selections.json`. The Hermes proof SHA256 is
+`db6da700d58a64158ea2bcaecef3a310de2e54235675b9c8202f76e92ebd78d0`.
+Only sanitized evidence is summarized here; credentials, resource identities,
+private filesystem locations and raw reasoning are excluded.
+
+## Hosted stop and cleanup
+
+The shared paid experiment stopped after its second upstream attempt returned
+**HTTP403** on a sibling coding tool follow-up. The first request had succeeded;
+the recorded usage cost was **$0.0011214**, and the ledger retained the full
+**$0.0301056** model reservation after the failure. The HTTP403 cause remains unknown;
+its raw vendor body was not retained, and no credential, balance, provider or
+reasoning diagnosis is asserted. The gateway disabled paid execution without a
+retry. **Zero paid OpenClaw calls, zero paid Hermes calls and zero of nine planned
+full paid sessions completed.** Neither synthetic ledger values nor the sibling's
+single successful request establish personal-agent hosted capability.
+
+Cleanup receipts verify the temporary `.pth` was removed before restart, the
+synthetic leases closed, and local gateway/tunnel/watchdog processes became
+inactive. Every owned cloud resource deletion returned HTTP204 and subsequent lookup
+returned HTTP404. An independent second inventory at **2026-10-19 04:24:44 UTC** found
+all six owned identities absent and zero matching resource names; the unrelated
+default VPC remained. Credential and local sensitive-file cleanup completed at
+**2026-10-19 04:28:13 UTC**. The temporary HF token's official revocation returned
+HTTP202, with an identity check changing from HTTP200 to HTTP401. The exact
+temporary cloud API token was deleted and its harmless account check returned
+HTTP401; the pre-existing token was untouched. Both temporary credential files,
+the test SSH key/capability, raw state and backups, plans, tfvars and private logs
+were removed without inspecting raw state. The private directory is empty;
+provider caches and sanitized evidence remain. No paid call followed the HTTP403 stop.
+
 ## Regression workflow and repeatable local checks
 
 ```sh
@@ -125,7 +214,7 @@ terraform fmt -check
 scripts/test-local.sh
 ```
 
-The revised focused suite passed **17 Python tests and 11 mocked Terraform plans**.
+The revised focused suite passed **18 Python tests and 11 mocked Terraform plans**.
 The plans cover exports and both removed GPT-OSS/unhosted DeepSeek rejection.
 The full credential-free GitHub workflow runs formatting, validation, all mocked
 plans, setup/doctor/controller tests, syntax and checkout idempotence. Record its
@@ -133,11 +222,11 @@ actual counts/skips, final run URL and SHA on the PR; compare local HEAD, pushed
 branch, PR head and successful run head. No new HF test may be called passed from
 a skip. Human review remains pending; do not merge, deploy or publish the website.
 
-Native probe dependencies/downloads are task-owned on disk. Only tiny namespace
-mount points are under `/tmp`; runtime state is volatile. No cloud apply, VM,
-inference server, paid call, persistent credential setup, shared deployment or
-Splash edit occurred. Preserve the isolated worktree for review, and remove only
-task-owned processes/workspaces. Live access remains blocked even with green CI.
+Native probe dependencies/downloads are task-owned on disk. The earlier local
+namespace tests used volatile runtime state; the later disposable deployment and
+its cleanup are reported separately above. Preserve the isolated worktree and
+sanitized evidence for review. This PR remains draft and unmerged; no website or
+Splash change was published. Hosted verification remains blocked even with green CI.
 
 ## Failed-attempt history and invalidation
 
@@ -160,6 +249,20 @@ task-owned processes/workspaces. Live access remains blocked even with green CI.
   task-only initialized data directory and an authorized mocked-plan execution
   passed all 11. A sandboxed namespace attempt was unavailable; the isolated native
   lifecycle test then ran in the authorized execution environment.
+- The deployed Hermes image differed from the cached gateway-backed source.
+  Installed source inspection established direct CLI dispatch; the earlier cached
+  gateway assumptions were not applied to that image.
+- Deployed Hermes attempt 1 failed before gateway admission because the official
+  launcher cleared the external preload path. Attempt 2 reached the gateway but
+  the synthetic reply generator misread Hermes's JSON/line-numbered read result.
+  Both failed records and launch markers were retained; a corrected fresh case
+  passed its first native turn.
+- Deployed Hermes attempt 3 resumed successfully at the CLI level but its native
+  overwrite guard refused the second write. The output retained the independently
+  verified first-turn hash. The verifier rejected the file mismatch despite exit 0;
+  it was never reported as a passed session. Attempt 4 used the explicit verified
+  fixture-output retirement described above and passed both turns. Attempts 1–3
+  remain failed evidence, not retries relabeled as success.
 
 Changes to IDs/providers, effort metadata, history serialization or credentials
 invalidate their dependent setup/runtime/live rows. New authenticated evidence must
