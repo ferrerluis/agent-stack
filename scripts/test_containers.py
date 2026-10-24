@@ -101,6 +101,7 @@ def render_workspace(directory, env, codex_release, claude_release, terraform="t
         if not isinstance(bundle.get(name), str) or not bundle[name]:
             raise CheckFailed("template_render_incomplete")
         (context / name).write_text(bundle[name])
+    shutil.copyfile(ROOT / "modules/common/runtime/codex_install.py", context / "codex-install.py")
     shutil.copyfile(ROOT / "modules/common/runtime/workspace_cli_task.py", context / "workspace-cli-task.py")
     (context / "para-memory-drive").mkdir()
     shutil.copyfile(ROOT / "skills/para-memory-drive/SKILL.md", context / "para-memory-drive/SKILL.md")

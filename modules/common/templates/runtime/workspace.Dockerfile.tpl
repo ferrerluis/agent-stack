@@ -40,9 +40,11 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/install-codex.sh \
-  && CODEX_NON_INTERACTIVE=1 CODEX_RELEASE="$CODEX_RELEASE" CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME=/opt/codex sh /tmp/install-codex.sh \
-  && rm -f /tmp/install-codex.sh
+# Prefer https://chatgpt.com/codex/install.sh; only404/410 permits the verified
+# official npm native bundle fallback. Both paths keep the standalone layout.
+COPY codex-install.py /usr/local/libexec/agent-stack-codex-install.py
+RUN CODEX_NON_INTERACTIVE=1 CODEX_RELEASE="$CODEX_RELEASE" CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME=/opt/codex \
+    python3 /usr/local/libexec/agent-stack-codex-install.py
 
 %{ if workspace_claude_enabled }
 # Copy the resolved binary out of root's private installation tree so UID 1000

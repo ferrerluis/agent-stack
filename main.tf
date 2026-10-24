@@ -595,6 +595,7 @@ locals {
   runtime_caddyfile_template         = templatefile("${path.module}/modules/common/templates/runtime/Caddyfile.template.tpl", local.runtime_template_vars)
   runtime_tailscale_bootstrap        = templatefile("${path.module}/modules/common/templates/runtime/tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
   runtime_host_tailscale             = templatefile("${path.module}/modules/common/templates/runtime/host-tailscale-bootstrap.sh.tpl", local.runtime_template_vars)
+  runtime_codex_installer            = file("${path.module}/modules/common/runtime/codex_install.py")
   runtime_workspace_dockerfile       = templatefile("${path.module}/modules/common/templates/runtime/workspace.Dockerfile.tpl", local.runtime_template_vars)
   runtime_workspace_entrypoint       = templatefile("${path.module}/modules/common/templates/runtime/workspace-entrypoint.sh.tpl", local.runtime_template_vars)
   runtime_workspace_drive_skill      = file("${path.module}/skills/para-memory-drive/SKILL.md")
@@ -641,6 +642,7 @@ locals {
     nonsensitive(local.runtime_caddyfile_template),
     nonsensitive(local.runtime_tailscale_bootstrap),
     nonsensitive(local.runtime_host_tailscale),
+    local.runtime_codex_installer,
     nonsensitive(local.runtime_workspace_dockerfile),
     nonsensitive(local.runtime_workspace_entrypoint),
     nonsensitive(local.runtime_workspace_drive_skill),
@@ -782,6 +784,11 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_host_tailscale
     destination = "${local.runtime_staging_dir}/host-tailscale-bootstrap.sh"
+  }
+
+  provisioner "file" {
+    content     = local.runtime_codex_installer
+    destination = "${local.runtime_staging_dir}/codex-install.py"
   }
 
   provisioner "file" {

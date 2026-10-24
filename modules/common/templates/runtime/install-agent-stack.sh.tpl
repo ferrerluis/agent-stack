@@ -41,6 +41,7 @@ require_file workspace.env
 require_file host-tailscale-bootstrap.sh
 require_file agent-stack-vpn
 require_file agent-stack-vpn-openvpn
+require_file codex-install.py
 require_file workspace.Dockerfile
 require_file workspace-entrypoint.sh
 require_file workspace-para-memory-drive-skill.md
@@ -249,11 +250,9 @@ install_host_codex_cli() {
   rm -rf /var/lib/apt/lists/*
 
   local codex_install_home="/opt/agent-stack/codex-cli"
-  local installer="/tmp/install-codex.sh"
   install -d -m 0755 "$codex_install_home"
-  curl -fsSL https://chatgpt.com/codex/install.sh -o "$installer"
-  CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME="$codex_install_home" sh "$installer"
-  rm -f "$installer"
+  CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME="$codex_install_home" \
+    python3 "$staging/codex-install.py"
 
   install -d -m 0700 -o "${admin_username}" -g "$admin_group" "$admin_home/.codex"
   codex --version
@@ -308,6 +307,10 @@ build_workspace_image() {
   rm -rf "$build_context"
   install -d -m 0700 "$build_context"
   install -m 0644 "$app/workspace.Dockerfile" "$build_context/Dockerfile"
+  # Older rollback Dockerfiles do not require the shared installer helper.
+  if [ -f "$app/codex-install.py" ] || grep -q '^COPY codex-install.py ' "$build_context/Dockerfile"; then
+    install -m 0644 "$app/codex-install.py" "$build_context/codex-install.py" || return 1
+  fi
   install -m 0755 "$app/workspace-entrypoint.sh" "$build_context/workspace-entrypoint.sh"
   install -d -m 0755 "$build_context/para-memory-drive"
   install -m 0644 "$app/workspace-para-memory-drive-skill.md" "$build_context/para-memory-drive/SKILL.md"
@@ -576,7 +579,7 @@ prefetch_runtime_images || fail "runtime image download failed before applying r
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"
-for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn codex-install.py workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
   [ -e "$app/$path" ] && cp -a "$app/$path" "$previous/" || true
 done
 backup_workspace_image
@@ -586,6 +589,7 @@ backup_workspace_image
 install -m 0644 "$staging/docker-compose.yml" "$app/docker-compose.yml"
 install -m 0600 "$staging/.env" "$app/.env"
 install -m 0600 "$staging/workspace.env" "$app/workspace.env"
+install -m 0644 "$staging/codex-install.py" "$app/codex-install.py"
 install -m 0644 "$staging/hermes_health.py" "$app/hermes_health.py"
 install -m 0644 "$staging/hermes_npm_patch.py" "$app/hermes_npm_patch.py"
 install -m 0644 "$staging/hermes_npm_patch.json" "$app/hermes_npm_patch.json"
@@ -671,7 +675,7 @@ if ! wait_agent_stack_initial_restart; then
       rm -f "$app/data/hermes/config.yaml"
     fi
   fi
-  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn codex-install.py workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
     rm -rf "$app/$path"
     if [ -e "$previous/$path" ]; then
       cp -a "$previous/$path" "$app/$path"
