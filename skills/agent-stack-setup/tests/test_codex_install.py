@@ -78,6 +78,40 @@ class CodexInstallTest(unittest.TestCase):
         with patch.object(codex,'download',side_effect=download),patch.object(codex.subprocess,'run',side_effect=run),patch.object(codex,'version_of',return_value='0.145.0'):
             codex.install(self.home,self.bin,'0.145.0')
         self.assertEqual(self.urls,[codex.INSTALLER])
+    def standalone_http200(self, release, installed_version, installer_error=None):
+        response=io.BytesIO(b'FABRICATED OFFICIAL INSTALLER - NEVER EXECUTED')
+        response.status=200
+        opener=SimpleNamespace(open=lambda request,timeout:response)
+        def run(argv,**kw):
+            self.assertEqual(argv[0],'sh')
+            self.assertEqual(kw['env']['CODEX_RELEASE'],'latest'if release=='stable'else release)
+            self.assertEqual(kw['env']['CODEX_HOME'],str(self.home))
+            self.assertEqual(kw['env']['CODEX_INSTALL_DIR'],str(self.bin))
+            self.assertEqual(kw['env']['CODEX_NON_INTERACTIVE'],'1')
+            self.assertTrue(kw['check']);self.assertEqual(kw['timeout'],300)
+            self.assertEqual(Path(argv[1]).read_bytes(),b'FABRICATED OFFICIAL INSTALLER - NEVER EXECUTED')
+            if installer_error:raise installer_error
+            return SimpleNamespace(returncode=0)
+        with patch.object(codex.urllib.request,'build_opener',return_value=opener)as fetch,patch.object(codex.subprocess,'run',side_effect=run)as execution,patch.object(codex,'version_of',return_value=installed_version)as readiness,patch.object(codex,'install_native',side_effect=AssertionError('HTTP200 must never fall back to npm')):
+            try:codex.install(self.home,self.bin,release)
+            finally:
+                self.assertEqual(fetch.call_count,1)
+                self.assertEqual(execution.call_count,1)
+        return readiness
+    def test_CI01_4_http200_stable_latest_and_pin(self):
+        for release in ('stable','latest','0.145.0'):
+            with self.subTest(release=release):
+                readiness=self.standalone_http200(release,'0.145.0')
+                self.assertEqual(readiness.call_count,2)
+                self.assertEqual(readiness.call_args_list[0].args,(self.home/'packages/standalone/current/bin/codex',self.home))
+                self.assertEqual(readiness.call_args_list[1].args,(self.bin/'codex',self.home))
+    def test_CI01_5_http200_retains_channel_and_pin_checks(self):
+        for release,version in (('stable','0.145.0-alpha.18'),('latest','0.145.0-beta.1'),('0.145.0','0.146.0')):
+            with self.subTest(release=release,version=version),self.assertRaises(ValueError):
+                self.standalone_http200(release,version)
+    def test_CI01_6_http200_installer_failure_never_npm(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.standalone_http200('stable','0.145.0',subprocess.CalledProcessError(1,['sh']))
     def test_CI01_2_missing_standalone_full_bundle(self):
         self.fallback();self.assert_layout();self.assertEqual(len(self.urls),4);self.assertIn(codex.REGISTRY+'latest',self.urls)
     def test_CI01_2_gone_standalone(self):

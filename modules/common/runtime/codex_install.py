@@ -238,7 +238,9 @@ def install(home: Path, bin_dir: Path, release: str) -> None:
             print("[codex] Standalone endpoint unavailable; verifying official npm native bundle.", flush=True)
             install_native(home, bin_dir, release, temporary)
             return
-        env = dict(os.environ, CODEX_NON_INTERACTIVE="1", CODEX_HOME=str(home), CODEX_INSTALL_DIR=str(bin_dir), CODEX_RELEASE=release)
+        # AgentStack calls the stable channel "stable"; the official script calls it "latest".
+        installer_release = "latest" if release == "stable" else release
+        env = dict(os.environ, CODEX_NON_INTERACTIVE="1", CODEX_HOME=str(home), CODEX_INSTALL_DIR=str(bin_dir), CODEX_RELEASE=installer_release)
         subprocess.run(["sh", str(script)], check=True, env=env, timeout=300)
         version = version_of(home / "packages/standalone/current/bin/codex", home)
         select_release(release, {"version": version})
