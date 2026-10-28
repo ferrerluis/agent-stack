@@ -193,6 +193,7 @@ shutil.copyfile(root/('release.json' if 'api.github.com' in ' '.join(sys.argv) e
             source = (RUNTIME / "workspace.Dockerfile.tpl").read_text().split("%{ if workspace_opencode_enabled }", 1)[1].split("%{ endif }", 1)[0]
             script = source[source.index("RUN set -eu;") + 4:].replace("\\\n", " ")
             script = script.replace("${workspace_opencode_launcher_base64}", base64.b64encode(LAUNCHER.read_bytes()).decode())
+            script = script.replace("${workspace_hf_tool_compat_base64}", base64.b64encode((LAUNCHER.parent / "workspace_hf_tool_compat.mjs").read_bytes()).decode())
             script = script.replace("/tmp/", str(root / "tmp") + "/").replace("/usr/local", str(root / "usr/local"))
             env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"], FIXTURE_ROOT=str(root),
                        OPENCODE_RELEASE="1.19.3", FIXTURE_FAILURE=failure or "")
@@ -563,6 +564,23 @@ class OpenCodeRoutingTest(unittest.TestCase):
         self.assertEqual(final["provider"]["huggingface"]["options"]["baseURL"], managed.ENDPOINT)
         self.assertEqual(final["permission"], config["permission"])
         self.assertEqual(env["OPENCODE_DISABLE_AUTOUPDATE"], "1")
+
+    def test_launch_preserves_native_plugins_and_adds_content_compatibility_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = Path(temporary) / "compat.mjs"
+            plugin.write_text("export const Plugin = async () => ({})")
+            reference = plugin.as_uri()
+            for plugins in (["file:///operator/plugin.mjs"], [reference]):
+                config = managed.initial_config(MUSE)
+                config["plugin"] = plugins
+                config["provider"]["huggingface"]["options"]["apiKey"] = "fixture-only"
+                before = json.dumps(config)
+                with patch.object(managed, "COMPAT_PLUGIN", plugin), patch.object(managed.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, before, "")), patch.object(managed.os, "execve") as execute:
+                    managed.launch(["run", "task"])
+                final = json.loads(execute.call_args.args[2]["OPENCODE_CONFIG_CONTENT"])
+                self.assertEqual(final["plugin"].count(reference), 1)
+                self.assertTrue(set(plugins).issubset(final["plugin"]))
+                self.assertEqual(json.dumps(config), before)
 
     def test_auth_presence_uses_only_native_hf_sources_and_preserves_fixture_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:

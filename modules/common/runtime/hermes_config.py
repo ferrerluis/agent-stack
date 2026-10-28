@@ -8,6 +8,56 @@ from pathlib import Path
 import tempfile
 
 CLI_TARGET = "/opt/hermes/.venv/bin/hermes"
+COMPAT_ID = "agentstack-hf-tool-content"
+
+
+def install_tool_compat(root, config):
+    """Install the managed native plugin without replacing operator plugins."""
+    root = Path(root)
+    files = {"__init__.py": Path(__file__).with_name("hermes_hf_tool_compat.py").read_text(),
+             "plugin.yaml": "name: agentstack-hf-tool-content\nversion: '0.1.0'\nprovides_hooks: [pre_api_request, pre_tool_call, on_session_end]\n"}
+    if root.is_symlink():
+        raise ValueError("refusing a symlinked plugin home")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with contextlib.ExitStack() as stack:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_fd = os.open(root, flags)
+        stack.callback(os.close, directory_fd)
+        if os.geteuid() == 0:
+            os.fchown(directory_fd, 10000, 10000)
+        for part in ("plugins", COMPAT_ID):
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            directory_fd = os.open(part, flags, dir_fd=directory_fd)
+            stack.callback(os.close, directory_fd)
+            if os.geteuid() == 0:
+                os.fchown(directory_fd, 10000, 10000)
+        for name, content in files.items():
+            temporary = f".{name}.{os.getpid()}.new"
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+            try:
+                with os.fdopen(fd, "w") as file:
+                    file.write(content)
+                    file.flush()
+                    os.fsync(file.fileno())
+                    if os.geteuid() == 0:
+                        os.fchown(file.fileno(), 10000, 10000)
+                os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    pass
+    plugins = config.setdefault("plugins", {})
+    if not isinstance(plugins, dict):
+        raise ValueError("plugins must be an object")
+    enabled = plugins.setdefault("enabled", [])
+    if not isinstance(enabled, list) or not all(isinstance(name, str) for name in enabled):
+        raise ValueError("enabled plugins must be a list of names")
+    if COMPAT_ID not in enabled:
+        enabled.append(COMPAT_ID)
 
 
 def install_command_link(data_dir):
@@ -96,6 +146,7 @@ def seed_config(data_dir, seed, mode="auto"):
             "api_mode": "chat_completions", "key_env": "HF_TOKEN",
             "extra_body": {"parallel_tool_calls": False, "reasoning_effort": "high"},
         }
+        install_tool_compat(root, config)
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=root, prefix=".config-", delete=False) as file:
         temporary = Path(file.name)

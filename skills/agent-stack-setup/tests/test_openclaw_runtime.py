@@ -165,6 +165,7 @@ class OpenClawInstallerTest(unittest.TestCase):
                 if existing:
                     (data / "openclaw.json").write_text(original)
                 (app / "openclaw_config.py").write_text(SCRIPT.read_text())
+                (app / "openclaw_hf_tool_compat.mjs").write_text((SCRIPT.parent / "openclaw_hf_tool_compat.mjs").read_text())
                 (app / "openclaw-seed.json").write_text(json.dumps({"gateway_bind": "lan", "gateway_token": "fixture"}))
                 script = seed + mode + '\nprintf "%s %s" "$OPENCLAW_CONFIG_MODE_EFFECTIVE" "$openclaw_seed_changed"\n'
                 values = {"openclaw_enabled": "true", "openclaw_config_mode": "auto"}

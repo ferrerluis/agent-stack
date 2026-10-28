@@ -546,6 +546,7 @@ locals {
     workspace_opencode_release                     = var.workspace_opencode_release
     workspace_opencode_model                       = var.workspace_opencode_model
     workspace_opencode_launcher_base64             = filebase64("${path.module}/modules/common/runtime/workspace_opencode.py")
+    workspace_hf_tool_compat_base64                = filebase64("${path.module}/modules/common/runtime/workspace_hf_tool_compat.mjs")
     workspace_muse_release                         = var.workspace_muse_release
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
@@ -583,6 +584,8 @@ locals {
   })
   runtime_openclaw_seed              = jsonencode({ gateway_bind = local.runtime_template_vars.openclaw_gateway_bind, gateway_token = local.resolved_gateway_token, trusted_loopback_proxies_enabled = var.openclaw_host_network_enabled })
   runtime_openclaw_config            = file("${path.module}/modules/common/runtime/openclaw_config.py")
+  runtime_hermes_tool_compat         = file("${path.module}/modules/common/runtime/hermes_hf_tool_compat.py")
+  runtime_openclaw_tool_compat       = file("${path.module}/modules/common/runtime/openclaw_hf_tool_compat.mjs")
   runtime_workspace_cli_task         = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
   runtime_workspace_sandbox          = file("${path.module}/modules/common/runtime/workspace_sandbox.py")
   runtime_workspace_sandbox_profiles = file("${path.module}/modules/common/runtime/workspace_sandbox_profiles.json")
@@ -630,11 +633,13 @@ locals {
     local.runtime_hermes_seed,
     nonsensitive(local.runtime_openclaw_seed),
     local.runtime_openclaw_config,
+    local.runtime_openclaw_tool_compat,
     local.runtime_workspace_cli_task,
     local.runtime_workspace_sandbox,
     local.runtime_workspace_sandbox_profiles,
     local.runtime_workspace_sandbox_license,
     local.runtime_hermes_config,
+    local.runtime_hermes_tool_compat,
     local.runtime_hermes_health,
     local.runtime_hermes_npm_patch,
     local.runtime_hermes_npm_patch_bundle,
@@ -736,6 +741,14 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_hermes_config
     destination = "${local.runtime_staging_dir}/hermes_config.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_hermes_tool_compat
+    destination = "${local.runtime_staging_dir}/hermes_hf_tool_compat.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_openclaw_tool_compat
+    destination = "${local.runtime_staging_dir}/openclaw_hf_tool_compat.mjs"
   }
   provisioner "file" {
     content     = local.runtime_hermes_health
@@ -1050,6 +1063,7 @@ locals {
     workspace_opencode_release                     = var.workspace_opencode_release
     workspace_opencode_model                       = var.workspace_opencode_model
     workspace_opencode_launcher_base64             = filebase64("${path.module}/modules/common/runtime/workspace_opencode.py")
+    workspace_hf_tool_compat_base64                = filebase64("${path.module}/modules/common/runtime/workspace_hf_tool_compat.mjs")
     workspace_muse_release                         = var.workspace_muse_release
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
