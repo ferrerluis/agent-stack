@@ -91,10 +91,32 @@ locals {
   resolved_n8n_postgres_ssl      = var.n8n_database_mode == "local_postgres" ? false : var.external_postgres_ssl_enabled
 }
 
+locals {
+  huggingface_models     = jsondecode(file("${path.module}/modules/common/runtime/huggingface-models.json"))
+  huggingface_model_refs = [for model in local.huggingface_models : "huggingface/${model.id}"]
+  huggingface_requested_refs = [
+    for ref in concat([var.default_model], var.fallback_models,
+      contains(var.enabled_services, "hermes") && var.hermes_config_mode != "preserve" && trimspace(var.hermes_model) != "" ? [trimspace(var.hermes_model)] : []
+    ) : ref if startswith(ref, "huggingface/")
+  ]
+}
+
 resource "terraform_data" "input_validation" {
   input = "agent-stack-input-validation"
 
   lifecycle {
+    precondition {
+      condition     = length(local.huggingface_requested_refs) == 0 || contains(var.model_providers_enabled, "huggingface")
+      error_message = "Hugging Face model references require huggingface in model_providers_enabled."
+    }
+    precondition {
+      condition     = !contains(var.model_providers_enabled, "huggingface") || trimspace(var.huggingface_api_key) != ""
+      error_message = "huggingface_api_key is required when Hugging Face is selected; supply an existing token with Inference Providers permission."
+    }
+    precondition {
+      condition     = alltrue([for ref in local.huggingface_requested_refs : contains(local.huggingface_model_refs, ref)])
+      error_message = "Use a reviewed Hugging Face route: ${join(", ", local.huggingface_model_refs)}. Arbitrary Hub models and automatic provider policies are not validated for agent tools."
+    }
     precondition {
       condition     = !anytrue([for ref in concat([var.default_model], var.fallback_models) : startswith(ref, "meta/")]) || contains(var.model_providers_enabled, "meta")
       error_message = "Meta model references require meta in model_providers_enabled."
@@ -461,6 +483,8 @@ locals {
     groq_api_key                                   = var.groq_api_key
     gemini_api_key                                 = var.gemini_api_key
     meta_api_key                                   = var.meta_api_key
+    huggingface_api_key                            = var.huggingface_api_key
+    huggingface_models_json                        = jsonencode(local.huggingface_models)
     telegram_bot_token                             = var.telegram_bot_token
     telegram_allow_from_json                       = jsonencode(var.telegram_allow_from)
     openclaw_config_mode                           = var.openclaw_config_mode
@@ -554,11 +578,13 @@ locals {
     model_ref = trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model
     fallback_models = [
       for ref in var.fallback_models : ref
-      if can(regex("^(anthropic|openai|google|groq|meta)/.+$", ref))
+      if can(regex("^(anthropic|openai|google|groq|meta|huggingface)/.+$", ref))
     ]
   })
   runtime_openclaw_seed              = jsonencode({ gateway_bind = local.runtime_template_vars.openclaw_gateway_bind, gateway_token = local.resolved_gateway_token, trusted_loopback_proxies_enabled = var.openclaw_host_network_enabled })
   runtime_openclaw_config            = file("${path.module}/modules/common/runtime/openclaw_config.py")
+  runtime_hermes_tool_compat         = file("${path.module}/modules/common/runtime/hermes_hf_tool_compat.py")
+  runtime_openclaw_tool_compat       = file("${path.module}/modules/common/runtime/openclaw_hf_tool_compat.mjs")
   runtime_workspace_cli_task         = file("${path.module}/modules/common/runtime/workspace_cli_task.py")
   runtime_workspace_sandbox          = file("${path.module}/modules/common/runtime/workspace_sandbox.py")
   runtime_workspace_sandbox_profiles = file("${path.module}/modules/common/runtime/workspace_sandbox_profiles.json")
@@ -606,11 +632,13 @@ locals {
     local.runtime_hermes_seed,
     nonsensitive(local.runtime_openclaw_seed),
     local.runtime_openclaw_config,
+    local.runtime_openclaw_tool_compat,
     local.runtime_workspace_cli_task,
     local.runtime_workspace_sandbox,
     local.runtime_workspace_sandbox_profiles,
     local.runtime_workspace_sandbox_license,
     local.runtime_hermes_config,
+    local.runtime_hermes_tool_compat,
     local.runtime_hermes_health,
     local.runtime_hermes_npm_patch,
     local.runtime_hermes_npm_patch_bundle,
@@ -712,6 +740,14 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_hermes_config
     destination = "${local.runtime_staging_dir}/hermes_config.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_hermes_tool_compat
+    destination = "${local.runtime_staging_dir}/hermes_hf_tool_compat.py"
+  }
+  provisioner "file" {
+    content     = local.runtime_openclaw_tool_compat
+    destination = "${local.runtime_staging_dir}/openclaw_hf_tool_compat.mjs"
   }
   provisioner "file" {
     content     = local.runtime_hermes_health

@@ -315,6 +315,17 @@ variable "repo_ssh_private_key_path" {
 # OpenClaw / LLM API keys
 # ─────────────────────────────────────────────────────────
 
+variable "huggingface_api_key" {
+  description = "Existing Hugging Face token with Make calls to Inference Providers permission. Personal agents only; routed inference requires account credits."
+  type        = string
+  default     = ""
+  sensitive   = true
+  validation {
+    condition     = var.huggingface_api_key == "" || can(regex("^hf_[A-Za-z0-9]+$", var.huggingface_api_key))
+    error_message = "huggingface_api_key must be an existing single-line hf_ token, not a placeholder."
+  }
+}
+
 variable "meta_api_key" {
   description = "Meta Model API key for Muse Spark/Wonder and optional workspace Muse Code."
   type        = string
@@ -430,17 +441,17 @@ variable "agent_channel" {
 }
 
 variable "model_providers_enabled" {
-  description = "Required list of model providers to configure at bootstrap. Allowed values: anthropic, openai, google, groq, meta."
+  description = "Required list of model providers to configure at bootstrap. Allowed values: anthropic, openai, google, groq, meta, huggingface."
   type        = list(string)
 
   validation {
     condition = (
       length(var.model_providers_enabled) > 0 &&
       alltrue([
-        for provider in var.model_providers_enabled : contains(["anthropic", "openai", "google", "groq", "meta"], provider)
+        for provider in var.model_providers_enabled : contains(["anthropic", "openai", "google", "groq", "meta", "huggingface"], provider)
       ])
     )
-    error_message = "model_providers_enabled must include at least one provider and only: anthropic, openai, google, groq, meta."
+    error_message = "model_providers_enabled must include at least one provider and only: anthropic, openai, google, groq, meta, huggingface."
   }
 }
 
@@ -923,9 +934,9 @@ variable "hermes_model" {
   default     = ""
   validation {
     condition = !contains(var.enabled_services, "hermes") || var.hermes_config_mode == "preserve" || can(
-      regex("^(anthropic|openai|google|groq|meta)/.+$", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)
+      regex("^(anthropic|openai|google|groq|meta|huggingface)/.+$", trimspace(var.hermes_model) != "" ? trimspace(var.hermes_model) : var.default_model)
     )
-    error_message = "When Hermes config may be seeded or managed, use an anthropic/, openai/, google/, groq/ or meta/ reference with a non-empty model name. If default_model uses legacy openai-codex/, supply a supported hermes_model override or preserve an existing Hermes config."
+    error_message = "When Hermes config may be seeded or managed, use an anthropic/, openai/, google/, groq/, meta/ or huggingface/ reference with a non-empty model name. If default_model uses legacy openai-codex/, supply a supported hermes_model override or preserve an existing Hermes config."
   }
 }
 
