@@ -234,3 +234,5 @@ class OpenCodeTemplateCompatibilityTest(unittest.TestCase):
                     self.assertIn("'huggingface/moonshotai/Kimi-K3:baseten'", entrypoint)
                     encoded = re.search(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d", dockerfile).group(1)
                     self.assertEqual(base64.b64decode(encoded), (checks.ROOT / "modules/common/runtime/workspace_opencode.py").read_bytes())
+                    compatibility = re.search(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d >/usr/local/libexec/agent-stack-hf-tool-compat.mjs", dockerfile).group(1)
+                    self.assertEqual(base64.b64decode(compatibility), (checks.ROOT / "modules/common/runtime/workspace_hf_tool_compat.mjs").read_bytes())

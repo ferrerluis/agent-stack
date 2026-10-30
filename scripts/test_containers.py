@@ -76,6 +76,8 @@ def render_workspace(directory, env, codex_release, claude_release, terraform="t
               "workspace_muse_enabled": bool(muse_release), "workspace_muse_release": muse_release or "",
               "workspace_opencode_enabled": bool(opencode_release), "workspace_opencode_release": opencode_release or "",
               "workspace_opencode_model": opencode_model,
+              "workspace_hf_tool_compat_base64": (base64.b64encode((ROOT / "modules/common/runtime/workspace_hf_tool_compat.mjs").read_bytes()).decode()
+                                                  if opencode_release else ""),
               "workspace_opencode_launcher_base64": (base64.b64encode((ROOT / "modules/common/runtime/workspace_opencode.py").read_bytes()).decode()
                                                      if opencode_release else "")}
     templates = ROOT / "modules/common/templates/runtime"
