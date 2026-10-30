@@ -1042,6 +1042,8 @@ build_meta_provider_catalog() {
 configure_huggingface_provider() {
   provider_selected "huggingface" || return 0
   has_env_key HF_TOKEN || fail "Hugging Face selected but HF_TOKEN is missing; supply an existing token with Inference Providers permission"
+  python3 "$app/openclaw_config.py" --data-dir "$(dirname "$OPENCLAW_CONFIG")" --install-tool-compat \
+    || fail "Could not install the managed Hugging Face tool compatibility plugin"
   local tmp_config
   tmp_config="$(mktemp)"
   if ! jq --argjson models "$HUGGINGFACE_MODELS_JSON" '
@@ -1057,7 +1059,11 @@ configure_huggingface_provider() {
         (.key | startswith("huggingface/") | not) or (.key as $ref | $refs | index($ref)))) |
       reduce $models[] as $model (.;
         .agents.defaults.models["huggingface/" + $model.id].params.parallel_tool_calls = false |
-        .agents.defaults.models["huggingface/" + $model.id].params.thinking = "high")
+        .agents.defaults.models["huggingface/" + $model.id].params.thinking = "high") |
+      .plugins = (.plugins // {}) | .plugins.entries = (.plugins.entries // {}) |
+      .plugins.entries["agentstack-hf-tool-content"] = ((.plugins.entries["agentstack-hf-tool-content"] // {}) + {enabled: true}) |
+      if (.plugins | has("allow")) and ((.plugins.allow | index("agentstack-hf-tool-content")) == null)
+      then .plugins.allow += ["agentstack-hf-tool-content"] else . end
     ' "$OPENCLAW_CONFIG" >"$tmp_config"; then
     rm -f "$tmp_config"
     fail "Could not configure the reviewed Hugging Face chat/tool catalog"

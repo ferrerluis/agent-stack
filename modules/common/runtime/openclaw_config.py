@@ -112,10 +112,18 @@ def seed_config(data_dir, seed):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", required=True)
-    parser.add_argument("--seed", required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--seed")
+    action.add_argument("--install-tool-compat", action="store_true")
     args = parser.parse_args()
     try:
-        changed = seed_config(args.data_dir, json.loads(Path(args.seed).read_text()))
+        if args.install_tool_compat:
+            # Managed HF updates enable the entry in their existing atomic
+            # config update; this action only delivers the native plugin files.
+            install_tool_compat(args.data_dir, {})
+            changed = True
+        else:
+            changed = seed_config(args.data_dir, json.loads(Path(args.seed).read_text()))
         print("changed" if changed else "preserved")
     except (OSError, ValueError, TypeError):
         parser.error("OpenClaw seed configuration is invalid or could not be written")

@@ -132,6 +132,7 @@ class HuggingFaceOpenClawTest(unittest.TestCase):
             path = root / 'openclaw.json'
             path.write_text(json.dumps(config or {'channels': {'fixture': True}, 'models': {'providers': {'private': {'baseUrl': 'https://operator.example/v1'}}}}))
             script = 'set -euo pipefail\nOPENCLAW_CONFIG=' + shlex.quote(str(path)) + '\n'
+            script += 'app=' + shlex.quote(str(ROOT / 'modules/common/runtime')) + '\n'
             script += 'HUGGINGFACE_MODELS_JSON=' + shlex.quote(json.dumps(CATALOG)) + '\n'
             script += 'DEFAULT_MODEL_REF=' + shlex.quote(REFS[0]) + '\n'
             script += 'FALLBACK_MODELS_JSON=' + shlex.quote(json.dumps(REFS[1:])) + '\n'
@@ -141,7 +142,27 @@ class HuggingFaceOpenClawTest(unittest.TestCase):
             script += self.function('configure_huggingface_provider') + '\n'
             script += self.function('verify_huggingface_model_config') + '\n' + command
             result = subprocess.run(['bash', '-c', script], text=True, capture_output=True, timeout=10)
+            if result.returncode == 0 and command.startswith('configure_huggingface_provider') and selected and key:
+                plugin = root / 'extensions/agentstack-hf-tool-content'
+                self.assertEqual((plugin / 'index.mjs').read_bytes(), (ROOT / 'modules/common/runtime/openclaw_hf_tool_compat.mjs').read_bytes())
+                self.assertEqual(json.loads((plugin / 'openclaw.plugin.json').read_text())['id'], 'agentstack-hf-tool-content')
             return result, json.loads(path.read_text()), path.stat().st_mode & 0o777
+
+    def test_managed_upgrade_installs_hook_without_replacing_operator_plugins(self):
+        original = {'channels': {'operator': True}, 'plugins': {'allow': ['operator'], 'entries': {'operator': {'enabled': True, 'config': {'keep': 42}}, 'agentstack-hf-tool-content': {'config': {'keep': True}}}}}
+        result, config, _ = self.fixture('configure_huggingface_provider\nconfigure_huggingface_provider', config=original)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(config['channels'], original['channels'])
+        self.assertEqual(config['plugins']['allow'], ['operator', 'agentstack-hf-tool-content'])
+        self.assertEqual(config['plugins']['entries']['operator'], original['plugins']['entries']['operator'])
+        self.assertEqual(config['plugins']['entries']['agentstack-hf-tool-content'], {'enabled': True, 'config': {'keep': True}})
+
+    def test_preserved_existing_deployment_does_not_install_or_enable_hook(self):
+        command = 'OPENCLAW_ENABLED=true\nOPENCLAW_CONFIG_MODE_EFFECTIVE=preserve\nconfig_customizations_enabled() { return 1; }\n' + self.function('configure_openclaw_channels_and_models') + '\nconfigure_openclaw_channels_and_models\n'
+        original = {'plugins': {'allow': ['operator']}, 'channels': {'operator': True}}
+        result, config, _ = self.fixture(command, config=original)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(config, original)
 
     def test_catalog_auth_and_sequential_tools_are_registered_idempotently(self):
         result, config, mode = self.fixture('configure_huggingface_provider\nconfigure_huggingface_provider')
