@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 BINARY = "/usr/local/libexec/opencode"
+COMPAT_PLUGIN = Path("/usr/local/libexec/agent-stack-hf-tool-compat.mjs")
 ENDPOINT = "https://router.huggingface.co/v1"
 # Public HF model IDs, never Baseten's internal providerId. No auto routing.
 ROUTES = {
@@ -213,6 +214,13 @@ def launch(args):
     inline = copy.deepcopy(config)
     inline.update({"enabled_providers": ["huggingface"], "small_model": config.get("small_model") or config["model"],
                    "autoupdate": False, "provider": {"huggingface": managed}})
+    if COMPAT_PLUGIN.is_file():
+        plugins = inline.setdefault("plugin", [])
+        if not isinstance(plugins, list):
+            raise ValueError("native plugins must be a list")
+        reference = COMPAT_PLUGIN.as_uri()
+        if reference not in plugins:
+            plugins.append(reference)
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline)
     os.execve(BINARY, [BINARY, *args], env)
 

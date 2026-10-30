@@ -1,5 +1,20 @@
 # OpenCode integration acceptance and validation
 
+## Completed scoped hosted acceptance — 2026-10-28
+
+The approved combined PR6/PR7 acceptance passed **77/77 product subcases,16/16 parents and9/9 full hosted native sessions** on DigitalOcean. OpenCode's three reviewed HF/Baseten routes passed **21/21 feature subcases and3/3 full hosted sessions**. Each used actual installed OpenCode1.19.3 with authenticated served-model/usage receipts, native reads and writes, independently checked fresh output, same-session follow-up and preserved reasoning replay. A missing-auth component retest also passed with the actual checksum-verified ARM64 binary and the final managed launcher.
+
+The final fixes are included in this branch: the official Codex installer handles its stable release alias and verified npm-native fallback, and a native OpenCode plugin converts Muse's malformed object/array write content to JSON text. It preserves native paths, permissions and validation and is inactive for other models. The branch includes the passing combined source snapshot `6c1fcded21bb7af159b21ee93e257f84227202a5`; shipping runtime bytes are compared directly against that snapshot before merge.
+
+The shared owned deployment exercised mandatory Codex with optional OpenCode enabled/disabled, managed restart/recovery, and native terminal-error controls. Synthetic failure controls are separate from the nine genuine hosted sessions. All owned DigitalOcean objects and the test tag were independently confirmed absent after cleanup; model admission and transports were closed. Conservative combined cash estimate: **$10.54**, with no new HF top-up. Temporary-token revocation remains a separate final user handoff.
+
+The scope reduction94to77 rows was explicitly adopted before final execution; no assertion was waived to obtain a pass. All old failures and evidence remain preserved. No general provider regression, model-weight download or performance result is claimed. Private coordinator receipts are retained without publishing credentials, account identifiers, nonce-bearing transcripts or private URLs.
+
+## Historical validation recorded before hosted completion
+
+The dated blocked observations below are retained as history. The completed scoped acceptance above supersedes their hosted-blocker status. Supporting unit/fixture counts are not added to the product catalog.
+
+
 Offline verification on 2026-10-17 UTC, with an authorized disposable DigitalOcean
 follow-up on 2026-10-19 documented below. Scope: optional **HF-only OpenCode coding harness**,
 independent of personal-agent selections, Codex, Claude Code and Muse Code.

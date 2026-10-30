@@ -97,6 +97,7 @@ RUN set -eu; \
     test "$(/usr/local/libexec/opencode --version)" = "$OPENCODE_RELEASE"; \
     printf '%s\n' '#!/bin/sh' 'export OPENCODE_DISABLE_AUTOUPDATE=1' 'exec python3 /usr/local/libexec/agent-stack-opencode.py "$@"' >/usr/local/bin/opencode; \
     printf '%s' '${workspace_opencode_launcher_base64}' | base64 -d >/usr/local/libexec/agent-stack-opencode.py; \
+    printf '%s' '${workspace_hf_tool_compat_base64}' | base64 -d >/usr/local/libexec/agent-stack-hf-tool-compat.mjs; \
     chmod 0755 /usr/local/bin/opencode /usr/local/libexec/agent-stack-opencode.py; \
     rm -f /tmp/opencode-release.json /tmp/opencode.tar.gz
 %{ endif }

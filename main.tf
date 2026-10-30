@@ -546,6 +546,7 @@ locals {
     workspace_opencode_release                     = var.workspace_opencode_release
     workspace_opencode_model                       = var.workspace_opencode_model
     workspace_opencode_launcher_base64             = filebase64("${path.module}/modules/common/runtime/workspace_opencode.py")
+    workspace_hf_tool_compat_base64                = filebase64("${path.module}/modules/common/runtime/workspace_hf_tool_compat.mjs")
     workspace_muse_release                         = var.workspace_muse_release
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
@@ -1062,6 +1063,7 @@ locals {
     workspace_opencode_release                     = var.workspace_opencode_release
     workspace_opencode_model                       = var.workspace_opencode_model
     workspace_opencode_launcher_base64             = filebase64("${path.module}/modules/common/runtime/workspace_opencode.py")
+    workspace_hf_tool_compat_base64                = filebase64("${path.module}/modules/common/runtime/workspace_hf_tool_compat.mjs")
     workspace_muse_release                         = var.workspace_muse_release
     workspace_claude_release                       = var.workspace_claude_release
     workspace_codex_release                        = var.workspace_codex_release
