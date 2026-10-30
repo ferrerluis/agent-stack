@@ -69,10 +69,17 @@ def isolated_env(directory):
     return env
 
 
-def render_workspace(directory, env, codex_release, claude_release, terraform="terraform", muse_release=None):
+def render_workspace(directory, env, codex_release, claude_release, terraform="terraform", muse_release=None,
+                     opencode_release=None, opencode_model=""):
     values = {"workspace_username": "testuser", "workspace_codex_release": codex_release,
               "workspace_claude_enabled": bool(claude_release), "workspace_claude_release": claude_release or "",
-              "workspace_muse_enabled": bool(muse_release), "workspace_muse_release": muse_release or ""}
+              "workspace_muse_enabled": bool(muse_release), "workspace_muse_release": muse_release or "",
+              "workspace_opencode_enabled": bool(opencode_release), "workspace_opencode_release": opencode_release or "",
+              "workspace_opencode_model": opencode_model,
+              "workspace_hf_tool_compat_base64": (base64.b64encode((ROOT / "modules/common/runtime/workspace_hf_tool_compat.mjs").read_bytes()).decode()
+                                                  if opencode_release else ""),
+              "workspace_opencode_launcher_base64": (base64.b64encode((ROOT / "modules/common/runtime/workspace_opencode.py").read_bytes()).decode()
+                                                     if opencode_release else "")}
     templates = ROOT / "modules/common/templates/runtime"
     sources = {
         "Dockerfile": "workspace.Dockerfile.tpl", "workspace-entrypoint.sh": "workspace-entrypoint.sh.tpl",
@@ -96,6 +103,7 @@ def render_workspace(directory, env, codex_release, claude_release, terraform="t
         if not isinstance(bundle.get(name), str) or not bundle[name]:
             raise CheckFailed("template_render_incomplete")
         (context / name).write_text(bundle[name])
+    shutil.copyfile(ROOT / "modules/common/runtime/codex_install.py", context / "codex-install.py")
     shutil.copyfile(ROOT / "modules/common/runtime/workspace_cli_task.py", context / "workspace-cli-task.py")
     (context / "para-memory-drive").mkdir()
     shutil.copyfile(ROOT / "skills/para-memory-drive/SKILL.md", context / "para-memory-drive/SKILL.md")

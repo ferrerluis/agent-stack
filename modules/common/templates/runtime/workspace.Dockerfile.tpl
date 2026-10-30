@@ -40,9 +40,11 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/install-codex.sh \
-  && CODEX_NON_INTERACTIVE=1 CODEX_RELEASE="$CODEX_RELEASE" CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME=/opt/codex sh /tmp/install-codex.sh \
-  && rm -f /tmp/install-codex.sh
+# Prefer https://chatgpt.com/codex/install.sh; only404/410 permits the verified
+# official npm native bundle fallback. Both paths keep the standalone layout.
+COPY codex-install.py /usr/local/libexec/agent-stack-codex-install.py
+RUN CODEX_NON_INTERACTIVE=1 CODEX_RELEASE="$CODEX_RELEASE" CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME=/opt/codex \
+    python3 /usr/local/libexec/agent-stack-codex-install.py
 
 %{ if workspace_claude_enabled }
 # Copy the resolved binary out of root's private installation tree so UID 1000
@@ -73,6 +75,31 @@ RUN set -eu; \
     chmod 0755 /usr/local/bin/muse; \
     muse --version; \
     rm -f /tmp/muse-manifest.json
+%{ endif }
+
+%{ if workspace_opencode_enabled }
+# Pin V1 release assets rather than piping the mutable V1/V2 installer to bash.
+# Ubuntu uses glibc; the x64 baseline also supports CPUs without AVX2.
+ARG OPENCODE_RELEASE=${workspace_opencode_release}
+RUN set -eu; \
+    case "$(uname -m)" in x86_64) platform=linux-x64-baseline ;; aarch64|arm64) platform=linux-arm64 ;; *) echo "Unsupported OpenCode architecture" >&2; exit 1 ;; esac; \
+    asset="opencode-$platform.tar.gz"; \
+    curl -fsSL --proto '=https' --proto-redir '=https' \
+      "https://api.github.com/repos/anomalyco/opencode/releases/tags/v$OPENCODE_RELEASE" -o /tmp/opencode-release.json; \
+    jq -e --arg tag "v$OPENCODE_RELEASE" '.tag_name == $tag and .draft == false and .prerelease == false' /tmp/opencode-release.json >/dev/null; \
+    checksum="$(jq -er --arg asset "$asset" '[.assets[] | select(.name == $asset)] | select(length == 1) | .[0].digest | select(test("^sha256:[0-9a-f]{64}$")) | ltrimstr("sha256:")' /tmp/opencode-release.json)"; \
+    curl -fsSL --proto '=https' --proto-redir '=https' \
+      "https://github.com/anomalyco/opencode/releases/download/v$OPENCODE_RELEASE/$asset" -o /tmp/opencode.tar.gz; \
+    printf '%s  %s\n' "$checksum" /tmp/opencode.tar.gz | sha256sum -c -; \
+    install -d -m 0755 /usr/local/libexec; \
+    tar -xzf /tmp/opencode.tar.gz -C /usr/local/libexec opencode; \
+    chmod 0755 /usr/local/libexec/opencode; \
+    test "$(/usr/local/libexec/opencode --version)" = "$OPENCODE_RELEASE"; \
+    printf '%s\n' '#!/bin/sh' 'export OPENCODE_DISABLE_AUTOUPDATE=1' 'exec python3 /usr/local/libexec/agent-stack-opencode.py "$@"' >/usr/local/bin/opencode; \
+    printf '%s' '${workspace_opencode_launcher_base64}' | base64 -d >/usr/local/libexec/agent-stack-opencode.py; \
+    printf '%s' '${workspace_hf_tool_compat_base64}' | base64 -d >/usr/local/libexec/agent-stack-hf-tool-compat.mjs; \
+    chmod 0755 /usr/local/bin/opencode /usr/local/libexec/agent-stack-opencode.py; \
+    rm -f /tmp/opencode-release.json /tmp/opencode.tar.gz
 %{ endif }
 
 RUN install -d -m 0755 /usr/local/libexec

@@ -22,7 +22,7 @@ import uuid
 SCRIPT_PATH = "scripts/test_containers.py"
 PROBE_PATH = "scripts/showcase_container_probe.py"
 FILES = {"Dockerfile", "workspace-entrypoint.sh", "workspace-codex-update.sh", "workspace-codex-control.py",
-         "workspace-cli-task.py", "para-memory-drive/SKILL.md"}
+         "codex-install.py", "workspace-cli-task.py", "para-memory-drive/SKILL.md"}
 MAX_BUNDLE = 512 * 1024
 WORK_SECONDS = 2700
 CLEANUP_SECONDS = 240

@@ -189,7 +189,8 @@ class RuntimeTemplateTest(unittest.TestCase):
 
     def test_host_codex_cli_install_is_opt_in_and_uses_admin_home_for_auth(self) -> None:
         self.assertIn('[ "${host_codex_cli_enabled}" != "true" ]', self.installer)
-        self.assertIn("https://chatgpt.com/codex/install.sh", self.installer)
+        self.assertIn('python3 "$staging/codex-install.py"', self.installer)
+        self.assertIn("https://chatgpt.com/codex/install.sh", (REPO_ROOT / "modules/common/runtime/codex_install.py").read_text())
         self.assertIn("CODEX_INSTALL_DIR=/usr/local/bin", self.installer)
         self.assertIn('CODEX_HOME="$codex_install_home"', self.installer)
         self.assertIn('install -d -m 0700 -o "${admin_username}" -g "$admin_group" "$admin_home/.codex"', self.installer)

@@ -30,6 +30,8 @@ class WorkspaceImageContextTest(unittest.TestCase):
         for name in ("workspace.Dockerfile", "workspace-entrypoint.sh", "workspace-codex-update.sh", "workspace-codex-control.py"):
             (self.app / name).write_text((RUNTIME / (name + ".tpl")).read_text())
         (self.app / "workspace-para-memory-drive-skill.md").write_text("fixture skill")
+        (self.app / "codex-install.py").write_bytes((ROOT / "modules/common/runtime/codex_install.py").read_bytes())
+        self.codex_installer = (ROOT / "modules/common/runtime/codex_install.py").read_bytes()
         self.task = (ROOT / "modules/common/runtime/workspace_cli_task.py").read_bytes()
         (self.app / "workspace-cli-task.py").write_bytes(self.task)
         self.tools = self.root / "tools"
@@ -66,6 +68,9 @@ sys.exit(int(os.environ.get('FIXTURE_DOCKER_EXIT','0')))
                 result = self.run_function(command)
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 proof = json.loads((self.app / "context-proof.json").read_text())
+                self.assertIn("codex-install.py", proof["sources"])
+                self.assertEqual((self.app / ".workspace-image-context/codex-install.py").exists(), False)
+                self.assertEqual((self.app / "codex-install.py").read_bytes(), self.codex_installer)
                 self.assertIn("workspace-cli-task.py", proof["sources"])
                 self.assertEqual(proof["task_sha256"], hashlib.sha256(self.task).hexdigest())
                 self.assertEqual(proof["task_mode"], 0o755)
@@ -96,3 +101,20 @@ sys.exit(int(os.environ.get('FIXTURE_DOCKER_EXIT','0')))
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         proof = json.loads((self.app / "context-proof.json").read_text())
         self.assertNotIn("workspace-cli-task.py", proof["sources"])
+
+    def test_missing_current_codex_installer_refuses_build(self):
+        (self.app / "codex-install.py").unlink()
+        for function in ("build_workspace_image", "restore_workspace_image"):
+            with self.subTest(function=function):
+                result = self.run_function("if " + function + "; then exit 81; fi")
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertFalse((self.app / "context-proof.json").exists())
+
+    def test_old_rollback_dockerfile_can_build_without_codex_installer(self):
+        (self.app / "codex-install.py").unlink()
+        path = self.app / "workspace.Dockerfile"
+        path.write_text("\n".join(line for line in path.read_text().splitlines()
+                                   if "codex-install.py" not in line) + "\n")
+        result = self.run_function("restore_workspace_image")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertNotIn("codex-install.py", json.loads((self.app / "context-proof.json").read_text())["sources"])
