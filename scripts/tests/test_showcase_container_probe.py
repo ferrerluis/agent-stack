@@ -112,6 +112,9 @@ class BundleTest(unittest.TestCase):
         self.assertIn("ARG CODEX_RELEASE=" + PINS["codex_release"], value["contexts"]["legacy"]["Dockerfile"])
         self.assertNotIn("ARG CLAUDE_RELEASE", value["contexts"]["legacy"]["Dockerfile"])
         self.assertIn("ARG CLAUDE_RELEASE=" + PINS["claude_release"], value["contexts"]["showcase"]["Dockerfile"])
+        installer = (ROOT / "modules/common/runtime/codex_install.py").read_text()
+        for context in value["contexts"].values():
+            self.assertEqual(context["codex-install.py"], installer)
         self.assertNotIn("fixture-private-key", json.dumps(value))
         self.assertNotIn("fixture-token", json.dumps(value))
 

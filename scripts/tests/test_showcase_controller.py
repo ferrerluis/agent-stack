@@ -31,7 +31,8 @@ class DeferredPreparationTest(unittest.TestCase):
         driver = tf_fixtures.DriverTest("runTest")
         driver.fixture_sources = SOURCES + tuple("modules/common/templates/runtime/" + name for name in
             ("workspace.Dockerfile.tpl", "workspace-entrypoint.sh.tpl", "workspace-codex-update.sh.tpl", "workspace-codex-control.py.tpl")) + (
-            "modules/common/runtime/workspace_cli_task.py", "skills/para-memory-drive/SKILL.md")
+            "modules/common/runtime/codex_install.py", "modules/common/runtime/workspace_cli_task.py",
+            "skills/para-memory-drive/SKILL.md")
         driver.setUp(); self.addCleanup(driver.doCleanups)
         driver.client.terraform = shutil.which("terraform")
         original = shutil.which
@@ -42,6 +43,9 @@ class DeferredPreparationTest(unittest.TestCase):
         self.assertEqual(proof["source_revision"], driver.fixture.revision)
         self.assertEqual(set(value["contexts"]), {"legacy", "showcase"})
         self.assertIn("ARG CLAUDE_RELEASE=2.1.211", value["contexts"]["showcase"]["Dockerfile"])
+        installer = (Path(controller.__file__).parents[1] / "modules/common/runtime/codex_install.py").read_text()
+        for context in value["contexts"].values():
+            self.assertEqual(context["codex-install.py"], installer)
         self.assertFalse((driver.run / "repo/terraform.tfstate").exists())
         driver.session.reader.assert_not_called()
         self.assertEqual(driver.session.calls, [])
