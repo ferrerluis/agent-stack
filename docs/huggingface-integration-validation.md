@@ -1,5 +1,22 @@
 # Hugging Face integration acceptance and evidence
 
+## Completed scoped hosted acceptance — 2026-10-28
+
+The approved combined PR6/PR7 scope passed **77/77 subcases,16/16 parents and9/9 full hosted native sessions** on DigitalOcean. This PR's OpenClaw/Hermes portion passed **42/42 feature subcases and6/6 hosted sessions** across the three reviewed HF/Baseten models. Shared deployment/safety checks contribute14subcases; OpenCode contributes21. The catalog was narrowed explicitly from94to77 product rows before this final run; no row or assertion was removed to conceal a failure.
+
+Each hosted session used the installed native agent, authenticated HF responses with checked served-model identity and numeric usage, fresh controller-generated input, actual native read/write tools, independently verified output, and a second turn in the same session. Reasoning replay was checked against response receipts. Native permissions, file checks and rejection of failed tool calls remained required. Fallback from a locally invalid primary to the exact reviewed DeepSeek route completed with three real requests. All21 injected terminal-error controls used synthetic upstreams and made no paid requests.
+
+Muse sometimes returns JSON file contents as an object despite a string tool schema. The managed compatibility plugins convert only those object/array content arguments to JSON text through supported native hooks. Routing metadata limits the change to Muse on HF; paths, tools and permission checks remain native. The tested plugin bytes are from combined source `6c1fcded21bb7af159b21ee93e257f84227202a5`; the personal-agent fix is included in this PR. Fresh-home plugin installation does not overwrite existing operator configurations.
+
+The final run retained all failed-attempt history and revalidated affected children individually. Collector fixes recovered existing successful Hermes/fallback execution without another paid call. Every current product row has verified evidence references. All owned DigitalOcean objects and the test tag were independently confirmed absent after teardown; model admission and transports are closed. The conservative combined cash estimate was **$10.54**, below the renewed$15target and$20allowed ceiling, with no new HF top-up.
+
+Detailed execution receipts remain in the private coordinator workspace; credentials, account identifiers, nonce-bearing transcripts and private URLs are not published here. Temporary-token revocation is a separate final user handoff. This is hosted feature acceptance for the stated scope, not a weight-download, general provider or performance certification.
+
+## Historical validation recorded before hosted completion
+
+The dated catalog and blocked observations below are retained as history. The completed scoped acceptance above supersedes their hosted-blocker status; fixture counts remain separate from product acceptance counts.
+
+
 Catalog **version 2** replaces the rejected GPT-OSS offerings with Luis's confirmed
 Kimi K3, Muse Spark Open and DeepSeek V4.1 Flash shortlist. The base is main
 `e9807058`; this is the same draft [PR #6](https://github.com/ferrerluis/agent-stack/pull/6).

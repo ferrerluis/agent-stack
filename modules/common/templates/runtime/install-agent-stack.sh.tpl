@@ -51,8 +51,10 @@ require_file workspace-sandbox.py
 require_file workspace-sandbox-profiles.json
 require_file workspace-sandbox-LICENSE.txt
 require_file openclaw_config.py
+require_file openclaw_hf_tool_compat.mjs
 require_file openclaw-seed.json
 require_file hermes_config.py
+require_file hermes_hf_tool_compat.py
 require_file hermes-seed.json
 require_file hermes_health.py
 require_file hermes_npm_patch.py
@@ -576,7 +578,7 @@ prefetch_runtime_images || fail "runtime image download failed before applying r
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"
-for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
   [ -e "$app/$path" ] && cp -a "$app/$path" "$previous/" || true
 done
 backup_workspace_image
@@ -590,7 +592,9 @@ install -m 0644 "$staging/hermes_health.py" "$app/hermes_health.py"
 install -m 0644 "$staging/hermes_npm_patch.py" "$app/hermes_npm_patch.py"
 install -m 0644 "$staging/hermes_npm_patch.json" "$app/hermes_npm_patch.json"
 install -m 0644 "$staging/hermes_config.py" "$app/hermes_config.py"
+install -m 0644 "$staging/hermes_hf_tool_compat.py" "$app/hermes_hf_tool_compat.py"
 install -m 0644 "$staging/openclaw_config.py" "$app/openclaw_config.py"
+install -m 0644 "$staging/openclaw_hf_tool_compat.mjs" "$app/openclaw_hf_tool_compat.mjs"
 install -m 0755 "$staging/workspace-cli-task.py" "$app/workspace-cli-task.py"
 install -m 0644 "$staging/workspace-sandbox.py" "$app/workspace-sandbox.py"
 install -m 0644 "$staging/workspace-sandbox-profiles.json" "$app/workspace-sandbox-profiles.json"
@@ -671,7 +675,7 @@ if ! wait_agent_stack_initial_restart; then
       rm -f "$app/data/hermes/config.yaml"
     fi
   fi
-  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
     rm -rf "$app/$path"
     if [ -e "$previous/$path" ]; then
       cp -a "$previous/$path" "$app/$path"
