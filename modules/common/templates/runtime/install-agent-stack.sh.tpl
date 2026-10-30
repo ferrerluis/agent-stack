@@ -51,8 +51,10 @@ require_file workspace-sandbox.py
 require_file workspace-sandbox-profiles.json
 require_file workspace-sandbox-LICENSE.txt
 require_file openclaw_config.py
+require_file openclaw_hf_tool_compat.mjs
 require_file openclaw-seed.json
 require_file hermes_config.py
+require_file hermes_hf_tool_compat.py
 require_file hermes-seed.json
 require_file hermes_health.py
 require_file hermes_npm_patch.py
@@ -576,7 +578,7 @@ prefetch_runtime_images || fail "runtime image download failed before applying r
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"
-for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
   [ -e "$app/$path" ] && cp -a "$app/$path" "$previous/" || true
 done
 backup_workspace_image
@@ -590,7 +592,9 @@ install -m 0644 "$staging/hermes_health.py" "$app/hermes_health.py"
 install -m 0644 "$staging/hermes_npm_patch.py" "$app/hermes_npm_patch.py"
 install -m 0644 "$staging/hermes_npm_patch.json" "$app/hermes_npm_patch.json"
 install -m 0644 "$staging/hermes_config.py" "$app/hermes_config.py"
+install -m 0644 "$staging/hermes_hf_tool_compat.py" "$app/hermes_hf_tool_compat.py"
 install -m 0644 "$staging/openclaw_config.py" "$app/openclaw_config.py"
+install -m 0644 "$staging/openclaw_hf_tool_compat.mjs" "$app/openclaw_hf_tool_compat.mjs"
 install -m 0755 "$staging/workspace-cli-task.py" "$app/workspace-cli-task.py"
 install -m 0644 "$staging/workspace-sandbox.py" "$app/workspace-sandbox.py"
 install -m 0644 "$staging/workspace-sandbox-profiles.json" "$app/workspace-sandbox-profiles.json"
@@ -671,7 +675,7 @@ if ! wait_agent_stack_initial_restart; then
       rm -f "$app/data/hermes/config.yaml"
     fi
   fi
-  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
     rm -rf "$app/$path"
     if [ -e "$previous/$path" ]; then
       cp -a "$previous/$path" "$app/$path"
@@ -720,6 +724,7 @@ AGENT_CHANNEL="${agent_channel}"
 MODEL_PROVIDERS_ENABLED_JSON='${model_providers_enabled_json}'
 OPENAI_AUTH_MODE='${openai_auth_mode}'
 DEFAULT_MODEL_REF='${default_model}'
+HUGGINGFACE_MODELS_JSON='${huggingface_models_json}'
 FALLBACK_MODELS_JSON='${fallback_models_json}'
 TELEGRAM_ALLOW_FROM_JSON='${telegram_allow_from_json}'
 STARTER_SOUL_PROFILE='${starter_soul_profile}'
@@ -876,6 +881,9 @@ model_route_has_credentials() {
     groq)
       has_env_key GROQ_API_KEY
       ;;
+    huggingface)
+      has_env_key HF_TOKEN
+      ;;
     meta)
       has_env_key MODEL_API_KEY
       ;;
@@ -1031,6 +1039,51 @@ build_meta_provider_catalog() {
     ' "$plugin_root"
 }
 
+configure_huggingface_provider() {
+  provider_selected "huggingface" || return 0
+  has_env_key HF_TOKEN || fail "Hugging Face selected but HF_TOKEN is missing; supply an existing token with Inference Providers permission"
+  python3 "$app/openclaw_config.py" --data-dir "$(dirname "$OPENCLAW_CONFIG")" --install-tool-compat \
+    || fail "Could not install the managed Hugging Face tool compatibility plugin"
+  local tmp_config
+  tmp_config="$(mktemp)"
+  if ! jq --argjson models "$HUGGINGFACE_MODELS_JSON" '
+      .models = (.models // {}) | .models.providers = (.models.providers // {}) |
+      .models.providers.huggingface = {
+        baseUrl: "https://router.huggingface.co/v1", api: "openai-completions",
+        apiKey: {source: "env", provider: "default", id: "HF_TOKEN"}, models: $models
+      } |
+      .agents = (.agents // {}) | .agents.defaults = (.agents.defaults // {}) |
+      .agents.defaults.models = (.agents.defaults.models // {}) |
+      ($models | map("huggingface/" + .id)) as $refs |
+      .agents.defaults.models |= with_entries(select(
+        (.key | startswith("huggingface/") | not) or (.key as $ref | $refs | index($ref)))) |
+      reduce $models[] as $model (.;
+        .agents.defaults.models["huggingface/" + $model.id].params.parallel_tool_calls = false |
+        .agents.defaults.models["huggingface/" + $model.id].params.thinking = "high") |
+      .plugins = (.plugins // {}) | .plugins.entries = (.plugins.entries // {}) |
+      .plugins.entries["agentstack-hf-tool-content"] = ((.plugins.entries["agentstack-hf-tool-content"] // {}) + {enabled: true}) |
+      if (.plugins | has("allow")) and ((.plugins.allow | index("agentstack-hf-tool-content")) == null)
+      then .plugins.allow += ["agentstack-hf-tool-content"] else . end
+    ' "$OPENCLAW_CONFIG" >"$tmp_config"; then
+    rm -f "$tmp_config"
+    fail "Could not configure the reviewed Hugging Face chat/tool catalog"
+  fi
+  chmod 0600 "$tmp_config"
+  mv "$tmp_config" "$OPENCLAW_CONFIG"
+  chown 1000:1000 "$OPENCLAW_CONFIG" || true
+  mark_openclaw_restart_needed
+}
+
+verify_huggingface_model_config() {
+  # Read actual CLI-written config; success alone must not hide normalization,
+  # substitution, or an old primary/fallback list.
+  jq -e --arg primary "$DEFAULT_MODEL_REF" --argjson fallbacks "$FALLBACK_MODELS_JSON" '
+    (if ($primary | startswith("huggingface/")) then .agents.defaults.model.primary == $primary else true end) and
+    ((.agents.defaults.model.fallbacks // []) | map(select(startswith("huggingface/")))) ==
+      ($fallbacks | map(select(startswith("huggingface/"))))
+  ' "$OPENCLAW_CONFIG" >/dev/null || fail "Hugging Face model readback differs from the requested primary/fallbacks; check OpenClaw compatibility"
+}
+
 configure_meta_provider() {
   provider_selected "meta" || return 0
   has_env_key MODEL_API_KEY || fail "Meta provider selected but MODEL_API_KEY is missing"
@@ -1144,6 +1197,7 @@ configure_openclaw_channels_and_models() {
   fi
 
   configure_meta_provider
+  configure_huggingface_provider
   echo "[models] Configuring user-selected model defaults and fallbacks..."
   if wait_openclaw_healthy; then
     MODEL_CATALOG="$(run_openclaw_cli models list --all --plain 2>/dev/null || true)"
@@ -1163,36 +1217,39 @@ configure_openclaw_channels_and_models() {
             if run_openclaw_cli models fallbacks add "$fallback_model" >/tmp/openclaw-models-fallback-add.log 2>&1; then
               echo "[models] Added fallback: $fallback_model"
             else
-              if [ "$${fallback_model%%/*}" = "meta" ]; then
-                fail "Failed to configure selected Meta fallback model"
+              if [[ "$${fallback_model%%/*}" = "meta" || "$${fallback_model%%/*}" = "huggingface" ]]; then
+                fail "Failed to configure selected Meta/Hugging Face fallback model"
               fi
               echo "[models] WARNING: Failed to add fallback: $fallback_model"
               tail -n 5 /tmp/openclaw-models-fallback-add.log || true
             fi
           else
-            if [ "$${fallback_model%%/*}" = "meta" ]; then
-              fail "Selected Meta fallback model is unavailable"
+            if [[ "$${fallback_model%%/*}" = "meta" || "$${fallback_model%%/*}" = "huggingface" ]]; then
+              fail "Selected Meta/Hugging Face fallback model is unavailable"
             fi
           fi
         done < <(printf '%s' "$FALLBACK_MODELS_JSON" | jq -r '.[]')
         configure_openai_codex_runtime_routes || true
       else
-        if [ "$${DEFAULT_MODEL_REF%%/*}" = "meta" ]; then
-          fail "Failed to set selected Meta default model"
+        if [[ "$${DEFAULT_MODEL_REF%%/*}" = "meta" || "$${DEFAULT_MODEL_REF%%/*}" = "huggingface" ]]; then
+          fail "Failed to set selected Meta/Hugging Face default model"
         fi
         echo "[models] WARNING: Failed to set default model: $DEFAULT_MODEL_REF"
         tail -n 5 /tmp/openclaw-models-set.log || true
       fi
     else
-      if [ "$${DEFAULT_MODEL_REF%%/*}" = "meta" ]; then
-        fail "Selected Meta model is unavailable; check provider credentials and OpenClaw compatibility"
+      if [[ "$${DEFAULT_MODEL_REF%%/*}" = "meta" || "$${DEFAULT_MODEL_REF%%/*}" = "huggingface" ]]; then
+        fail "Selected Meta/Hugging Face model is unavailable; check credentials, reviewed route and OpenClaw compatibility"
       fi
     fi
   else
-    if provider_selected "meta"; then
-      fail "OpenClaw not ready; Meta model configuration did not complete"
+    if provider_selected "meta" || provider_selected "huggingface"; then
+      fail "OpenClaw not ready; Meta/Hugging Face model configuration did not complete"
     fi
     echo "[models] WARNING: OpenClaw not ready; skipped model configuration."
+  fi
+  if [[ "$DEFAULT_MODEL_REF $FALLBACK_MODELS_JSON" == *"huggingface/"* ]]; then
+    verify_huggingface_model_config
   fi
 }
 
