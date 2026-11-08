@@ -7,6 +7,8 @@ This is a durable backlog, not authorization to implement or change production d
 | # | Title | Status | Dependencies | Canonical design |
 |---|---|---|---|---|
 | 1 | Shared Mem0 memory across OpenClaw, Hermes, and workspace coding harnesses | Proposed | Mem0 deployment and persistence design; workspace service enabled | TBD |
+| 2 | Deploy to a personal Linux device over local access or a mesh network | Proposed; immediate / ASAP | Reachable Linux device; supported deployment and network-access design | TBD |
+| 3 | Add an initial Paperclip setup to the workspace | Proposed; immediate / ASAP | Workspace service enabled; Paperclip integration design | TBD |
 
 ## 1. Shared Mem0 memory across OpenClaw, Hermes, and workspace coding harnesses — Proposed
 
@@ -42,3 +44,42 @@ Acceptance evidence:
 - Documented architecture, pinned versions, configuration contract, and operational backup/restore procedure.
 - OpenClaw, Hermes, and workspace image tests pass without embedding secrets.
 - A scoped E2E probe demonstrates intentional cross-client read/write sharing and rejects access outside the chosen tenant/namespace boundary.
+
+## 2. Deploy to a personal Linux device over local access or a mesh network
+
+Status: Proposed.
+Priority: Immediate / as soon as possible.
+Canonical design: TBD.
+
+Required behavior:
+
+- Add support for deploying AgentStack to a personally owned Linux device, such as a Raspberry Pi at home.
+- Support local access and remote access through a mesh network or Tailscale-style connection.
+- Document the supported hardware/OS requirements, access prerequisites, and setup path for each access method.
+
+Acceptance evidence:
+
+- A documented deployment and basic working-stack verification on a supported personal Linux device, including a Raspberry Pi.
+- Verification of both the local-access path and the mesh-network access path.
+
+## 3. Add an initial Paperclip setup to the workspace
+
+Status: Proposed.
+Priority: Immediate / as soon as possible.
+Canonical design: TBD.
+Upstream: [paperclipai/paperclip](https://github.com/paperclipai/paperclip).
+
+Required behavior:
+
+- Install and provide an initial usable setup of the open-source Paperclip agent orchestration app in the workspace, alongside the existing coding tools.
+- Document how to start and access Paperclip and connect it to the workspace's coding tools through supported integrations.
+
+Dependencies:
+
+- Workspace service enabled.
+- Confirm the Paperclip version, runtime requirements, persistent data location, and access configuration during implementation planning.
+
+Acceptance evidence:
+
+- Paperclip starts successfully in the workspace alongside the existing coding tools.
+- A basic orchestration smoke test demonstrates the initial setup working with a supported coding tool.
