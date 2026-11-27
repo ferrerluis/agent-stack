@@ -29,6 +29,30 @@ Core rules:
 
 ## Workflow
 
+### User-prepared Linux guest
+
+Use `docs/LINUX_VM.md` and root `variables.tf`. The user owns the host, VM,
+virtualization, storage mounts, mesh configuration and access/browser tunnels.
+Do not create/provision a VM, prepare a hypervisor, configure host NAT/bridges,
+or create/persist a tunnel. The runbook supplies operator-owned native ARM64
+and amd64 examples that a separately authorized agent can adapt.
+
+Obtain an explicitly identified, directly reachable Ubuntu 24.04 guest endpoint,
+SSH port, existing non-root sudo account, existing login key paths/public key,
+and verified guest public host key. A user-owned forward may provide the endpoint;
+AgentStack accepts it without managing it. Never assume the executor is the
+user's Pi.
+
+Use a separate runtime state, `cloud_provider = "existing"`, and the supplied
+endpoint. The read-only guest probe checks OS/architecture and safe data paths;
+no libvirt, `/dev/kvm`, VM UUID or AgentStack loader marker is required. Data may
+use an ordinary guest directory, or require a mount the user already prepared.
+Never format/mount a disk; reject unknown nonempty data unless its reviewed reuse
+is explicit. The common runtime installer operates only inside the guest after
+plan review and applicable deployment authorization.
+
+### Cloud targets
+
 1. Inspect the repo before asking questions.
    - Read `variables.tf`, `main.tf`, and the current `terraform.tfvars` if it exists.
    - Read `terraform.tfvars.example` only for suggestion values and example copy.

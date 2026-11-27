@@ -96,7 +96,7 @@ copy_worktree() {
       git ls-files -o --exclude-standard -z
     } | while IFS= read -r -d '' path; do
       case "$path" in
-        *.tfstate|*.tfstate.*|*.tfvars|*.tfvars.json|*.tfplan|*.tfplan.*|crash.log|crash.*.log|.terraform/*|.ssh/*)
+        *.tfstate|*.tfstate.*|*.tfvars|*.tfvars.json|*.tfplan|*.tfplan.*|crash.log|crash.*.log|.terraform/*|.ssh/*|.paperclip-acceptance-tmp.*/*)
           continue
           ;;
       esac
@@ -138,6 +138,9 @@ run_phase "runtime shell syntax" bash -n \
 run_phase "workspace Codex control Python syntax" python3 -c \
   'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' \
   "$TEST_REPO/modules/common/templates/runtime/workspace-codex-control.py.tpl" || true
+run_phase "workspace Paperclip Python syntax" python3 -c \
+  'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' \
+  "$TEST_REPO/modules/common/templates/runtime/workspace-paperclip.py" || true
 
 git -C "$ROOT_DIR" status --short --untracked-files=all > "$STATUS_AFTER"
 if diff -u "$STATUS_BEFORE" "$STATUS_AFTER"; then

@@ -60,6 +60,8 @@ require_file hermes-seed.json
 require_file hermes_health.py
 require_file hermes_npm_patch.py
 require_file hermes_npm_patch.json
+require_file workspace-paperclip.py
+require_file workspace-paperclip-package-lock.json
 require_file agent-stack-workspace-codex-update
 require_file agent-stack-workspace-codex-update.service
 require_file agent-stack-workspace-codex-update.timer
@@ -322,6 +324,14 @@ build_workspace_image() {
   if [ -f "$app/workspace-cli-task.py" ] || grep -q '^COPY workspace-cli-task.py ' "$build_context/Dockerfile"; then
     install -m 0755 "$app/workspace-cli-task.py" "$build_context/workspace-cli-task.py" || return 1
   fi
+  # An older rollback recipe predates these files. Require them only when the
+  # recipe being rebuilt actually copies them; never block a legacy rebuild.
+  if grep -q '^COPY workspace-paperclip.py ' "$build_context/Dockerfile"; then
+    install -m 0755 "$app/workspace-paperclip.py" "$build_context/workspace-paperclip.py" || return 1
+  fi
+  if grep -q '^COPY workspace-paperclip-package-lock.json ' "$build_context/Dockerfile"; then
+    install -m 0644 "$app/workspace-paperclip-package-lock.json" "$build_context/workspace-paperclip-package-lock.json" || return 1
+  fi
   docker build -t agent-stack-workspace:local -f "$build_context/Dockerfile" "$build_context" || return 1
   rm -rf "$build_context"
 }
@@ -341,6 +351,8 @@ install_workspace_runtime() {
   install -m 0644 "$staging/workspace-para-memory-drive-skill.md" "$app/workspace-para-memory-drive-skill.md"
   install -m 0755 "$staging/workspace-codex-update.sh" "$app/workspace-codex-update.sh"
   install -m 0755 "$staging/workspace-codex-control.py" "$app/workspace-codex-control.py"
+  install -m 0755 "$staging/workspace-paperclip.py" "$app/workspace-paperclip.py"
+  install -m 0644 "$staging/workspace-paperclip-package-lock.json" "$app/workspace-paperclip-package-lock.json"
   install_workspace_diagnostics_bridge
 
   echo "[workspace] Building local workspace image..."
@@ -491,12 +503,13 @@ restore_workspace_codex_auto_update_host() {
 wait_agent_stack_initial_restart() {
   local readiness_attempts=${hermes_npm_security_patch_enabled ? 180 : 60}
   for attempt in $(seq 1 "$readiness_attempts"); do
-    local agent_state openclaw_status hermes_status workspace_status codex_status
+    local agent_state openclaw_status hermes_status workspace_status codex_status paperclip_status
     agent_state="$(systemctl is-active agent-stack 2>/dev/null || true)"
     openclaw_status=disabled
     hermes_status=disabled
     workspace_status=disabled
     codex_status=disabled
+    paperclip_status=disabled
     if [ "$agent_state" = "active" ]; then
       local all_ready=1
       local container_id health_status
@@ -545,12 +558,23 @@ wait_agent_stack_initial_restart() {
           [ "$health_status" = "running" ] || all_ready=0
         fi
       fi
+      if [ "${workspace_paperclip_enabled}" = "true" ]; then
+        container_id="$(docker compose -f "$app/docker-compose.yml" ps -q paperclip 2>/dev/null || true)"
+        if [ -z "$container_id" ]; then
+          paperclip_status=missing
+          all_ready=0
+        else
+          health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)"
+          paperclip_status="$${health_status:-unknown}"
+          [ "$health_status" = "healthy" ] || all_ready=0
+        fi
+      fi
       if [ "$all_ready" -eq 1 ]; then
         return 0
       fi
     fi
     if [ "$attempt" -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
-      echo "[runtime] readiness attempt $attempt/$readiness_attempts: agent-stack=$agent_state openclaw=$openclaw_status hermes=$hermes_status workspace=$workspace_status codex=$codex_status" >&2
+      echo "[runtime] readiness attempt $attempt/$readiness_attempts: agent-stack=$agent_state openclaw=$openclaw_status hermes=$hermes_status workspace=$workspace_status codex=$codex_status paperclip=$paperclip_status" >&2
     fi
     sleep 3
   done
@@ -565,7 +589,7 @@ prefetch_runtime_images() {
   while IFS= read -r service; do
     # The workspace image is built locally; pulling it can cancel the remote
     # image downloads before the initial health-check clock starts.
-    [ -n "$service" ] && [ "$service" != workspace ] && pull_services+=("$service")
+    [ -n "$service" ] && [ "$service" != workspace ] && [ "$service" != paperclip ] && pull_services+=("$service")
   done <<< "$service_list"
   if [ "$${#pull_services[@]}" -gt 0 ]; then
     echo "[runtime] Downloading selected runtime images before startup checks..."
@@ -581,7 +605,7 @@ prefetch_runtime_images || fail "runtime image download failed before applying r
 
 rm -rf "$previous"
 install -d -m 0700 "$previous"
-for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn codex-install.py workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn codex-install.py workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt workspace-paperclip.py workspace-paperclip-package-lock.json; do
   [ -e "$app/$path" ] && cp -a "$app/$path" "$previous/" || true
 done
 backup_workspace_image
@@ -679,7 +703,7 @@ if ! wait_agent_stack_initial_restart; then
       rm -f "$app/data/hermes/config.yaml"
     fi
   fi
-  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn codex-install.py workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt; do
+  for path in docker-compose.yml .env workspace.env hermes_health.py hermes_config.py hermes_hf_tool_compat.py hermes_npm_patch.py hermes_npm_patch.json openclaw_config.py openclaw_hf_tool_compat.mjs Caddyfile tailscale-bootstrap.sh host-tailscale-bootstrap.sh agent-stack-vpn agent-stack-vpn-openvpn codex-install.py workspace.Dockerfile workspace-entrypoint.sh workspace-para-memory-drive-skill.md workspace-codex-update.sh workspace-codex-control.py workspace-cli-task.py workspace-sandbox.py workspace-sandbox-profiles.json workspace-sandbox-LICENSE.txt workspace-paperclip.py workspace-paperclip-package-lock.json; do
     rm -rf "$app/$path"
     if [ -e "$previous/$path" ]; then
       cp -a "$previous/$path" "$app/$path"

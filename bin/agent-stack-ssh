@@ -2,10 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KEY_OVERRIDE=false
 if [[ -n "${AGENT_STACK_SSH_KEY_PATH:-}" ]]; then
   KEY_PATH="$AGENT_STACK_SSH_KEY_PATH"
+  KEY_OVERRIDE=true
 elif [[ -n "${OPENCLAW_SSH_KEY_PATH:-}" ]]; then
   KEY_PATH="$OPENCLAW_SSH_KEY_PATH"
+  KEY_OVERRIDE=true
 else
   KEY_PATH="$ROOT_DIR/.ssh/id_ed25519_agent_stack"
 fi
@@ -62,6 +65,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --key)
       KEY_PATH="${2:-}"
+      KEY_OVERRIDE=true
       if [[ -z "$KEY_PATH" ]]; then
         echo "error: --key requires a value" >&2
         exit 1
@@ -107,6 +111,23 @@ if [[ "$PINNED" == true ]]; then
     -o UpdateHostKeys=no -o VerifyHostKeyDNS=no -o IdentityAgent=none -o ForwardAgent=no -o ForwardX11=no
     -o ExitOnForwardFailure=yes -o LogLevel=INFO -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "${SSH_OPTIONS[@]}")
   if [[ -n "$MODEL_FORWARD" ]]; then SSH_OPTIONS+=(-R "127.0.0.1:0:127.0.0.1:$MODEL_FORWARD"); fi
+fi
+
+# Prepared guests use the repo config's pinned host key and explicit endpoint
+# port. This helper creates no tunnels or proxy jumps. Cloud overrides are unchanged.
+if [[ -z "$HOST_OVERRIDE" ]]; then
+  GUEST_ALIAS="$(terraform -chdir="$ROOT_DIR" output -raw existing_guest_ssh_alias 2>/dev/null || true)"
+  if [[ -n "$GUEST_ALIAS" ]]; then
+    [[ -f "$ROOT_DIR/.ssh/config" ]] || { echo "error: existing guest requires its generated repo SSH config" >&2; exit 1; }
+    IDENTITY_ARGS=()
+    if [[ "$KEY_OVERRIDE" == true ]]; then
+      [[ -f "$KEY_PATH" ]] || { echo "error: supplied SSH private key not found" >&2; exit 1; }
+      IDENTITY_ARGS=(-i "$KEY_PATH")
+    fi
+    if [[ "$BATCH_MODE" == true ]]; then IDENTITY_ARGS+=(-T -o BatchMode=yes); fi
+    cd "$ROOT_DIR"
+    exec ssh -F "$ROOT_DIR/.ssh/config" -o StrictHostKeyChecking=yes -o ForwardAgent=no "${IDENTITY_ARGS[@]}" "$GUEST_ALIAS" "$@"
+  fi
 fi
 
 if [[ ! -f "$KEY_PATH" ]]; then

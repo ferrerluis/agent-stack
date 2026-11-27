@@ -1,3 +1,6 @@
+%{ if workspace_paperclip_enabled }
+FROM node:${workspace_paperclip_node_release}-bookworm-slim AS paperclip-node
+%{ endif }
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -37,8 +40,28 @@ RUN apt-get update \
     procps \
     util-linux \
     bubblewrap \
+%{ if workspace_paperclip_enabled }
+    libstdc++6 \
+    libatomic1 \
+%{ endif }
     tini \
   && rm -rf /var/lib/apt/lists/*
+
+%{ if workspace_paperclip_enabled }
+# Reuse the workspace's Ubuntu/UID/Codex contract. No source monorepo or Rust
+# toolchain is built here. The packaged release supplies its own runtime assets.
+COPY --from=paperclip-node /usr/local/bin/node /usr/local/bin/node
+COPY --from=paperclip-node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+COPY workspace-paperclip-package-lock.json /opt/agent-stack-paperclip/package-lock.json
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+  && case "$(dpkg --print-architecture)" in amd64|arm64) ;; *) exit 1 ;; esac \
+  && printf '%s\n' '{"private":true,"dependencies":{"paperclipai":"${workspace_paperclip_release}"}}' >/opt/agent-stack-paperclip/package.json \
+  && npm ci --prefix /opt/agent-stack-paperclip --omit=dev --no-audit --no-fund \
+  && ln -s /opt/agent-stack-paperclip/node_modules/.bin/paperclipai /usr/local/bin/paperclipai \
+  && test "$(paperclipai --version | tail -n 1)" = "${workspace_paperclip_release}" \
+  && npm cache clean --force
+%{ endif }
 
 # Prefer https://chatgpt.com/codex/install.sh; only404/410 permits the verified
 # official npm native bundle fallback. Both paths keep the standalone layout.
@@ -109,12 +132,15 @@ COPY para-memory-drive/SKILL.md /usr/local/share/agent-stack/skills/para-memory-
 COPY workspace-codex-update.sh /usr/local/libexec/agent-stack-workspace-codex-update
 COPY workspace-codex-control.py /usr/local/libexec/agent-stack-workspace-codex-control
 COPY workspace-cli-task.py /usr/local/libexec/agent-stack-workspace-cli-task
+COPY workspace-paperclip.py /usr/local/libexec/agent-stack-workspace-paperclip
 
 RUN chmod 0755 /usr/local/bin/workspace-entrypoint \
   && chmod 0644 /usr/local/share/agent-stack/skills/para-memory-drive/SKILL.md \
   && chmod 0755 /usr/local/libexec/agent-stack-workspace-codex-update \
   && chmod 0755 /usr/local/libexec/agent-stack-workspace-codex-control \
   && chmod 0755 /usr/local/libexec/agent-stack-workspace-cli-task \
+  && chmod 0755 /usr/local/libexec/agent-stack-workspace-paperclip \
+  && ln -s /usr/local/libexec/agent-stack-workspace-paperclip /usr/local/bin/agent-stack-paperclip \
   && mkdir -p /run/sshd
 
 EXPOSE 22

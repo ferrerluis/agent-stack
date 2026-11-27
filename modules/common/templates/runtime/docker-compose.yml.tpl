@@ -26,6 +26,33 @@ services:
       retries: ${openclaw_health_retries}
       start_period: ${openclaw_health_start_period_seconds}s
 %{ endif }
+%{ if workspace_paperclip_enabled }
+
+  paperclip:
+    image: agent-stack-workspace:local
+    restart: unless-stopped
+    user: "1000:1000"
+    stop_grace_period: 2m
+    entrypoint: ["/usr/bin/tini", "-g", "--"]
+    command: ["python3", "/usr/local/libexec/agent-stack-workspace-paperclip", "serve"]
+    environment:
+      HOME: /home/${workspace_username}
+      USER: ${workspace_username}
+      LOGNAME: ${workspace_username}
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - /opt/agent-stack/data/workspace/home:/home/${workspace_username}
+    depends_on:
+      workspace:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/libexec/agent-stack-workspace-paperclip", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+%{ endif }
 %{ if hermes_enabled }
 
   hermes:

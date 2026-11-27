@@ -391,7 +391,46 @@ Live tests must:
 - clean up resources and report any cleanup failure loudly
 - document expected cloud cost and duration before running
 
+## Optional Paperclip Native Component Probe
+
+The Paperclip component probe starts temporary, credential-free local servers,
+never a deployed AgentStack instance. Install the pinned Paperclip package and
+Node into a disposable directory first; no system installation is required.
+Then opt in explicitly:
+
+```bash
+AGENT_STACK_PAPERCLIP_RUNTIME_TESTS=1 PYTHONDONTWRITEBYTECODE=1 \
+  python3 scripts/test-paperclip-runtime.py \
+  --node /absolute/path/to/node \
+  --paperclip /absolute/path/to/paperclipai
+```
+
+The probe refuses occupied ports, forces and checks localhost binding, creates
+an empty home under `/tmp/agent-stack-tests`, and blocks every Codex invocation
+with a fixture sentinel. It exercises the real pinned server and embedded
+database, interrupted initialization, paused draft/run admission, redacted
+configuration, private first-owner claim, and authenticated restart. Results
+and private fixture logs remain in its printed temporary directory. It stops
+its test processes on exit and does not inspect any existing coding login,
+change mesh routes/firewalls, or run paid agents.
+
+This is component evidence for the tested native OS/architecture. It does not
+qualify the Ubuntu 24.04 Docker image, Docker port publication, browser sign-in,
+workspace SSH, or another architecture. See [the product acceptance catalog](docs/PAPERCLIP.md)
+for required passed versus blocked evidence. The default suite never invokes
+this opt-in local-server probe.
+
 ## Evidence Report
+
+The prepared-guest target is covered by `tests/existing_guest.tftest.hcl` and
+`skills/agent-stack-setup/tests/test_existing_guest.py` in the default suite.
+The external guest probe is overridden by synthetic facts during Terraform tests;
+no real SSH target is contacted. Fixture tests cover supported guest architectures,
+pinned identity/port, ordinary data directories, optional preexisting mounts and
+preservation of unrelated data. There is no VM-creation root or tunnel helper.
+Native guest, user-owned access and browser acceptance in
+[LINUX_VM.md](docs/LINUX_VM.md) remains separate. The default runner excludes
+untracked `.paperclip-acceptance-tmp.*` dependency homes from its source copy.
 
 Every default local run prints:
 
