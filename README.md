@@ -1,7 +1,7 @@
 # AgentStack
 
 > Terraform repo for a secure, self-hosted agent + automation stack.
-> Deploy OpenClaw, Hermes, n8n, and local Postgres to **AWS (EC2)**, **DigitalOcean (Droplet)**, **Hetzner Cloud**, or **Google Cloud (Compute Engine)** through the shared runtime installer.
+> Deploy OpenClaw, Hermes, n8n, and local Postgres to **AWS (EC2)**, **DigitalOcean (Droplet)**, **Hetzner Cloud**, or **Google Cloud (Compute Engine)** through the shared runtime installer, or deploy into a prepared Ubuntu guest.
 > After `terraform apply`, the shared installer configures the selected services. Cloud permissions, model access, tailnet enrollment and any interactive account login must be prepared separately.
 
 ---
@@ -80,13 +80,23 @@ OpenClaw, Hermes, n8n, Postgres, and the optional workspace run as Docker contai
 
 ---
 
+## User-prepared Linux VM
+
+AgentStack can install its runtime on a directly reachable **Ubuntu 24.04 ARM64
+or amd64 guest** with `cloud_provider = "existing"`. The user prepares the host,
+VM, storage and any SSH/mesh/browser tunnels. AgentStack manages its guest runtime
+only. See [the setup and access examples](docs/LINUX_VM.md); no libvirt module or
+host/tunnel lifecycle is provided. Native application/runtime qualification is
+separate from configuration tests. Use a new state rather than changing a live
+cloud deployment's provider.
+
 ## Prerequisites
 
 | Requirement | Notes |
 |-------------|-------|
 | Terraform ≥ 1.9 | [Install](https://developer.hashicorp.com/terraform/install) |
-| SSH key pair | Optional; if omitted, Terraform auto-creates a repo-local keypair in `./.ssh` |
-| Cloud credentials | AWS access key + secret, DigitalOcean API token, Hetzner Cloud API token, or an authorized Google Cloud identity |
+| SSH key pair | Existing guests require an approved existing key and verified guest host key; cloud targets can auto-create a repo-local keypair |
+| Cloud credentials | Cloud targets only. AWS access key + secret, DigitalOcean API token, Hetzner Cloud API token, or an authorized Google Cloud identity |
 | LLM credentials | At least one model provider credential: Anthropic/OpenAI/Groq/Gemini API key, or imported Codex auth for subscription-backed OpenAI |
 | Tailscale account (recommended) | [Sign up free](https://tailscale.com/) — generate an auth key |
 | VPN credentials (optional) | Required only when `vpn_enabled = true`; use manual service credentials for OpenVPN or a non-expiring Nord access token for NordLynx, never the normal account password |
@@ -356,6 +366,14 @@ The workspace image is Ubuntu-based, installs OpenSSH, Python 3, `pip`, `venv`, 
 Host and workspace Codex installation prefer the official standalone installer. If its endpoint returns HTTP 404 or 410, a shared installer resolves the requested release from official `@openai/codex` npm metadata, verifies the native artifact's published SHA-512 integrity, and keeps its full bundle in the standalone `current/bin/codex` layout. Explicit image pins stay exact; the host's default stable channel resolves once. Other download or installer failures stop setup.
 
 `workspace_codex_release` remains the exact reproducible image fallback. When live updates are enabled, it must be a stable `x.y.z` version. Set `workspace_codex_auto_update_enabled = true` only after the first approved workspace rollout. The updater runs the official [`codex update`](https://learn.chatgpt.com/docs/developer-commands#codex-update) command once per day at `workspace_codex_auto_update_time` in `workspace_codex_auto_update_timezone` (defaults: `04:00 America/New_York`). It is a non-catch-up hard cutover: it does not run at workspace startup, does not wait for idle work, and does not poll workspace processes. It restarts the app server only when a new CLI release was installed, so active Codex work can be interrupted.
+
+Paperclip can be installed alongside the workspace coding tools with
+`workspace_paperclip_enabled = true`. It auto-starts as an authenticated companion
+using the same workspace image and persisted home. Its initial `ACME Co`
+company contains one Codex draft held paused for setup, with no model credentials
+or scheduled work. See [Paperclip setup and acceptance](docs/PAPERCLIP.md) for the
+first-owner login, isolation, access boundary, and runtime verification requirements.
+Existing deployments keep it disabled by default.
 
 n8n uses local Postgres by default:
 

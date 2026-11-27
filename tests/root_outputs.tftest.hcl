@@ -177,6 +177,43 @@ run "tailscale_private_outputs" {
     condition     = output.host_codex_login_command == "ssh admin@203.0.113.10 'codex login --device-auth'"
     error_message = "Host Codex login command should use the admin SSH target and device auth."
   }
+
+  assert {
+    condition     = output.workspace_paperclip_note == "disabled" && !strcontains(local.runtime_docker_compose, "  paperclip:") && !strcontains(local.runtime_workspace_dockerfile, "npm ci")
+    error_message = "Paperclip must remain disabled by default without adding Node, an npm install, or a companion service."
+  }
+}
+
+run "paperclip_opt_in_outputs" {
+  command = plan
+
+  variables {
+    enabled_services            = ["workspace"]
+    workspace_password          = "workspace-password-agent-stack-tests"
+    workspace_paperclip_enabled = true
+    gemini_api_key              = ""
+  }
+
+  assert {
+    condition     = strcontains(local.runtime_docker_compose, "  paperclip:") && strcontains(local.runtime_docker_compose, "127.0.0.1:3100:3100")
+    error_message = "An enabled Paperclip companion must be published only on Docker-host loopback."
+  }
+
+  assert {
+    condition     = strcontains(local.runtime_workspace_dockerfile, "node:24.22.2-bookworm-slim") && strcontains(local.runtime_workspace_dockerfile, "\"paperclipai\":\"2026.1106.0\"") && strcontains(local.runtime_workspace_dockerfile, "npm ci")
+    error_message = "Paperclip and Node must use schema-owned exact release pins."
+  }
+
+  assert {
+    condition     = strcontains(output.workspace_paperclip_note, "ACME Co") && strcontains(output.workspace_paperclip_note, "credential-free Codex draft held paused") && !strcontains(output.workspace_paperclip_note, "workspace-password-agent-stack-tests")
+    error_message = "The handoff must explain the inert starter without exposing credentials."
+  }
+
+  assert {
+    condition     = strcontains(local.runtime_workspace_env, "PAPERCLIP_API_URL=http://paperclip:3100") && strcontains(local.runtime_workspace_entrypoint, "SetEnv PAPERCLIP_API_URL=http://paperclip:3100")
+    error_message = "Enabled workspace clients need the internal Paperclip endpoint in both their container and SSH environments."
+  }
+
 }
 
 run "workspace_host_outputs" {

@@ -119,6 +119,30 @@ run "workspace_confinement_requires_workspace" {
   expect_failures = [var.workspace_codex_sandbox_enabled]
 }
 
+run "rejects_paperclip_without_workspace" {
+  command = plan
+  variables {
+    workspace_paperclip_enabled = true
+  }
+  expect_failures = [var.workspace_paperclip_enabled]
+}
+
+run "rejects_unpinned_paperclip" {
+  command = plan
+  variables {
+    workspace_paperclip_release = "latest"
+  }
+  expect_failures = [var.workspace_paperclip_release]
+}
+
+run "rejects_old_paperclip_node" {
+  command = plan
+  variables {
+    workspace_paperclip_node_release = "24.10.0"
+  }
+  expect_failures = [var.workspace_paperclip_node_release]
+}
+
 run "rejects_unknown_cloud_provider" {
   command = plan
 

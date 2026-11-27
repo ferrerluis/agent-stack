@@ -163,7 +163,7 @@ resource "terraform_data" "input_validation" {
 }
 
 module "runtime_access" {
-  count      = var.tailscale_enabled ? 1 : 0
+  count      = var.tailscale_enabled && var.cloud_provider != "existing" ? 1 : 0
   source     = "./modules/common/runtime-access"
   depends_on = [terraform_data.runtime_apply]
   repo_root  = abspath(path.root)
@@ -173,7 +173,9 @@ module "runtime_access" {
 }
 
 data "external" "repo_ssh_public_key" {
-  count = trimspace(var.ssh_public_key) == "" ? 1 : 0
+  # Personal VM setup uses existing approved identities; a plan must never
+  # silently create a new login key for that target.
+  count = trimspace(var.ssh_public_key) == "" && var.cloud_provider != "existing" ? 1 : 0
 
   program = ["python3", "${path.root}/scripts/resolve_ssh_public_key.py"]
   query = {
@@ -183,8 +185,8 @@ data "external" "repo_ssh_public_key" {
 }
 
 locals {
-  resolved_ssh_public_key = trimspace(var.ssh_public_key) != "" ? var.ssh_public_key : data.external.repo_ssh_public_key[0].result.ssh_public_key
-  resolved_ssh_key_source = trimspace(var.ssh_public_key) != "" ? "tfvars_or_env" : data.external.repo_ssh_public_key[0].result.source
+  resolved_ssh_public_key = trimspace(var.ssh_public_key) != "" ? var.ssh_public_key : try(data.external.repo_ssh_public_key[0].result.ssh_public_key, "")
+  resolved_ssh_key_source = trimspace(var.ssh_public_key) != "" ? "tfvars_or_env" : try(data.external.repo_ssh_public_key[0].result.source, "existing_identity_required")
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +440,7 @@ module "gcp" {
 }
 
 locals {
-  runtime_instance_id = (
+  runtime_instance_id = jsondecode(var.cloud_provider == "existing" ? jsonencode("existing:${local.admin_ssh_host}:${var.existing_guest_ssh_port}:${sha256(var.existing_guest_host_key)}") : jsonencode(
     var.cloud_provider == "aws"
     ? one(module.aws[*].instance_id)
     : (
@@ -446,9 +448,9 @@ locals {
       ? one(module.digitalocean[*].droplet_id)
       : (var.cloud_provider == "hetzner" ? one(module.hetzner[*].server_id) : one(module.gcp[*].instance_id))
     )
-  )
+  ))
 
-  runtime_data_volume_id = (
+  runtime_data_volume_id = jsondecode(var.cloud_provider == "existing" ? jsonencode("existing-directory:/opt/agent-stack/data") : jsonencode(
     var.cloud_provider == "aws"
     ? one(module.aws[*].ebs_volume_id)
     : (
@@ -456,7 +458,7 @@ locals {
       ? one(module.digitalocean[*].volume_id)
       : (var.cloud_provider == "hetzner" ? one(module.hetzner[*].volume_id) : one(module.gcp[*].volume_id))
     )
-  )
+  ))
 
   runtime_do_volume_name = var.cloud_provider == "digitalocean" ? one(module.digitalocean[*].volume_name) : ""
 
@@ -467,6 +469,8 @@ locals {
     hermes_dashboard_secret                        = trimspace(var.hermes_dashboard_secret) != "" ? var.hermes_dashboard_secret : random_password.hermes_dashboard_secret.result
     gcp_device_name                                = var.cloud_provider == "gcp" ? one(module.gcp[*].device_name) : ""
     provider_type                                  = var.cloud_provider
+    existing_guest_allow_existing_data             = var.existing_guest_allow_existing_data
+    existing_guest_require_data_mount              = var.existing_guest_require_data_mount
     project_name                                   = var.project_name
     admin_username                                 = var.admin_username
     admin_password                                 = var.admin_password
@@ -549,6 +553,9 @@ locals {
     workspace_hf_tool_compat_base64                = filebase64("${path.module}/modules/common/runtime/workspace_hf_tool_compat.mjs")
     workspace_muse_release                         = var.workspace_muse_release
     workspace_claude_release                       = var.workspace_claude_release
+    workspace_paperclip_enabled                    = var.workspace_paperclip_enabled
+    workspace_paperclip_release                    = var.workspace_paperclip_release
+    workspace_paperclip_node_release               = var.workspace_paperclip_node_release
     workspace_codex_release                        = var.workspace_codex_release
     workspace_codex_sandbox_enabled                = var.workspace_codex_sandbox_enabled
     workspace_codex_auto_update_enabled            = var.workspace_codex_auto_update_enabled
@@ -559,7 +566,7 @@ locals {
     workspace_password                             = var.workspace_password
     workspace_password_hash                        = var.workspace_password_hash
     workspace_ssh_host_port                        = var.workspace_ssh_host_port
-    workspace_ssh_host                             = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : var.project_name
+    workspace_ssh_host                             = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : (var.cloud_provider == "existing" ? local.admin_ssh_host : var.project_name)
     workspace_ssh_public_keys_base64               = base64encode(join("\n", [for key in var.workspace_ssh_public_keys : trimspace(key)]))
     vpn_enabled                                    = var.vpn_enabled
     vpn_provider                                   = var.vpn_provider
@@ -626,6 +633,8 @@ locals {
   runtime_starter_agents             = file("${path.module}/modules/common/templates/starter/AGENTS.default.md")
   runtime_starter_tools              = file("${path.module}/modules/common/templates/starter/TOOLS.default.md")
   runtime_starter_user               = file("${path.module}/modules/common/templates/starter/USER.default.md")
+  runtime_workspace_paperclip        = file("${path.module}/modules/common/templates/runtime/workspace-paperclip.py")
+  runtime_paperclip_package_lock     = file("${path.module}/modules/common/templates/runtime/workspace-paperclip-package-lock.json")
   runtime_artifact_checksum = nonsensitive(sha256(join("\n---agent-stack-artifact---\n", [
     local.deployment_input_fingerprints.deployment,
     nonsensitive(local.runtime_docker_compose),
@@ -653,6 +662,8 @@ locals {
     nonsensitive(local.runtime_workspace_drive_skill),
     nonsensitive(local.runtime_workspace_codex_update),
     nonsensitive(local.runtime_workspace_codex_control),
+    nonsensitive(local.runtime_workspace_paperclip),
+    nonsensitive(local.runtime_paperclip_package_lock),
     nonsensitive(local.runtime_workspace_update_host),
     nonsensitive(local.runtime_workspace_update_unit),
     nonsensitive(local.runtime_workspace_update_timer),
@@ -694,26 +705,33 @@ resource "terraform_data" "runtime_apply" {
     module.digitalocean,
     module.hetzner,
     module.gcp,
+    terraform_data.existing_guest_validation,
   ]
 
   connection {
     type        = "ssh"
     host        = local.admin_ssh_host
+    port        = var.cloud_provider == "existing" ? var.existing_guest_ssh_port : 22
     user        = var.admin_username
-    private_key = file("${path.root}/${var.repo_ssh_private_key_path}")
+    private_key = file(abspath(var.repo_ssh_private_key_path))
     timeout     = "15m"
+    host_key    = var.cloud_provider == "existing" ? var.existing_guest_host_key : null
   }
 
   provisioner "remote-exec" {
-    inline = [
+    inline = concat(var.cloud_provider == "existing" ? [
+      "if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi",
+      "sudo -n true",
+      ] : [
       "sudo cloud-init status --wait",
       "sudo -n true",
       "sudo test -f /opt/agent-stack/.loader-ready.json",
       "sudo test -d /opt/agent-stack/data",
+      ], [
       "group=$(id -gn ${var.admin_username}); sudo install -d -m 0755 /opt/agent-stack; sudo install -d -m 0700 -o ${var.admin_username} -g $group ${local.runtime_staging_dir}",
       "sudo find ${local.runtime_staging_dir} -mindepth 1 -maxdepth 1 -exec rm -rf {} +",
       "install -d -m 0700 ${local.runtime_staging_dir}/templates",
-    ]
+    ])
   }
 
   provisioner "file" {
@@ -827,6 +845,16 @@ resource "terraform_data" "runtime_apply" {
   provisioner "file" {
     content     = local.runtime_workspace_codex_control
     destination = "${local.runtime_staging_dir}/workspace-codex-control.py"
+  }
+
+  provisioner "file" {
+    content     = local.runtime_workspace_paperclip
+    destination = "${local.runtime_staging_dir}/workspace-paperclip.py"
+  }
+
+  provisioner "file" {
+    content     = local.runtime_paperclip_package_lock
+    destination = "${local.runtime_staging_dir}/workspace-paperclip-package-lock.json"
   }
 
   provisioner "file" {
@@ -965,13 +993,20 @@ resource "local_file" "repo_ssh_config" {
 Host ${var.repo_ssh_host_alias}
   HostName ${local.admin_ssh_host}
   User ${var.admin_username}
-  IdentityFile ${var.repo_ssh_identity_file}
+  IdentityFile ${var.cloud_provider == "existing" ? "\"${replace(abspath(var.repo_ssh_private_key_path), "\"", "\\\"")}\"" : var.repo_ssh_identity_file}
   IdentitiesOnly yes
   ConnectTimeout 10
   ServerAliveInterval 20
   ServerAliveCountMax 3
   TCPKeepAlive yes
-  StrictHostKeyChecking accept-new
+  StrictHostKeyChecking ${var.cloud_provider == "existing" ? "yes" : "accept-new"}
+%{if var.cloud_provider == "existing"}
+  Port ${var.existing_guest_ssh_port}
+  ForwardAgent no
+  HostKeyAlias ${var.repo_ssh_host_alias}
+  UserKnownHostsFile "${abspath(path.root)}/.ssh/known_hosts_agent_stack_guest"
+  GlobalKnownHostsFile /dev/null
+%{endif}
 EOT
 }
 
@@ -980,6 +1015,9 @@ EOT
 # Trial names, generated credentials/keys, deadlines and resource IDs are absent.
 locals {
   proof_runtime_template_vars = {
+    workspace_paperclip_enabled                    = var.workspace_paperclip_enabled
+    workspace_paperclip_release                    = var.workspace_paperclip_release
+    workspace_paperclip_node_release               = var.workspace_paperclip_node_release
     hermes_config_mode                             = var.hermes_config_mode
     hermes_dashboard_username                      = var.hermes_dashboard_username
     hermes_dashboard_password                      = "managed-credential"
@@ -1102,6 +1140,7 @@ locals {
     root_runtime = sha256(regex("(?s)  runtime_template_vars = \\{.*?  runtime_staging_dir = [^\n]*", file("${path.module}/main.tf")))
   })))
   proof_provider_settings = {
+    existing     = { admin_username = var.admin_username, ssh_port = var.existing_guest_ssh_port, architecture = var.existing_guest_architecture, allow_existing_data = var.existing_guest_allow_existing_data, require_data_mount = var.existing_guest_require_data_mount }
     aws          = { admin_username = var.admin_username, allowed_ssh_cidr = var.allowed_ssh_cidr, aws_ami_id = var.aws_ami_id, aws_disk_size_gb = var.aws_disk_size_gb, aws_existing_volume_id = var.aws_existing_volume_id, aws_instance_type = var.aws_instance_type, aws_region = var.aws_region, aws_showcase_cost_controls = var.aws_showcase_cost_controls }
     digitalocean = { admin_username = var.admin_username, allowed_ssh_cidr = var.allowed_ssh_cidr, do_disk_size_gb = var.do_disk_size_gb, do_droplet_size = var.do_droplet_size, do_existing_volume_id = var.do_existing_volume_id, do_existing_volume_name = var.do_existing_volume_name, do_project_id = var.do_project_id, do_region = var.do_region }
     hetzner      = { admin_username = var.admin_username, allowed_ssh_cidr = var.allowed_ssh_cidr, hcloud_disk_size_gb = var.hcloud_disk_size_gb, hcloud_existing_volume_id = var.hcloud_existing_volume_id, hcloud_image = var.hcloud_image, hcloud_location = var.hcloud_location, hcloud_pin_boot_image = var.hcloud_pin_boot_image, hcloud_server_type = var.hcloud_server_type }
@@ -1116,8 +1155,8 @@ locals {
       provider               = var.cloud_provider
       settings               = local.proof_provider_settings[var.cloud_provider]
       trial_egress_cap_bytes = var.showcase_trial_limits == null ? null : var.showcase_trial_limits.egress_cap_bytes
-      sources                = { for name in fileset("${path.module}/modules/${var.cloud_provider}", "**") : name => filesha256("${path.module}/modules/${var.cloud_provider}/${name}") }
-      root_provider          = sha256(regex("(?s)module \"${var.cloud_provider}\" \\{.*?\n}", file("${path.module}/main.tf")))
+      sources                = var.cloud_provider == "existing" ? { "scripts/existing_guest.py" = filesha256("${path.module}/scripts/existing_guest.py") } : { for name in fileset("${path.module}/modules/${var.cloud_provider}", "**") : name => filesha256("${path.module}/modules/${var.cloud_provider}/${name}") }
+      root_provider          = var.cloud_provider == "existing" ? filesha256("${path.module}/existing-guest.tf") : sha256(regex("(?s)module \"${var.cloud_provider}\" \\{.*?\n}", file("${path.module}/main.tf")))
       provider_versions      = filesha256("${path.module}/versions.tf")
       provider_lock          = filesha256("${path.module}/.terraform.lock.hcl")
     }))

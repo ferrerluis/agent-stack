@@ -132,7 +132,7 @@ run "digitalocean_provider_matrix" {
   }
 
   assert {
-    condition     = terraform_data.runtime_apply.triggers_replace.instance_id == 4242
+    condition     = tostring(terraform_data.runtime_apply.triggers_replace.instance_id) == "4242"
     error_message = "Runtime replacement triggers should include the selected Droplet ID."
   }
 
@@ -161,7 +161,7 @@ run "hetzner_provider_matrix" {
   }
 
   assert {
-    condition     = terraform_data.runtime_apply.triggers_replace.instance_id == 31337
+    condition     = tostring(terraform_data.runtime_apply.triggers_replace.instance_id) == "31337"
     error_message = "Runtime replacement triggers should include the selected Hetzner server ID."
   }
 

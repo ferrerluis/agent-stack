@@ -103,6 +103,9 @@ export CODEX_HOME="$home_dir/.codex"
 export PATH="$home_dir/.local/bin:/usr/local/bin:\$PATH"
 EOF
 chmod 0644 /etc/profile.d/agent-stack-workspace.sh
+%{ if workspace_paperclip_enabled }
+printf 'export PAPERCLIP_API_URL=http://paperclip:3100\n' >> /etc/profile.d/agent-stack-workspace.sh
+%{ endif }
 
 cat >/etc/ssh/sshd_config.d/99-agent-stack-workspace.conf <<EOF
 PasswordAuthentication yes
@@ -115,6 +118,9 @@ X11Forwarding no
 PermitTunnel no
 EOF
 printf 'SetEnv CODEX_HOME=%s\n' "$home_dir/.codex" >> /etc/ssh/sshd_config.d/99-agent-stack-workspace.conf
+%{ if workspace_paperclip_enabled }
+printf 'SetEnv PAPERCLIP_API_URL=http://paperclip:3100\n' >> /etc/ssh/sshd_config.d/99-agent-stack-workspace.conf
+%{ endif }
 # SSH commands do not source /etc/profile.d.  Keep their Codex resolution
 # identical to an interactive workspace shell so `ssh workspace codex` never
 # accidentally selects the image fallback in /usr/local/bin.

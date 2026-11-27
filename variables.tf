@@ -3,13 +3,13 @@
 # ─────────────────────────────────────────────────────────
 
 variable "cloud_provider" {
-  description = "Which cloud provider to deploy on: aws, digitalocean, hetzner, or gcp."
+  description = "Deployment target: aws, digitalocean, hetzner, gcp, or a directly reachable user-prepared Ubuntu 24.04 VM."
   type        = string
   default     = "aws"
 
   validation {
-    condition     = contains(["aws", "digitalocean", "hetzner", "gcp"], var.cloud_provider)
-    error_message = "cloud_provider must be aws, digitalocean, hetzner, or gcp."
+    condition     = contains(["aws", "digitalocean", "hetzner", "gcp", "existing"], var.cloud_provider)
+    error_message = "cloud_provider must be aws, digitalocean, hetzner, gcp, or existing."
   }
 }
 
@@ -38,7 +38,7 @@ variable "admin_username" {
 }
 
 variable "admin_ssh_host_override" {
-  description = "Optional SSH host or IP for Terraform runtime provisioning and admin helper outputs. Blank uses the cloud provider public IP. Set to a Tailscale DNS name when public SSH is intentionally unavailable."
+  description = "SSH endpoint for runtime provisioning and admin helpers; required for existing guests. Blank uses the cloud provider public IP. An existing-guest endpoint must be directly reachable; the user prepares any mesh/tunnel access."
   type        = string
   default     = ""
 
@@ -306,7 +306,7 @@ variable "repo_ssh_identity_file" {
 }
 
 variable "repo_ssh_private_key_path" {
-  description = "Repo-relative private key path used for auto key resolution/generation when ssh_public_key is empty."
+  description = "Existing SSH private key path (repo-relative or absolute for existing guests). Cloud targets may auto-resolve/generate the repo-relative key when ssh_public_key is blank."
   type        = string
   default     = ".ssh/id_ed25519_agent_stack"
 }
@@ -625,6 +625,39 @@ variable "workspace_claude_release" {
   validation {
     condition     = !(var.workspace_claude_enabled || contains(var.workspace_harnesses, "claude_code")) || can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.workspace_claude_release))
     error_message = "workspace_claude_release must be an exact x.y.z version when Claude Code is enabled."
+  }
+}
+
+variable "workspace_paperclip_enabled" {
+  description = "Install Paperclip in the optional workspace image and auto-start its private, authenticated companion with one credential-free Codex setup draft. Does not configure mesh ingress or start agents."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.workspace_paperclip_enabled || contains(var.enabled_services, "workspace")
+    error_message = "workspace_paperclip_enabled requires enabled_services to include \"workspace\"."
+  }
+}
+
+variable "workspace_paperclip_release" {
+  description = "Exact Paperclip npm release. The bootstrap and bundled npm lockfile target 2026.1106.0; changing it requires regenerating that lockfile and runtime acceptance testing."
+  type        = string
+  default     = "2026.1106.0"
+
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.workspace_paperclip_release))
+    error_message = "workspace_paperclip_release must be an exact stable x.y.z release, not latest or a range."
+  }
+}
+
+variable "workspace_paperclip_node_release" {
+  description = "Exact Node.js 24 LTS image release used by the optional Paperclip installation. Paperclip requires Node 24.11 or newer."
+  type        = string
+  default     = "24.22.2"
+
+  validation {
+    condition     = can(regex("^24\\.[0-9]+\\.[0-9]+$", var.workspace_paperclip_node_release)) && try(tonumber(split(".", var.workspace_paperclip_node_release)[1]), 0) >= 11
+    error_message = "workspace_paperclip_node_release must be an exact Node 24 LTS release at least 24.11.0."
   }
 }
 
@@ -1279,4 +1312,50 @@ variable "showcase_trial_limits" {
     egress_cap_bytes = number
   })
   default = null
+}
+
+# User-prepared Linux guest runtime connection (see docs/LINUX_VM.md).
+
+
+variable "existing_guest_host_key" {
+  description = "Verified guest SSH public host key (algorithm and base64), obtained through the trusted VM console. Not a user/private key."
+  type        = string
+  default     = ""
+}
+
+
+
+
+
+
+variable "existing_guest_ssh_port" {
+  description = "SSH port of the directly reachable user-prepared guest endpoint, including a user-owned tunnel endpoint. AgentStack does not create that tunnel."
+  type        = number
+  default     = 22
+  validation {
+    condition     = floor(var.existing_guest_ssh_port) == var.existing_guest_ssh_port && var.existing_guest_ssh_port >= 1 && var.existing_guest_ssh_port <= 65535
+    error_message = "existing_guest_ssh_port must be an integer from 1 to 65535."
+  }
+}
+
+variable "existing_guest_architecture" {
+  description = "Expected native guest architecture: auto detects amd64 or arm64 over verified SSH. This does not inspect or configure the hypervisor."
+  type        = string
+  default     = "auto"
+  validation {
+    condition     = contains(["auto", "arm64", "amd64"], var.existing_guest_architecture)
+    error_message = "existing_guest_architecture must be auto, arm64 or amd64."
+  }
+}
+
+variable "existing_guest_allow_existing_data" {
+  description = "Explicitly permit reuse of nonempty /opt/agent-stack/data that has no AgentStack marker. Review and back it up first; no filesystem is formatted or disk mounted."
+  type        = bool
+  default     = false
+}
+
+variable "existing_guest_require_data_mount" {
+  description = "Require the user to have already mounted persistent storage at /opt/agent-stack/data. False permits a normal directory on the guest filesystem. AgentStack never mounts or formats a disk for this target."
+  type        = bool
+  default     = false
 }

@@ -505,9 +505,9 @@ class RuntimeProvisioningContractTest(unittest.TestCase):
     def test_terraform_waits_for_cloud_init_and_provisions_as_admin(self) -> None:
         self.assertIn('resource "terraform_data" "runtime_apply"', self.main_tf)
         self.assertIn('"sudo cloud-init status --wait"', self.main_tf)
-        self.assertIn("host        = local.admin_ssh_host", self.main_tf)
-        self.assertIn("user        = var.admin_username", self.main_tf)
-        self.assertNotIn('user        = "root"', self.main_tf)
+        self.assertRegex(self.main_tf, r"(?m)^\s*host\s*=\s*local\.admin_ssh_host\s*$")
+        self.assertRegex(self.main_tf, r"(?m)^\s*user\s*=\s*var\.admin_username\s*$")
+        self.assertNotRegex(self.main_tf, r'(?m)^\s*user\s*=\s*"root"\s*$')
 
     def test_runtime_reapplies_when_artifact_instance_or_volume_changes(self) -> None:
         self.assertIn("triggers_replace = {", self.main_tf)

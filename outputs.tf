@@ -1,6 +1,6 @@
 locals {
   # one() returns null when the list is empty (module count = 0), never errors
-  instance_public_ip = (
+  instance_public_ip = var.cloud_provider == "existing" ? null : (
     var.cloud_provider == "aws"
     ? one(module.aws[*].instance_public_ip)
     : (
@@ -9,9 +9,10 @@ locals {
       : (var.cloud_provider == "hetzner" ? one(module.hetzner[*].instance_public_ip) : one(module.gcp[*].instance_public_ip))
     )
   )
-  admin_ssh_host     = trimspace(var.admin_ssh_host_override) != "" ? trimspace(var.admin_ssh_host_override) : local.instance_public_ip
-  tailscale_dns      = var.tailscale_enabled ? one(module.runtime_access[*].tailscale_dns) : ""
-  workspace_ssh_host = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : (local.tailscale_dns != "" ? local.tailscale_dns : var.project_name)
+  admin_ssh_host        = var.cloud_provider == "existing" ? trimspace(var.admin_ssh_host_override) : (trimspace(var.admin_ssh_host_override) != "" ? trimspace(var.admin_ssh_host_override) : local.instance_public_ip)
+  admin_ssh_destination = var.cloud_provider == "existing" && var.generate_repo_ssh_config ? "-F ${path.root}/.ssh/config ${var.repo_ssh_host_alias}" : "${var.cloud_provider == "existing" && var.existing_guest_ssh_port != 22 ? "-p ${var.existing_guest_ssh_port} " : ""}${var.admin_username}@${local.admin_ssh_host}"
+  tailscale_dns         = var.tailscale_enabled && var.cloud_provider != "existing" ? one(module.runtime_access[*].tailscale_dns) : ""
+  workspace_ssh_host    = trimspace(var.workspace_ssh_host_override) != "" ? trimspace(var.workspace_ssh_host_override) : (var.cloud_provider == "existing" ? local.admin_ssh_host : (local.tailscale_dns != "" ? local.tailscale_dns : var.project_name))
 
   openclaw_url = !local.openclaw_enabled ? "disabled" : (
     var.public_domain_enabled && local.resolved_openclaw_domain != ""
@@ -26,13 +27,13 @@ locals {
   hermes_url = !local.hermes_enabled || !var.hermes_dashboard_enabled ? "disabled" : (
     var.public_domain_enabled && local.resolved_hermes_domain != ""
     ? "https://${local.resolved_hermes_domain}"
-    : (var.tailscale_enabled ? (local.tailscale_dns != "" ? "https://${local.tailscale_dns}:8443" : "Tailscale URL unavailable; check the node and run terraform refresh") : "http://localhost:9119  (after running: ssh -L 9119:127.0.0.1:9119 ${var.admin_username}@${local.admin_ssh_host})")
+    : (var.tailscale_enabled ? (local.tailscale_dns != "" ? "https://${local.tailscale_dns}:8443" : "Tailscale URL unavailable; check the node and run terraform refresh") : "http://localhost:9119  (after running: ssh -L 9119:127.0.0.1:9119 ${local.admin_ssh_destination})")
   )
 
   n8n_url = !local.n8n_enabled ? "disabled" : (
     var.public_domain_enabled && local.resolved_n8n_domain != ""
     ? "https://${local.resolved_n8n_domain}"
-    : "http://localhost:5678  (after running: ssh -L 5678:127.0.0.1:5678 ${var.admin_username}@${local.admin_ssh_host})"
+    : "http://localhost:5678  (after running: ssh -L 5678:127.0.0.1:5678 ${local.admin_ssh_destination})"
   )
 
   n8n_webhook_url = !local.n8n_enabled ? "disabled" : (
@@ -55,7 +56,7 @@ output "instance_public_ip" {
 
 output "ssh_command" {
   description = "SSH command to connect to the instance."
-  value       = "ssh ${var.admin_username}@${local.admin_ssh_host}"
+  value       = "ssh ${local.admin_ssh_destination}"
 }
 
 output "repo_ssh_command" {
@@ -70,7 +71,7 @@ output "repo_ssh_config_path" {
 
 output "host_codex_login_command" {
   description = "Run after apply to authenticate the host Codex CLI as the admin user with device auth."
-  value       = var.host_codex_cli_enabled ? "ssh ${var.admin_username}@${local.admin_ssh_host} 'codex login --device-auth'" : "disabled"
+  value       = var.host_codex_cli_enabled ? "ssh ${local.admin_ssh_destination} 'codex login --device-auth'" : "disabled"
 }
 
 output "resolved_ssh_public_key_source" {
@@ -83,7 +84,7 @@ output "tailscale_note" {
   value = var.tailscale_enabled ? (
     "Tailscale is enabled in ${var.tailscale_mode} mode. Connect your device to the same tailnet. OpenClaw: ${local.openclaw_url}. Hermes: ${local.hermes_url}. Use dashboard_url_with_token_import for OpenClaw login and hermes_dashboard_password for Hermes login."
     ) : (
-    "Tailscale is DISABLED. Use an SSH tunnel to reach the dashboard: ssh -L 18789:127.0.0.1:18789 ${var.admin_username}@${local.admin_ssh_host}  then open http://localhost:18789"
+    "Tailscale is DISABLED. Use an SSH tunnel to reach the dashboard: ssh -L 18789:127.0.0.1:18789 ${local.admin_ssh_destination}  then open http://localhost:18789"
   )
 }
 
@@ -107,7 +108,7 @@ output "dashboard_url_with_token_import" {
 }
 
 output "workspace_ssh_command" {
-  description = "SSH command for the optional workspace container over Tailscale."
+  description = "Workspace SSH command; an existing NAT guest address is directly reachable only from its hypervisor or an explicitly configured jump."
   value       = local.workspace_enabled ? "ssh -p ${var.workspace_ssh_host_port} ${var.workspace_username}@${local.workspace_ssh_host}" : "disabled"
 }
 
@@ -119,9 +120,11 @@ output "workspace_codex_login_command" {
 output "workspace_note" {
   description = "Workspace access notes."
   value = local.workspace_enabled ? (
-    var.tailscale_enabled && var.tailscale_mode == "host"
-    ? "Workspace is enabled. Connect over the tailnet with workspace_ssh_command, then run workspace_codex_login_command. Password auth is enabled only inside the workspace container; no Docker socket is mounted. No Drive filesystem is mounted. Use ~/.agents/skills/para-memory-drive/SKILL.md with the connected Drive capability for PARA knowledge.${var.workspace_codex_auto_update_enabled ? " Root-managed stable Codex maintenance runs daily at ${var.workspace_codex_auto_update_time} ${var.workspace_codex_auto_update_timezone}; a new CLI release can interrupt active work when the app server restarts. Use agent-stack-diagnostics codex-update status to inspect it.${var.workspace_codex_auto_recover_interrupted_turns ? " Proven interrupted turns receive one safety-constrained recovery prompt." : " Automatic interrupted-turn recovery is disabled."}" : ""}"
-    : "Workspace is enabled, but the intended supported access path is tailscale_enabled=true with tailscale_mode=\"host\". No Drive filesystem is mounted; use ~/.agents/skills/para-memory-drive/SKILL.md with the connected Drive capability for PARA knowledge.${var.workspace_codex_auto_update_enabled ? " Root-managed stable Codex maintenance runs daily at ${var.workspace_codex_auto_update_time} ${var.workspace_codex_auto_update_timezone}; a new CLI release can interrupt active work when the app server restarts. Use agent-stack-diagnostics codex-update status to inspect it.${var.workspace_codex_auto_recover_interrupted_turns ? " Proven interrupted turns receive one safety-constrained recovery prompt." : " Automatic interrupted-turn recovery is disabled."}" : ""}"
+    var.cloud_provider == "existing" ? "Workspace is enabled inside the user-prepared guest. Its published workspace port must be reachable through user-managed access; the guest SSH tunnel endpoint may not expose that separate port. Set workspace_ssh_host_override when needed. Pin the workspace container's SSH host key separately. AgentStack does not create the VM, host networking or tunnels." : (
+      var.tailscale_enabled && var.tailscale_mode == "host"
+      ? "Workspace is enabled. Connect over the tailnet with workspace_ssh_command, then run workspace_codex_login_command. Password auth is enabled only inside the workspace container; no Docker socket is mounted. No Drive filesystem is mounted. Use ~/.agents/skills/para-memory-drive/SKILL.md with the connected Drive capability for PARA knowledge.${var.workspace_codex_auto_update_enabled ? " Root-managed stable Codex maintenance runs daily at ${var.workspace_codex_auto_update_time} ${var.workspace_codex_auto_update_timezone}; a new CLI release can interrupt active work when the app server restarts. Use agent-stack-diagnostics codex-update status to inspect it.${var.workspace_codex_auto_recover_interrupted_turns ? " Proven interrupted turns receive one safety-constrained recovery prompt." : " Automatic interrupted-turn recovery is disabled."}" : ""}"
+      : "Workspace is enabled, but the intended supported access path is tailscale_enabled=true with tailscale_mode=\"host\". No Drive filesystem is mounted; use ~/.agents/skills/para-memory-drive/SKILL.md with the connected Drive capability for PARA knowledge.${var.workspace_codex_auto_update_enabled ? " Root-managed stable Codex maintenance runs daily at ${var.workspace_codex_auto_update_time} ${var.workspace_codex_auto_update_timezone}; a new CLI release can interrupt active work when the app server restarts. Use agent-stack-diagnostics codex-update status to inspect it.${var.workspace_codex_auto_recover_interrupted_turns ? " Proven interrupted turns receive one safety-constrained recovery prompt." : " Automatic interrupted-turn recovery is disabled."}" : ""}"
+    )
   ) : "disabled"
 }
 
@@ -141,7 +144,7 @@ output "gateway_token" {
 output "pair_latest_command" {
   sensitive   = true
   description = "Run after opening dashboard_url_with_token_import to approve the latest pending paired-device request."
-  value       = local.openclaw_enabled ? "ssh ${var.admin_username}@${local.admin_ssh_host} 'docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token ${local.resolved_gateway_token} --url ws://127.0.0.1:18789'" : "disabled"
+  value       = local.openclaw_enabled ? "ssh ${local.admin_ssh_destination} 'docker compose -f /opt/agent-stack/docker-compose.yml exec -T openclaw openclaw devices approve --latest --token ${local.resolved_gateway_token} --url ws://127.0.0.1:18789'" : "disabled"
 }
 
 output "repo_pair_latest_command" {
@@ -152,12 +155,12 @@ output "repo_pair_latest_command" {
 
 output "whatsapp_login_command" {
   description = "Interactive command to link WhatsApp by scanning QR from your terminal."
-  value       = local.openclaw_enabled ? "ssh -t ${var.admin_username}@${local.admin_ssh_host} 'docker compose -f /opt/agent-stack/docker-compose.yml exec openclaw openclaw channels login --channel whatsapp --verbose'" : "disabled"
+  value       = local.openclaw_enabled ? "ssh -t ${local.admin_ssh_destination} 'docker compose -f /opt/agent-stack/docker-compose.yml exec openclaw openclaw channels login --channel whatsapp --verbose'" : "disabled"
 }
 
 output "bootstrap_log_command" {
   description = "Command to watch the bootstrap log on the server."
-  value       = "ssh ${var.admin_username}@${local.admin_ssh_host} 'tail -f /var/log/openclaw-bootstrap.log'"
+  value       = "ssh ${local.admin_ssh_destination} 'tail -f /var/log/openclaw-bootstrap.log'"
 }
 
 output "repo_bootstrap_log_command" {
@@ -199,6 +202,11 @@ output "n8n_url" {
 output "n8n_webhook_url" {
   description = "n8n webhook base URL or access hint."
   value       = local.n8n_webhook_url
+}
+
+output "workspace_paperclip_note" {
+  description = "Paperclip initial setup and private access boundary; never includes an ownership-claim URL or secret."
+  value       = var.workspace_paperclip_enabled ? "Paperclip ${var.workspace_paperclip_release} auto-starts in a companion using the workspace image and persisted home. Open http://localhost:3100 on the Docker host after initial setup. Paperclip login/first-owner claim is required; claim instructions are in the private workspace log. ACME Co contains one credential-free Codex draft held paused for setup, with no scheduled work. Mesh ingress requires separate action-time approval; no Tailscale Serve, Meshnet, firewall, or bridge configuration is added." : "disabled"
 }
 
 output "ui_auth_username" {
